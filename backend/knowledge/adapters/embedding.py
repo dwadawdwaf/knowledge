@@ -1,0 +1,96 @@
+"""向量化适配器。未配置外部端点时使用确定性的本地实现，便于无模型环境跑通链路。"""
+
+from __future__ import annotations
+
+import hashlib
+import json
+import math
+import urllib.error
+import urllib.request
+from collections.abc import Sequence
+
+from knowledge.config import Settings
+from knowledge.domain.errors import ModelTimeout, ModelUnavailable
+
+
+class HashEmbedder:
+    """基于字符二元组的哈希向量：确定性、无外部依赖，仅用于开发与测试。"""
+
+    def __init__(self, dimension: int = 1024, model: str = "hash-1024") -> None:
+        self.dimension = dimension
+        self.model = model
+
+    def _tokens(self, text: str) -> list[str]:
+        chars = [char for char in text.lower() if not char.isspace()]
+        grams = [chars[i] + chars[i + 1] for i in range(len(chars) - 1)]
+        return grams or chars or ["<empty>"]
+
+    def _one(self, text: str) -> list[float]:
+        vector = [0.0] * self.dimension
+        for token in self._tokens(text):
+            digest = hashlib.blake2b(token.encode("utf-8"), digest_size=8).digest()
+            bucket = int.from_bytes(digest[:4], "big") % self.dimension
+            sign = 1.0 if digest[4] % 2 == 0 else -1.0
+            vector[bucket] += sign
+        norm = math.sqrt(sum(value * value for value in vector))
+        if norm == 0:
+            return vector
+        return [value / norm for value in vector]
+
+    def embed(self, texts: Sequence[str]) -> list[list[float]]:
+        return [self._one(text) for text in texts]
+
+
+class HttpEmbedder:
+    """OpenAI 兼容的 /embeddings 端点。"""
+
+    def __init__(self, base_url: str, model: str, dimension: int, batch: int = 16, timeout: float = 30.0) -> None:
+        self.base_url = base_url.rstrip("/")
+        self.model = model
+        self.dimension = dimension
+        self.batch = max(1, batch)
+        self.timeout = timeout
+
+    def _post(self, texts: Sequence[str]) -> list[list[float]]:
+        payload = json.dumps({"model": self.model, "input": list(texts)}).encode("utf-8")
+        request = urllib.request.Request(
+            f"{self.base_url}/embeddings",
+            data=payload,
+            headers={"Content-Type": "application/json"},
+            method="POST",
+        )
+        try:
+            with urllib.request.urlopen(request, timeout=self.timeout) as response:
+                body = json.loads(response.read().decode("utf-8"))
+        except TimeoutError as exc:  # pragma: no cover - 依赖外部服务
+            raise ModelTimeout("向量服务超时") from exc
+        except urllib.error.HTTPError as exc:  # pragma: no cover
+            raise ModelUnavailable(f"向量服务返回 {exc.code}") from exc
+        except urllib.error.URLError as exc:  # pragma: no cover
+            raise ModelUnavailable("向量服务不可用") from exc
+
+        data = body.get("data") or []
+        vectors = [item.get("embedding") or [] for item in data]
+        for vector in vectors:
+            if len(vector) != self.dimension:
+                raise ModelUnavailable(
+                    f"向量维度不符：期望 {self.dimension}，实际 {len(vector)}"
+                )
+        return vectors
+
+    def embed(self, texts: Sequence[str]) -> list[list[float]]:
+        result: list[list[float]] = []
+        for start in range(0, len(texts), self.batch):
+            result.extend(self._post(texts[start : start + self.batch]))
+        return result
+
+
+def build_embedder(settings: Settings) -> HashEmbedder | HttpEmbedder:
+    if settings.embedding_base_url:
+        return HttpEmbedder(
+            base_url=settings.embedding_base_url,
+            model=settings.embedding_model,
+            dimension=settings.embedding_dim,
+            batch=settings.embedding_batch,
+        )
+    return HashEmbedder(dimension=settings.embedding_dim)

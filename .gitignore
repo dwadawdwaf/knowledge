@@ -1,0 +1,12 @@
+# 仓库只包含 AGENTS.md、docs/、backend/ 源码与自制测试资料
+.workbuddy/
+.zcode/
+
+# Python 运行产物（backend/.gitignore 已覆盖 backend 内部）
+__pycache__/
+*.py[cod]
+
+# 本地环境
+.env
+.DS_Store
+Thumbs.db

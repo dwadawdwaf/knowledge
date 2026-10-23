@@ -1,0 +1,59 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "knowledge-service"
+version = "0.1.0"
+description = "知识检索与智能问答助手的后端服务"
+requires-python = ">=3.11"
+dependencies = [
+    "fastapi>=0.115",
+    "python-multipart>=0.0.9",
+    "uvicorn>=0.30",
+    "pydantic>=2.8",
+    "pydantic-settings>=2.4",
+    "sqlalchemy>=2.0",
+    "psycopg[binary]>=3.2",
+    "alembic>=1.13",
+    "pgvector>=0.3",
+    "pypdf>=5.0",
+    "python-docx>=1.1",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.0",
+    "httpx>=0.27",
+    "ruff>=0.6",
+    "mypy>=1.11",
+    # 本地开发用的 PostgreSQL（含 pgvector），无需另装数据库
+    "embedded-postgres>=18.6",
+]
+
+[tool.ruff]
+target-version = "py311"
+line-length = 100
+
+[tool.ruff.lint.flake8-bugbear]
+# FastAPI 依赖注入以 Depends(...) 作默认值是官方写法
+extend-immutable-calls = ["fastapi.Depends", "fastapi.Security", "fastapi.File"]
+
+[tool.ruff.lint.isort]
+known-first-party = ["knowledge", "samples"]
+
+[tool.mypy]
+python_version = "3.11"
+packages = ["knowledge"]
+ignore_missing_imports = true
+warn_unused_ignores = true
+check_untyped_defs = true
+
+[tool.setuptools.packages.find]
+include = ["knowledge*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+markers = [
+    "integration: 需要真实 PostgreSQL（含 pgvector 与 pg_trgm）",
+]

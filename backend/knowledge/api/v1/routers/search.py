@@ -1,0 +1,57 @@
+"""检索接口：不调用生成模型。"""
+
+from __future__ import annotations
+
+from fastapi import APIRouter, Depends, Request
+from sqlalchemy.orm import Session
+
+from knowledge.api.deps import get_actor, get_embedder, get_session, get_settings_dep, request_id
+from knowledge.api.v1.schemas.common import Envelope, envelope
+from knowledge.api.v1.schemas.requests import SearchRequest
+from knowledge.api.v1.schemas.responses import SearchHitOut, SearchResultOut
+from knowledge.config import Settings
+from knowledge.domain.entities import Actor
+from knowledge.domain.ports import Embedder
+from knowledge.services import retrieval
+
+router = APIRouter(tags=["search"])
+
+
+@router.post("/search", response_model=Envelope)
+def search(
+    payload: SearchRequest,
+    request: Request,
+    session: Session = Depends(get_session),
+    actor: Actor = Depends(get_actor),
+    settings: Settings = Depends(get_settings_dep),
+    embedder: Embedder = Depends(get_embedder),
+) -> dict:
+    hits = retrieval.search(
+        session,
+        actor,
+        settings,
+        embedder,
+        query=payload.query,
+        kb_ids=payload.knowledge_base_ids,
+        mode=payload.mode,
+        top_k=payload.top_k,
+    )
+    result = SearchResultOut(
+        mode=payload.mode,
+        hits=[
+            SearchHitOut(
+                document_id=hit.document_id,
+                version_id=hit.version_id,
+                build_id=hit.build_id,
+                chunk_id=hit.chunk_id,
+                title=hit.title,
+                excerpt=hit.excerpt,
+                locator=hit.locator,
+                score=round(hit.score, 6),
+                score_type=hit.score_type,
+            )
+            for hit in hits
+        ],
+        score_type=hits[0].score_type if hits else payload.mode,
+    )
+    return envelope(result.model_dump(mode="json"), request_id(request))
