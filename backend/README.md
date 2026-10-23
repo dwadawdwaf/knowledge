@@ -68,6 +68,12 @@ make lint && make typecheck                                 # ruff + mypy
 
 集成用例覆盖验收用例 M01–M08：上传→处理→检索→引用、引用回溯源文件位置、新版本处理中旧版本可见、崩溃恢复不重复分块、处理中删除不复活、同字节去重与同名新版本；另含孤儿对象回收用例。
 
+## 效果评测
+
+`testdata/corpus/` 是自制评测语料（4 份制度类文档 + 运行期生成的 DOCX/PDF），配标注用例集（`labels.py`）：17 条命中问题（含文号/专名类关键词查询）+ 3 条语料外负面问题。`tests/integration/test_effectiveness.py` 跑真实链路验证：检索命中预期条款、hit@1 指标、无答案判定、PDF 页码与 DOCX 段落 locator、MD 字符偏移与原文一致、知识库范围隔离。
+
+当前基线（HashEmbedder）：17/17 top5 命中、hit@1 100%、负面 3/3 no_evidence。阈值 `KS_SIMILARITY_FLOOR=0.05` 即按该语料标定（真实命中 ≥0.075，负面 ≤0.038）；**换真实向量模型后问题集与阈值必须重新标定**，评测结果不代表真实模型的语义检索质量。
+
 ## 模型
 
 未配置端点时使用本地确定性实现：`HashEmbedder`（字符二元组哈希，1024 维）与 `StubGenerator`（复述首条证据）。链路可跑通，**但不代表检索与生成质量**。接入真实模型只需设置：
@@ -77,4 +83,4 @@ export KS_EMBEDDING_BASE_URL=http://... KS_EMBEDDING_MODEL=bge-m3
 export KS_GENERATOR_BASE_URL=http://... KS_GENERATOR_MODEL=qwen
 ```
 
-换向量模型后必须重建索引，并重新标定 `KS_SEMANTIC_MAX_DISTANCE`。
+换向量模型后必须重建索引，并重新标定 `KS_SEMANTIC_MAX_DISTANCE` 与 `KS_SIMILARITY_FLOOR`。
