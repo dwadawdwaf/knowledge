@@ -81,11 +81,15 @@ make lint && make typecheck                                 # ruff + mypy
 
 ## 模型
 
-未配置端点时使用本地确定性实现：`HashEmbedder`（字符二元组哈希，1024 维）与 `StubGenerator`（复述首条证据）。链路可跑通，**但不代表检索与生成质量**。接入真实模型只需设置：
+未配置端点时使用本地确定性实现：`HashEmbedder`（字符二元组哈希，1024 维）与 `StubGenerator`（复述首条证据）。链路可跑通，**但不代表检索与生成质量**。
 
-```bash
-export KS_EMBEDDING_BASE_URL=http://... KS_EMBEDDING_MODEL=bge-m3
-export KS_GENERATOR_BASE_URL=http://... KS_GENERATOR_MODEL=qwen
-```
+配置写在 `backend/.env`（不入库），两条路线：
 
-换向量模型后必须重建索引，并重新标定 `KS_SEMANTIC_MAX_DISTANCE` 与 `KS_SIMILARITY_FLOOR`。
+| 路线 | 生成侧 | 向量侧 | 说明 |
+| --- | --- | --- | --- |
+| 在线 API（当前） | DeepSeek `deepseek-chat` | SiliconFlow `BAAI/bge-m3`（1024 维，免费额度） | 只需填 `KS_GENERATOR_API_KEY` 与 `KS_EMBEDDING_API_KEY` |
+| 离线预留 | Ollama（如 `qwen2.5:7b`） | Ollama `bge-m3` | 本机已装 Ollama；`ollama pull bge-m3` 后切换，无需 key |
+
+注意：向量模型必须输出 1024 维（表结构 `vector(1024)`，禁止混维度）；本机走 Ollama 前设 `NO_PROXY=127.0.0.1,localhost`，否则本地请求被系统代理截走。
+
+换向量模型后必须重建索引（新上传/新构建），并跑 `python scripts/calibrate.py` 重新标定 `KS_SIMILARITY_FLOOR` 与 `KS_SEMANTIC_MAX_DISTANCE`。
