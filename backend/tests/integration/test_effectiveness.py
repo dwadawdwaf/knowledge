@@ -25,8 +25,10 @@ from knowledge.worker.loop import process_next
 from testdata.corpus.generate import make_docx, make_pdf, pdf_supported
 from testdata.corpus.labels import (
     CORPUS_FILES,
+    HARD_NEGATIVE_QUESTIONS,
     HIT_CASES,
     NEGATIVE_QUESTIONS,
+    SEMANTIC_CASES,
 )
 
 DATABASE_URL = os.getenv("KS_TEST_DATABASE_URL")
@@ -68,8 +70,17 @@ def corpus(session, settings, deps):
 
 
 def test_hit_cases_and_metrics(session, corpus, settings, deps):
-    """标注命中用例：top10 内应命中预期片段，且命中分块属于预期文档。"""
+    """标注命中用例：top10 内应命中预期片段，且命中分块属于预期文档。
+
+    KS_TEST_REAL_EMBEDDER=1 时额外纳入语义改写型用例（SEMANTIC_CASES），
+    其与原文几乎无字面重叠，本地哈希向量无法命中，只反映真实向量模型的能力。
+    """
+    real_embedder = bool(os.getenv("KS_TEST_REAL_EMBEDDER"))
     cases = [case for case in HIT_CASES if case.get("kind") != "pdf" or corpus.pdf_ok]
+    if real_embedder:
+        cases += SEMANTIC_CASES
+    else:
+        print(f"\n[eval] 跳过语义改写用例 {len(SEMANTIC_CASES)} 条（未设 KS_TEST_REAL_EMBEDDER）")
 
     misses: list[str] = []
     hit1 = 0
@@ -105,7 +116,11 @@ def test_hit_cases_and_metrics(session, corpus, settings, deps):
 
 
 def test_negative_questions_return_no_evidence(session, corpus, settings, deps):
-    """语料外问题：检索 0 命中，问答返回 no_evidence 且不产生引用。"""
+    """领域外问题：检索 0 命中，问答返回 no_evidence 且不产生引用。
+
+    主题相邻硬负面（HARD_NEGATIVE_QUESTIONS）与命中分布重叠，纯阈值无法拒答
+    （见 labels.py 注释），只记录实测行为，不做 no_evidence 断言。
+    """
     for question in NEGATIVE_QUESTIONS:
         hits = retrieval.search(
             session, corpus.actor, settings, deps.embedder,
@@ -119,7 +134,14 @@ def test_negative_questions_return_no_evidence(session, corpus, settings, deps):
         )
         assert answer.status == "no_evidence"
         assert answer.citations == []
-    print(f"\n[eval] 负面用例 {len(NEGATIVE_QUESTIONS)} 条全部 no_evidence")
+    print(f"\n[eval] 领域外负面 {len(NEGATIVE_QUESTIONS)} 条全部 no_evidence")
+
+    for question in HARD_NEGATIVE_QUESTIONS:
+        hits = retrieval.search(
+            session, corpus.actor, settings, deps.embedder,
+            query=question, kb_ids=[corpus.kb.id],
+        )
+        print(f"[eval] 主题相邻硬负面（不断言）：{question} → hits={len(hits)}")
 
 
 def test_docx_chunks_locate_by_paragraph(session, corpus, settings, deps):
