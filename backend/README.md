@@ -70,9 +70,14 @@ make lint && make typecheck                                 # ruff + mypy
 
 ## 效果评测
 
-`testdata/corpus/` 是自制评测语料（4 份制度类文档 + 运行期生成的 DOCX/PDF），配标注用例集（`labels.py`）：17 条命中问题（含文号/专名类关键词查询）+ 3 条语料外负面问题。`tests/integration/test_effectiveness.py` 跑真实链路验证：检索命中预期条款、hit@1 指标、无答案判定、PDF 页码与 DOCX 段落 locator、MD 字符偏移与原文一致、知识库范围隔离。
+`testdata/corpus/` 是评测语料（13 份文档、约 490 个分块），两类来源：
 
-当前基线（HashEmbedder）：17/17 top5 命中、hit@1 100%、负面 3/3 no_evidence。阈值 `KS_SIMILARITY_FLOOR=0.05` 即按该语料标定（真实命中 ≥0.075，负面 ≤0.038）；**换真实向量模型后问题集与阈值必须重新标定**，评测结果不代表真实模型的语义检索质量。
+- **自制**：内部制度、新员工 FAQ、英文远程办公制度、运行期生成的 DOCX/PDF（内容定义在 `labels.py`）；
+- **网络抓取**（经用户授权）：五部法律法规（劳动法、劳动合同法、数据安全法、网络安全法、住房公积金管理条例），来源维基文库，官方文件依《著作权法》第五条不适用著作权保护；由 `python scripts/fetch_corpus.py` 抓取并清洗为「一条一段」的 Markdown，文件首段记录来源。
+
+标注用例集（`labels.py`）：36 条命中问题（事实型、文号/专名型、跨语种、PDF 分页定位）+ 5 条语料外负面问题。`tests/integration/test_effectiveness.py` 跑真实链路验证：检索命中预期条款、hit@1 / hit@5 指标、无答案判定、PDF 页码与 DOCX 段落 locator、MD 字符偏移与原文一致、知识库范围隔离。
+
+当前基线（HashEmbedder）：36/36 top10 命中、hit@5 97%、hit@1 89%、负面 5/5 no_evidence。阈值 `KS_SIMILARITY_FLOOR=0.06` 按该语料标定——语料外问题关键词路最高 0.059、真实命中最低 0.058，两者接近重叠，靠语义路兜底；**换真实向量模型后问题集与阈值必须重新标定**，评测结果不代表真实模型的语义检索质量。
 
 ## 模型
 

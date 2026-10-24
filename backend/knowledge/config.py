@@ -33,10 +33,11 @@ class Settings(BaseSettings):
 
     recall_limit: int = 50
     rrf_k: int = 60
-    # 关键词相似度下限：低于视为不相关。0.05 按自制评测语料标定
-    # （真实命中 top1 相似度 ≥0.075，语料外问题 ≤0.038，见 tests/integration/test_effectiveness.py）；
+    # 关键词相似度下限：低于视为不相关。0.06 按自制评测语料（含 5 部抓取法律法规、
+    # ~490 分块）标定：语料外问题关键词路最高 0.059，真实命中最低 0.058——两者在
+    # 关键词路接近重叠，靠语义路兜底（见 tests/integration/test_effectiveness.py）；
     # 换向量模型或扩充语料后必须重新标定。
-    similarity_floor: float = 0.05
+    similarity_floor: float = 0.06
     # 余弦距离上限：超过视为不相关。默认值按本地哈希向量标定，换真实模型后必须重标。
     semantic_max_distance: float = 0.85
     evidence_max_items: int = 6

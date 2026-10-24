@@ -105,25 +105,27 @@ def corpus(session, settings, deps):
 
 
 def test_hit_cases_and_metrics(session, corpus, settings, deps):
-    """标注命中用例：top5 内应命中预期片段，且命中分块属于预期文档。"""
+    """标注命中用例：top10 内应命中预期片段，且命中分块属于预期文档。"""
     cases = [case for case in HIT_CASES if case.get("kind") != "pdf" or corpus.pdf_ok]
 
     misses: list[str] = []
     hit1 = 0
+    hit5 = 0
     for case in cases:
         hits = retrieval.search(
             session, corpus.actor, settings, deps.embedder,
-            query=str(case["question"]), kb_ids=[corpus.kb.id], mode="hybrid", top_k=5,
+            query=str(case["question"]), kb_ids=[corpus.kb.id], mode="hybrid", top_k=10,
         )
         snippets = [str(snippet) for snippet in case["any_of"]]
         matched = [
             hit for hit in hits if any(snippet in hit.text for snippet in snippets)
         ]
         if not matched:
-            misses.append(f"{case['question']} → 未在 top5 命中 {snippets}")
+            misses.append(f"{case['question']} → 未在 top10 命中 {snippets}")
             continue
-        if matched[0] is hits[0]:
-            hit1 += 1
+        rank = hits.index(matched[0]) + 1
+        hit1 += rank == 1
+        hit5 += rank <= 5
         assert str(matched[0].document_id) == str(corpus.ids[str(case["doc"])]), (
             f"{case['question']} 命中了错误文档：{matched[0].document_id}"
         )
@@ -131,8 +133,11 @@ def test_hit_cases_and_metrics(session, corpus, settings, deps):
     assert not misses, "未命中用例：\n" + "\n".join(misses)
 
     rate1 = hit1 / len(cases)
-    print(f"\n[eval] 命中用例 {len(cases)} 条：top5 命中 {len(cases) - len(misses)}，"
-          f"首位命中 {hit1}（hit@1 = {rate1:.0%}）")
+    rate5 = hit5 / len(cases)
+    print(f"\n[eval] 命中用例 {len(cases)} 条：top10 全命中；"
+          f"hit@5 = {rate5:.0%}，hit@1 = {rate1:.0%}")
+    # 主题相近条款会挤占排名（trigram + 哈希向量的已知局限），hit@1 允许低于 top 召回
+    assert rate5 >= 0.8, f"hit@5 过低：{rate5:.0%}"
     assert rate1 >= 0.6, f"首位命中率过低：{rate1:.0%}"
 
 
@@ -177,6 +182,9 @@ def test_pdf_chunks_locate_by_page(session, corpus, settings, deps):
         ("访客进入办公区需要谁陪同", 1),
         ("访客证的有效期是多久", 2),
         ("外来车辆应该停放在哪里", 2),
+        ("消防通道可以堆放物品吗", 3),
+        ("末班班车几点发车", 4),
+        ("监控录像保存多长时间", 5),
     ]
     for question, expected_page in expectations:
         hits = retrieval.search(

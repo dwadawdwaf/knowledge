@@ -15,7 +15,6 @@ import argparse
 import os
 import pathlib
 import shutil
-import sys
 import tempfile
 import time
 
@@ -69,7 +68,7 @@ def main() -> int:
         test_dsn = dsn.rsplit("/", 1)[0] + "/ks_test"
         try:
             pg.psql("CREATE DATABASE ks_test")
-        except Exception:  # noqa: BLE001 - 已存在即忽略
+        except Exception:  # noqa: BLE001, S110 - 数据库已存在即忽略
             pass
 
         DATA_URL.parent.mkdir(parents=True, exist_ok=True)

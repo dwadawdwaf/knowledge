@@ -26,7 +26,7 @@ test:
 	pytest -q
 
 lint:
-	ruff check knowledge tests
+	ruff check knowledge tests scripts
 
 typecheck:
 	mypy
