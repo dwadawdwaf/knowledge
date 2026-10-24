@@ -90,6 +90,20 @@ make lint && make typecheck                                 # ruff + mypy
 
 阈值按当前生效向量标定（`scripts/calibrate.py`）：哈希基线 `KS_SIMILARITY_FLOOR=0.06` / `KS_SEMANTIC_MAX_DISTANCE=0.85`（config 默认，测试夹具在非真实模式下钉住）；bge-m3 实测 `0.06` / `0.42`（真实命中距离 max 0.393、领域外负面 min 0.431，写入 `.env`）。换向量模型后必须重建索引并重跑标定。
 
+## 格式覆盖与规模基线
+
+`tests/integration/test_format_variety.py` 覆盖：DOCX 表格（单元格按行展平参与索引，结构化解析不在首期）、PDF 表格（文本流提取，顺序可能交错）、加密 PDF（确定性失败 `PASSWORD_PROTECTED`，不重试）、空白 PDF（`EMPTY_CONTENT`）、白名单外格式（xlsx/csv/pptx/jpg 一律 415）。
+
+`scripts/scale_test.py` 为合成文档压测（实测值，本地嵌入式 PostgreSQL，不外推）：
+
+| 规模 | 向量 | 入库吞吐 | 检索延迟 p50 / p95 |
+| --- | --- | --- | --- |
+| 300 份 / 3900 块 | HashEmbedder | 597 块/s | 37ms / 44ms |
+| 1000 份 / 13000 块 | HashEmbedder | 608 块/s | 112ms / 129ms |
+| 40 份 / 520 块 | bge-m3（Ollama，CPU） | 5 块/s | 2296ms / 2404ms（查询含 CPU 向量化） |
+
+SQL 与排序层随规模增长平稳；真实向量的瓶颈在本机 CPU 嵌入算力（入库与查询向量化），换 GPU 或远程 API 端点可消除。
+
 ## 模型
 
 未配置端点时使用本地确定性实现：`HashEmbedder`（字符二元组哈希，1024 维）与 `StubGenerator`（复述首条证据）。链路可跑通，**但不代表检索与生成质量**。

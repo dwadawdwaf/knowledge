@@ -5,7 +5,7 @@ from __future__ import annotations
 import io
 
 from knowledge.domain.entities import Locator, ParsedBlock
-from knowledge.domain.errors import UnsupportedFormat
+from knowledge.domain.errors import PasswordProtected, UnsupportedFormat
 
 TEXT_PLAIN = "text/plain"
 TEXT_MARKDOWN = "text/markdown"
@@ -106,6 +106,8 @@ class PdfParser:
         from pypdf import PdfReader
 
         reader = PdfReader(io.BytesIO(data))
+        if reader.is_encrypted:
+            raise PasswordProtected("PDF 已加密，无法解析")
         blocks: list[ParsedBlock] = []
 
         for page_index, page in enumerate(reader.pages, start=1):
@@ -159,6 +161,26 @@ class DocxParser:
                     ),
                 )
             )
+        # 表格按行展平：结构化表格解析不在首期范围（AGENTS §3.6），
+        # 但单元格内容必须参与索引，不得静默丢弃（硬约束 C8）。
+        for table_index, table in enumerate(document.tables, start=1):
+            for row_index, row in enumerate(table.rows, start=1):
+                cells = [cell.text.strip() for cell in row.cells]
+                if not any(cells):
+                    continue
+                text = f"表格{table_index} 第{row_index}行：" + "｜".join(cells)
+                blocks.append(
+                    ParsedBlock(
+                        text=text,
+                        locator=Locator(
+                            type="docx",
+                            block=table_index,
+                            char_start=0,
+                            char_end=len(text),
+                            precision="block",
+                        ),
+                    )
+                )
         return blocks
 
 

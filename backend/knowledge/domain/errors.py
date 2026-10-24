@@ -36,6 +36,13 @@ class UnsupportedFormat(DomainError):
     http_status = 415
 
 
+class PasswordProtected(DomainError):
+    """加密文档属确定性错误：不重试，任务直接置 failed（design §5.3）。"""
+
+    code = "PASSWORD_PROTECTED"
+    http_status = 422
+
+
 class FileTooLarge(DomainError):
     code = "FILE_TOO_LARGE"
     http_status = 413

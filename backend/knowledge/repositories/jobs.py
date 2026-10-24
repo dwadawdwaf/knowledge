@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import uuid
 from typing import Any, cast
 
@@ -17,6 +18,11 @@ from knowledge.repositories.tables import Document, Job, KnowledgeBase
 def _affected(result: Result[Any]) -> int:
     # text() 更新在运行期返回 CursorResult；Result 类型上没有 rowcount
     return cast(CursorResult[Any], result).rowcount
+
+
+def _error_param(error: dict | None) -> str | None:
+    # text() SQL 里经 CAST(:error AS jsonb) 写入，须传 JSON 字符串
+    return json.dumps(error, ensure_ascii=False) if error else None
 
 _CLAIM = text(
     """
@@ -48,7 +54,7 @@ _HEARTBEAT = text(
 
 _FINISH = text(
     """
-    UPDATE jobs SET state = :state, stage = :stage, last_error = :error,
+    UPDATE jobs SET state = :state, stage = :stage, last_error = CAST(:error AS jsonb),
            lease_token = NULL, lease_expires_at = NULL
     WHERE id = :job_id AND lease_token = :token
     """
@@ -56,7 +62,7 @@ _FINISH = text(
 
 _SHELVE = text(
     """
-    UPDATE jobs SET state = 'queued', stage = NULL, last_error = :error,
+    UPDATE jobs SET state = 'queued', stage = NULL, last_error = CAST(:error AS jsonb),
            available_at = now() + make_interval(secs => :delay),
            lease_token = NULL, lease_expires_at = NULL
     WHERE id = :job_id AND lease_token = :token
@@ -100,7 +106,13 @@ def finish(
 ) -> bool:
     result = session.execute(
         _FINISH,
-        {"job_id": job_id, "token": token, "state": state.value, "stage": stage, "error": error},
+        {
+            "job_id": job_id,
+            "token": token,
+            "state": state.value,
+            "stage": stage,
+            "error": _error_param(error),
+        },
     )
     session.commit()
     return _affected(result) > 0
@@ -110,7 +122,13 @@ def shelve(
     session: Session, job_id: uuid.UUID, token: uuid.UUID, error: dict, delay_seconds: int
 ) -> bool:
     result = session.execute(
-        _SHELVE, {"job_id": job_id, "token": token, "error": error, "delay": delay_seconds}
+        _SHELVE,
+        {
+            "job_id": job_id,
+            "token": token,
+            "error": _error_param(error),
+            "delay": delay_seconds,
+        },
     )
     session.commit()
     return _affected(result) > 0
