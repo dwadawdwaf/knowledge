@@ -20,9 +20,13 @@ class Settings(BaseSettings):
     embedding_model: str = "hash-1024"
     embedding_dim: int = 1024
     embedding_batch: int = 16
+    embedding_api_key: str | None = None
+    # 请求端点下发的 dimensions 参数（部分服务要求显式指定，如 embedding-3 系列）
+    embedding_dimensions: int | None = None
 
     generator_base_url: str | None = None
     generator_model: str = "stub"
+    generator_api_key: str | None = None
     generator_timeout_seconds: float = 60.0
 
     max_upload_bytes: int = 50 * 1024 * 1024

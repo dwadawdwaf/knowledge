@@ -44,19 +44,35 @@ class HashEmbedder:
 class HttpEmbedder:
     """OpenAI 兼容的 /embeddings 端点。"""
 
-    def __init__(self, base_url: str, model: str, dimension: int, batch: int = 16, timeout: float = 30.0) -> None:
+    def __init__(
+        self,
+        base_url: str,
+        model: str,
+        dimension: int,
+        batch: int = 16,
+        timeout: float = 30.0,
+        api_key: str | None = None,
+        dimensions: int | None = None,
+    ) -> None:
         self.base_url = base_url.rstrip("/")
         self.model = model
         self.dimension = dimension
         self.batch = max(1, batch)
         self.timeout = timeout
+        self.api_key = api_key
+        self.dimensions = dimensions
 
     def _post(self, texts: Sequence[str]) -> list[list[float]]:
-        payload = json.dumps({"model": self.model, "input": list(texts)}).encode("utf-8")
+        payload: dict[str, object] = {"model": self.model, "input": list(texts)}
+        if self.dimensions is not None:
+            payload["dimensions"] = self.dimensions
+        headers = {"Content-Type": "application/json"}
+        if self.api_key:
+            headers["Authorization"] = f"Bearer {self.api_key}"
         request = urllib.request.Request(
             f"{self.base_url}/embeddings",
-            data=payload,
-            headers={"Content-Type": "application/json"},
+            data=json.dumps(payload).encode("utf-8"),
+            headers=headers,
             method="POST",
         )
         try:
@@ -92,5 +108,7 @@ def build_embedder(settings: Settings) -> HashEmbedder | HttpEmbedder:
             model=settings.embedding_model,
             dimension=settings.embedding_dim,
             batch=settings.embedding_batch,
+            api_key=settings.embedding_api_key,
+            dimensions=settings.embedding_dimensions,
         )
     return HashEmbedder(dimension=settings.embedding_dim)

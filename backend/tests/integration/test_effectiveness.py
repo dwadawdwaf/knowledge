@@ -22,12 +22,11 @@ from knowledge.services import knowledge as knowledge_service
 from knowledge.services import qa as qa_service
 from knowledge.services import retrieval
 from knowledge.worker.loop import process_next
+from testdata.corpus.generate import make_docx, make_pdf, pdf_supported
 from testdata.corpus.labels import (
     CORPUS_FILES,
-    DOCX_PARAGRAPHS,
     HIT_CASES,
     NEGATIVE_QUESTIONS,
-    PDF_PAGES,
 )
 
 DATABASE_URL = os.getenv("KS_TEST_DATABASE_URL")
@@ -38,42 +37,6 @@ pytestmark = [
 ]
 
 CORPUS_ROOT = Path(__file__).resolve().parents[2] / "testdata" / "corpus"
-FONT_PATH = Path(os.environ.get("WINDIR", r"C:\Windows")) / "Fonts" / "simhei.ttf"
-
-
-def _make_docx() -> bytes:
-    import io
-
-    import docx
-
-    document = docx.Document()
-    for paragraph in DOCX_PARAGRAPHS:
-        document.add_paragraph(paragraph)
-    buffer = io.BytesIO()
-    document.save(buffer)
-    return buffer.getvalue()
-
-
-def _make_pdf() -> bytes:
-    from fpdf import FPDF
-
-    pdf = FPDF()
-    pdf.add_font("hei", "", str(FONT_PATH))
-    pdf.set_font("hei", size=12)
-    for page_lines in PDF_PAGES:
-        pdf.add_page()
-        for line in page_lines:
-            # new_x=LMARGIN：multi_cell 结束后回到左边距，否则下一行可用宽度为 0
-            pdf.multi_cell(0, 8, line, new_x="LMARGIN", new_y="NEXT")
-    return bytes(pdf.output())
-
-
-def _pdf_supported() -> bool:
-    try:
-        import fpdf  # noqa: F401
-    except ImportError:
-        return False
-    return FONT_PATH.is_file()
 
 
 @pytest.fixture
@@ -81,7 +44,7 @@ def corpus(session, settings, deps):
     """上传全部语料并处理完成；返回 actor / kb / 文档 ID 映射。"""
     actor = Actor(subject_id="eval-user", tenant_id="default")
     kb = knowledge_service.create(session, actor, "评测库")
-    pdf_ok = _pdf_supported()
+    pdf_ok = pdf_supported()
 
     def _upload(filename: str, data: bytes) -> uuid.UUID:
         result = document_service.upload(
@@ -94,9 +57,9 @@ def corpus(session, settings, deps):
     ids = {}
     for key, filename in CORPUS_FILES.items():
         ids[key] = _upload(filename, (CORPUS_ROOT / filename).read_bytes())
-    ids["backup_docx"] = _upload("数据备份管理细则.docx", _make_docx())
+    ids["backup_docx"] = _upload("数据备份管理细则.docx", make_docx())
     if pdf_ok:
-        ids["visitor_pdf"] = _upload("访客管理规程.pdf", _make_pdf())
+        ids["visitor_pdf"] = _upload("访客管理规程.pdf", make_pdf())
 
     while process_next(session, deps):
         pass

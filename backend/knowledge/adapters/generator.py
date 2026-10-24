@@ -52,11 +52,18 @@ class StubGenerator:
 class HttpGenerator:
     """OpenAI 兼容的 /chat/completions 端点。"""
 
-    def __init__(self, base_url: str, model: str, timeout: float = 60.0) -> None:
+    def __init__(
+        self,
+        base_url: str,
+        model: str,
+        timeout: float = 60.0,
+        api_key: str | None = None,
+    ) -> None:
         self.base_url = base_url.rstrip("/")
         self.model = model
         self.revision = model
         self.timeout = timeout
+        self.api_key = api_key
 
     def _post(self, question: str, evidence: Sequence[Evidence]) -> str:
         payload = json.dumps(
@@ -69,10 +76,13 @@ class HttpGenerator:
                 ],
             }
         ).encode("utf-8")
+        headers = {"Content-Type": "application/json"}
+        if self.api_key:
+            headers["Authorization"] = f"Bearer {self.api_key}"
         request = urllib.request.Request(
             f"{self.base_url}/chat/completions",
             data=payload,
-            headers={"Content-Type": "application/json"},
+            headers=headers,
             method="POST",
         )
         try:
@@ -115,5 +125,6 @@ def build_generator(settings: Settings) -> StubGenerator | HttpGenerator:
             base_url=settings.generator_base_url,
             model=settings.generator_model,
             timeout=settings.generator_timeout_seconds,
+            api_key=settings.generator_api_key,
         )
     return StubGenerator()
