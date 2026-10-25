@@ -9,10 +9,10 @@ import pytest
 from sqlalchemy import text
 
 from knowledge.domain.chunking import chunk_blocks
-from knowledge.domain.entities import Actor, JobState
+from knowledge.domain.entities import Actor, BuildState, JobState
 from knowledge.repositories import chunks as chunk_repo
 from knowledge.repositories import jobs as job_repo
-from knowledge.repositories.tables import EMBEDDING_DIM, Chunk
+from knowledge.repositories.tables import EMBEDDING_DIM, Chunk, IndexBuild
 from knowledge.services import document as document_service
 from knowledge.services import knowledge as knowledge_service
 from knowledge.services import retrieval
@@ -31,9 +31,16 @@ def test_expired_lease_recovered_without_duplicate_chunks(session, settings, dep
     actor = Actor(subject_id="user-a", tenant_id="default")
     kb = knowledge_service.create(session, actor, "制度库")
     upload = document_service.upload(
-        session, actor, settings, deps.storage, deps.registry,
-        kb_id=kb.id, filename="meeting-room.md", data=MEETING_RULES,
-        embedder_model=deps.embedder.model, embedder_dim=deps.embedder.dimension,
+        session,
+        actor,
+        settings,
+        deps.storage,
+        deps.registry,
+        kb_id=kb.id,
+        filename="meeting-room.md",
+        data=MEETING_RULES,
+        embedder_model=deps.embedder.model,
+        embedder_dim=deps.embedder.dimension,
     )
 
     # 模拟 Worker 崩溃：领取任务后进程消失，租约未释放
@@ -69,25 +76,34 @@ def test_expired_lease_recovered_without_duplicate_chunks(session, settings, dep
     job = job_repo.get_owned(session, actor, upload.job_id)
     assert job.state is JobState.SUCCEEDED
     assert job.attempt == 2
+    assert job.build_id != upload.build_id
+    assert (
+        session.get(IndexBuild, upload.build_id, populate_existing=True).state == BuildState.FAILED
+    )
 
     # 分块数量与直接分段的结果一致，无重复 ordinal
     blocks = deps.registry.for_file("text/markdown", "meeting-room.md").parse(
         MEETING_RULES, "text/markdown", "meeting-room.md"
     )
     expected = len(chunk_blocks(blocks, settings.chunk_max_chars, settings.chunk_overlap_chars))
-    assert chunk_repo.count_for_build(session, upload.build_id) == expected
+    assert chunk_repo.count_for_build(session, job.build_id) == expected
+    assert chunk_repo.count_for_build(session, upload.build_id) == 2
 
     duplicated = session.execute(
         text(
             "SELECT ordinal FROM chunks WHERE build_id = :build"
             " GROUP BY ordinal HAVING count(*) > 1"
         ),
-        {"build": upload.build_id},
+        {"build": job.build_id},
     ).all()
     assert duplicated == []
 
     hits = retrieval.search(
-        session, actor, settings, deps.embedder,
-        query="使用后需要做什么", kb_ids=[kb.id],
+        session,
+        actor,
+        settings,
+        deps.embedder,
+        query="使用后需要做什么",
+        kb_ids=[kb.id],
     )
     assert hits and "清理现场" in hits[0].text

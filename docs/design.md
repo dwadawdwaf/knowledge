@@ -193,6 +193,11 @@ backend/
 `stage` · `attempt` / `max_attempts`（默认 0/3）· `available_at`
 `lease_token` · `lease_expires_at`（领取后 120 秒）· `heartbeat_at`（30 秒一次）· `last_error` jsonb
 
+`build_id` · `generation`：ingest/reindex 任务创建时固定目标构建与文档代次；cleanup 不填。
+每次尝试期间目标不可改变。重试保留 job ID 与累计 attempt，但新建同版本 build，
+在同一事务切换 job.build_id 和 document.pending_build_id；generation 不变。
+旧构建置 failed，ready 构建绝不重写。旧代次任务取消，不接管新上传的构建。
+
 `last_error` 存 `{code, message, retryable}`，不含堆栈。
 索引：`(state, available_at)`、`(lease_expires_at)`
 
@@ -237,6 +242,8 @@ queued → running(parsing → chunking → embedding → publishing) → ready 
    └─────────┴→ cancelled（文档已删除，或已被更新的 generation 取代）
 ```
 
+图中重试箭头表示 job 的下一次尝试创建一个新的 queued build，不是原 build 回到 queued。
+
 发布在单事务内完成：校验租约、`generation` 与文档状态 → `build.state = ready` → `current_version_id` 与 `active_build_id` 同时切换 → 原 build 置 `retired` → 任务置 `succeeded`。
 
 首次上传发布前 `active_build_id` 为空，此时检索该文档返回 0 命中并提示「处理中」。更新期间原 build 继续服务。
@@ -258,7 +265,8 @@ RETURNING *;
 - 领取在短事务内完成，提交后才执行解析与模型调用。
 - 心跳由独立协程每 30 秒续租，不受解析或模型调用阻塞。
 - 每次写 chunks 前校验 `lease_token` 仍匹配。
-- 启动时把 `running` 且租约过期的任务重置为 `queued`，`attempt` 不减。
+- 启动及每轮领取前回收过期租约；attempt 不减，到达上限置 failed，否则按新 build 重试。
+- 写入使用 document → job → build 的锁顺序；校验 token、running 与未过期租约，并在同一短事务内写入及发布。心跳不得复活过期租约。
 - 格式不支持、密码保护、空正文属确定性错误，直接置 `failed`。
 
 ### 5.4 删除
@@ -287,6 +295,11 @@ RETURNING *;
 「未命中即无答案」依赖这两个阈值，而不是 RRF 分数本身——RRF 分数只表示名次，恒大于零，不能用来判断相关性。距离上限默认值按本地哈希向量标定，换真实向量模型后必须重新标定。
 
 命中返回 `document_id / version_id / build_id / chunk_id / title / excerpt / locator / score / score_type`。`score` 只在同一模式下可比，响应必须带 `score_type`。
+
+semantic/hybrid 调用模型前检查授权范围内已发布构建的模型标识与维度，召回 SQL 也限定相同配置。
+不兼容返回既有 `MODEL_UNAVAILABLE`（503），不冒充 no_evidence，不自动降级；显式 keyword 仍可使用。
+写入前通过事务级配置锁检查现有 chunks 所属构建，禁止不同模型/维度共用当前物理向量索引，
+包括 retained 的旧构建；更换模型须离线迁移索引，不支持原索引内渐进混写。
 
 ### 6.2 问答
 
@@ -372,6 +385,10 @@ RETURNING *;
 | 密钥 | 仅经环境变量注入，不入库、不入日志、不入测试资料 |
 
 接入真实资料前补齐审计表、保留期策略与配额限流，见 §10.2。
+
+任务错误使用固定错误码/说明白名单，历史 last_error 在输出时再次脱敏；日志不序列化异常正文或堆栈参数。
+解析在可终止子进程执行，使用 psutil 采样 CPU/RSS 并超限终止，同时限制运行时间、返回大小及 DOCX 条目数/解压量。
+采样式限制允许采样间隔内短暂超额，不等同于操作系统硬内存隔离；部署硬配额仍由容器或宿主负责。
 
 ---
 

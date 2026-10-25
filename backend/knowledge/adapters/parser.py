@@ -3,9 +3,12 @@
 from __future__ import annotations
 
 import io
+import zipfile
 
+from knowledge.config import Settings
 from knowledge.domain.entities import Locator, ParsedBlock
-from knowledge.domain.errors import PasswordProtected, UnsupportedFormat
+from knowledge.domain.errors import ParseFailed, PasswordProtected, UnsupportedFormat
+from knowledge.domain.ports import Parser
 
 TEXT_PLAIN = "text/plain"
 TEXT_MARKDOWN = "text/markdown"
@@ -137,12 +140,23 @@ class PdfParser:
 class DocxParser:
     name = "docx"
 
+    def __init__(self, max_entries: int = 2048, max_uncompressed_bytes: int = 100 * 1024 * 1024):
+        self.max_entries = max_entries
+        self.max_uncompressed_bytes = max_uncompressed_bytes
+
     def supports(self, media_type: str, filename: str) -> bool:
         return media_type == DOCX
 
     def parse(self, data: bytes, media_type: str, filename: str) -> list[ParsedBlock]:
         import docx
 
+        with zipfile.ZipFile(io.BytesIO(data)) as archive:
+            entries = archive.infolist()
+            if (
+                len(entries) > self.max_entries
+                or sum(entry.file_size for entry in entries) > self.max_uncompressed_bytes
+            ):
+                raise ParseFailed("DOCX 解压资源超限")
         document = docx.Document(io.BytesIO(data))
         blocks: list[ParsedBlock] = []
         for index, paragraph in enumerate(document.paragraphs):
@@ -195,5 +209,13 @@ class ParserRegistry:
         raise UnsupportedFormat(f"暂不支持该格式：{media_type}")
 
 
-def build_parser_registry() -> ParserRegistry:
-    return ParserRegistry([TextParser(), PdfParser(), DocxParser()])
+def build_parser_registry(settings: Settings | None = None) -> ParserRegistry:
+    from knowledge.adapters.parse_process import BoundedParser
+
+    resolved = settings or Settings.model_construct()
+    parsers: list[Parser] = [
+        TextParser(),
+        PdfParser(),
+        DocxParser(resolved.docx_max_entries, resolved.docx_max_uncompressed_bytes),
+    ]
+    return ParserRegistry([BoundedParser(parser, resolved) for parser in parsers])

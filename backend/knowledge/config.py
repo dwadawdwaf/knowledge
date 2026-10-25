@@ -30,6 +30,12 @@ class Settings(BaseSettings):
     generator_timeout_seconds: float = 60.0
 
     max_upload_bytes: int = 50 * 1024 * 1024
+    parse_timeout_seconds: float = 60.0
+    parse_cpu_seconds: float = 30.0
+    parse_memory_bytes: int = 512 * 1024 * 1024
+    parse_output_bytes: int = 16 * 1024 * 1024
+    docx_max_entries: int = 2048
+    docx_max_uncompressed_bytes: int = 100 * 1024 * 1024
     query_max_chars: int = 2000
     top_k_default: int = 5
     top_k_max: int = 20

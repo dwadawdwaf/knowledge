@@ -7,6 +7,7 @@ from datetime import datetime
 
 from pgvector.sqlalchemy import Vector
 from sqlalchemy import (
+    CheckConstraint,
     DateTime,
     ForeignKey,
     Index,
@@ -56,7 +57,9 @@ class KnowledgeBase(Base):
     id: Mapped[uuid.UUID] = _uuid_pk()
     owner_id: Mapped[str] = mapped_column(String(64), nullable=False)
     name: Mapped[str] = mapped_column(String(200), nullable=False)
-    status: Mapped[Lifecycle] = mapped_column(_enum(Lifecycle, "kb_status"), default=Lifecycle.ACTIVE)
+    status: Mapped[Lifecycle] = mapped_column(
+        _enum(Lifecycle, "kb_status"), default=Lifecycle.ACTIVE
+    )
     created_at: Mapped[datetime] = _created_at()
 
     __table_args__ = (Index("ix_kb_owner_status", "owner_id", "status"),)
@@ -70,7 +73,9 @@ class Document(Base):
         UUID(as_uuid=True), ForeignKey("knowledge_bases.id", ondelete="CASCADE"), nullable=False
     )
     title: Mapped[str] = mapped_column(String(300), nullable=False)
-    status: Mapped[Lifecycle] = mapped_column(_enum(Lifecycle, "doc_status"), default=Lifecycle.ACTIVE)
+    status: Mapped[Lifecycle] = mapped_column(
+        _enum(Lifecycle, "doc_status"), default=Lifecycle.ACTIVE
+    )
     current_version_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), nullable=True)
     active_build_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), nullable=True)
     pending_build_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), nullable=True)
@@ -111,7 +116,9 @@ class IndexBuild(Base):
     version_id: Mapped[uuid.UUID] = mapped_column(
         UUID(as_uuid=True), ForeignKey("document_versions.id", ondelete="CASCADE"), nullable=False
     )
-    state: Mapped[BuildState] = mapped_column(_enum(BuildState, "build_state"), default=BuildState.QUEUED)
+    state: Mapped[BuildState] = mapped_column(
+        _enum(BuildState, "build_state"), default=BuildState.QUEUED
+    )
     chunk_config: Mapped[dict] = mapped_column(JSONB, default=dict)
     embedding_model: Mapped[str] = mapped_column(String(120), nullable=False, default="")
     embedding_dim: Mapped[int] = mapped_column(Integer, nullable=False, default=EMBEDDING_DIM)
@@ -136,7 +143,12 @@ class Chunk(Base):
 
     __table_args__ = (
         UniqueConstraint("build_id", "ordinal", name="uq_chunk_ordinal"),
-        Index("ix_chunks_tsv_trgm", "tsv", postgresql_using="gin", postgresql_ops={"tsv": "gin_trgm_ops"}),
+        Index(
+            "ix_chunks_tsv_trgm",
+            "tsv",
+            postgresql_using="gin",
+            postgresql_ops={"tsv": "gin_trgm_ops"},
+        ),
         Index(
             "ix_chunks_embedding_hnsw",
             "embedding",
@@ -152,6 +164,8 @@ class Job(Base):
     id: Mapped[uuid.UUID] = _uuid_pk()
     kind: Mapped[JobKind] = mapped_column(_enum(JobKind, "job_kind"), nullable=False)
     resource_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), nullable=False)
+    build_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), nullable=True)
+    generation: Mapped[int | None] = mapped_column(Integer, nullable=True)
     state: Mapped[JobState] = mapped_column(_enum(JobState, "job_state"), default=JobState.QUEUED)
     stage: Mapped[str | None] = mapped_column(String(32), nullable=True)
     attempt: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
@@ -160,12 +174,19 @@ class Job(Base):
         DateTime(timezone=True), server_default=func.now(), nullable=False
     )
     lease_token: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), nullable=True)
-    lease_expires_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    lease_expires_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
     heartbeat_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     last_error: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
     created_at: Mapped[datetime] = _created_at()
 
     __table_args__ = (
+        CheckConstraint(
+            "kind = 'cleanup' OR state NOT IN ('queued','running') "
+            "OR (build_id IS NOT NULL AND generation IS NOT NULL)",
+            name="ck_job_target",
+        ),
         Index("ix_jobs_state_available", "state", "available_at"),
         Index("ix_jobs_lease", "lease_expires_at"),
     )

@@ -43,6 +43,11 @@ class PasswordProtected(DomainError):
     http_status = 422
 
 
+class ParseFailed(DomainError):
+    code = "PARSE_FAILED"
+    http_status = 422
+
+
 class FileTooLarge(DomainError):
     code = "FILE_TOO_LARGE"
     http_status = 413
@@ -92,3 +97,30 @@ class TransientError(DomainError):
 class NotImplementedYet(DomainError):
     code = "NOT_IMPLEMENTED"
     http_status = 501
+
+
+_JOB_MESSAGES = {
+    "INTERNAL_ERROR": "任务处理失败",
+    "UNSUPPORTED_FORMAT": "文件格式不受支持",
+    "PASSWORD_PROTECTED": "文件已加密",
+    "EMPTY_CONTENT": "未提取到正文",
+    "PARSE_FAILED": "文件解析失败",
+    "MODEL_UNAVAILABLE": "模型服务不可用",
+    "MODEL_TIMEOUT": "模型服务超时",
+    "STALE_JOB": "任务执行资格已失效",
+    "UNKNOWN_KIND": "任务类型不受支持",
+}
+
+
+def public_job_error(error: dict | None) -> dict | None:
+    """Only allow fixed messages, including when reading legacy persisted errors."""
+    if error is None:
+        return None
+    code = error.get("code")
+    if not isinstance(code, str) or code not in _JOB_MESSAGES:
+        code = "INTERNAL_ERROR"
+    return {
+        "code": code,
+        "message": _JOB_MESSAGES[code],
+        "retryable": error.get("retryable") is True,
+    }

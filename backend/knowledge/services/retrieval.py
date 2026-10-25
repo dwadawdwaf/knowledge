@@ -53,6 +53,7 @@ def search(
 
     vector = None
     if mode in ("semantic", "hybrid"):
+        chunk_repo.assert_compatible(session, actor, kb_ids, embedder.model, embedder.dimension)
         vector = embedder.embed([text])[0]
 
     return chunk_repo.search(
@@ -67,4 +68,6 @@ def search(
         rrf_k=settings.rrf_k,
         similarity_floor=settings.similarity_floor,
         max_distance=settings.semantic_max_distance,
+        embedding_model=embedder.model,
+        embedding_dim=embedder.dimension,
     )

@@ -15,7 +15,7 @@ from knowledge.adapters.parser import build_parser_registry
 from knowledge.adapters.storage import LocalStorage
 from knowledge.config import Settings, get_settings
 from knowledge.domain.entities import JobKind, JobState
-from knowledge.domain.errors import DomainError, TransientError
+from knowledge.domain.errors import DomainError, StaleJob, TransientError, public_job_error
 from knowledge.domain.ports import Embedder, ObjectStorage
 from knowledge.logging import get_logger
 from knowledge.repositories import jobs as job_repo
@@ -41,7 +41,7 @@ def build_deps(settings: Settings | None = None) -> WorkerDeps:
     return WorkerDeps(
         settings=resolved,
         storage=LocalStorage(resolved.storage_root),
-        registry=build_parser_registry(),
+        registry=build_parser_registry(resolved),
         embedder=build_embedder(resolved),
     )
 
@@ -100,7 +100,9 @@ def process_next(session: Session, deps: WorkerDeps) -> bool:
 
     started = time.monotonic()
     try:
-        with _Heartbeat(job_id, token, deps.settings.heartbeat_seconds, deps.settings.lease_seconds):
+        with _Heartbeat(
+            job_id, token, deps.settings.heartbeat_seconds, deps.settings.lease_seconds
+        ):
             if kind == JobKind.INGEST.value or kind == JobKind.REINDEX.value:
                 ingest.run(
                     session,
@@ -129,15 +131,22 @@ def process_next(session: Session, deps: WorkerDeps) -> bool:
                     None,
                     {"code": "UNKNOWN_KIND", "message": kind, "retryable": False},
                 )
+    except StaleJob:
+        session.rollback()
+        job_repo.finish(session, job_id, token, JobState.CANCELLED, "cancelled")
     except DomainError as exc:
         _handle_failure(session, job_id, token, resource_id, attempt, max_attempts, exc)
-    except Exception as exc:  # noqa: BLE001 — 未预期异常按可重试处理，交给失败归因
-        wrapped = TransientError(f"{type(exc).__name__}: {exc}")
+    except Exception:  # noqa: BLE001 — 原始异常可能含 SQL 参数和正文，不向外传播
+        wrapped = TransientError("任务处理失败")
         _handle_failure(session, job_id, token, resource_id, attempt, max_attempts, wrapped)
 
     log.info(
         "job_finished",
-        extra={"job_id": str(job_id), "kind": kind, "duration_ms": round((time.monotonic() - started) * 1000, 1)},
+        extra={
+            "job_id": str(job_id),
+            "kind": kind,
+            "duration_ms": round((time.monotonic() - started) * 1000, 1),
+        },
     )
     return True
 
@@ -152,7 +161,8 @@ def _handle_failure(
     exc: DomainError,
 ) -> None:
     session.rollback()
-    error = {"code": exc.code, "message": exc.message, "retryable": exc.retryable}
+    error = public_job_error({"code": exc.code, "retryable": exc.retryable})
+    assert error is not None
     retryable = exc.retryable and exc.code not in NON_RETRYABLE
 
     if retryable and attempt < max_attempts:
@@ -191,9 +201,7 @@ def run_forever(settings: Settings | None = None) -> None:
         recovered = job_repo.recover_expired(session)
         if recovered:
             log.warning("lease_recovered", extra={"count": recovered})
-        reclaimed = cleanup.reclaim_orphans(
-            session, deps.storage, resolved.orphan_max_age_seconds
-        )
+        reclaimed = cleanup.reclaim_orphans(session, deps.storage, resolved.orphan_max_age_seconds)
         if reclaimed:
             log.info("orphans_reclaimed", extra={"count": reclaimed})
     finally:
@@ -202,6 +210,9 @@ def run_forever(settings: Settings | None = None) -> None:
     while True:
         session = new_session()
         try:
+            recovered = job_repo.recover_expired(session)
+            if recovered:
+                log.warning("lease_recovered", extra={"count": recovered})
             worked = process_next(session, deps)
         finally:
             session.close()

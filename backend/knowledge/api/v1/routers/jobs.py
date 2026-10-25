@@ -10,6 +10,7 @@ from sqlalchemy.orm import Session
 from knowledge.api.deps import get_actor, get_session, request_id
 from knowledge.api.v1.schemas.common import Envelope, envelope
 from knowledge.domain.entities import Actor
+from knowledge.domain.errors import public_job_error
 from knowledge.repositories import jobs as job_repo
 
 router = APIRouter(tags=["jobs"])
@@ -32,7 +33,7 @@ def get_job(
             "attempt": job.attempt,
             "max_attempts": job.max_attempts,
             "progress": {"stage": job.stage, "processed_items": None, "total_items": None},
-            "last_error": job.last_error,
+            "last_error": public_job_error(job.last_error),
             "created_at": job.created_at.isoformat() if job.created_at else None,
         },
         request_id(request),

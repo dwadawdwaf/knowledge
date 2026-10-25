@@ -11,7 +11,13 @@ from sqlalchemy.orm import Session
 from knowledge.adapters.storage import new_object_key
 from knowledge.config import Settings
 from knowledge.domain.entities import Actor, BuildState, JobKind, Lifecycle
-from knowledge.domain.errors import FileTooLarge, NotFound, UnsupportedFormat, VersionConflict
+from knowledge.domain.errors import (
+    FileTooLarge,
+    NotFound,
+    UnsupportedFormat,
+    VersionConflict,
+    public_job_error,
+)
 from knowledge.domain.ports import ObjectStorage
 from knowledge.repositories import documents as doc_repo
 from knowledge.repositories import jobs as job_repo
@@ -111,7 +117,14 @@ def upload(
         byte_size=len(data),
     )
     build = _new_build(session, version.id, settings, embedder_model, embedder_dim)
-    job = job_repo.create(session, JobKind.INGEST, document.id, settings.max_attempts)
+    job = job_repo.create(
+        session,
+        JobKind.INGEST,
+        document.id,
+        settings.max_attempts,
+        build_id=build.id,
+        generation=document.generation + 1,
+    )
 
     document.generation += 1
     document.pending_build_id = build.id
@@ -170,7 +183,14 @@ def add_version(
         byte_size=len(data),
     )
     build = _new_build(session, version.id, settings, embedder_model, embedder_dim)
-    job = job_repo.create(session, JobKind.INGEST, document.id, settings.max_attempts)
+    job = job_repo.create(
+        session,
+        JobKind.INGEST,
+        document.id,
+        settings.max_attempts,
+        build_id=build.id,
+        generation=document.generation + 1,
+    )
 
     document.generation += 1
     document.pending_build_id = build.id
@@ -203,7 +223,9 @@ def detail(session: Session, actor: Actor, document_id: uuid.UUID) -> dict:
         "title": document.title,
         "status": document.status.value,
         "generation": document.generation,
-        "current_version_id": str(document.current_version_id) if document.current_version_id else None,
+        "current_version_id": str(document.current_version_id)
+        if document.current_version_id
+        else None,
         "active_build_id": str(document.active_build_id) if document.active_build_id else None,
         "pending_build_id": str(document.pending_build_id) if document.pending_build_id else None,
         "version_no": version.version_no if version else None,
@@ -239,6 +261,6 @@ def _job_dict(job) -> dict:
         "stage": job.stage,
         "attempt": job.attempt,
         "max_attempts": job.max_attempts,
-        "last_error": job.last_error,
+        "last_error": public_job_error(job.last_error),
         "created_at": job.created_at.isoformat() if job.created_at else None,
     }

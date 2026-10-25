@@ -11,7 +11,7 @@ from sqlalchemy.engine import CursorResult
 from sqlalchemy.orm import Session
 
 from knowledge.domain.entities import Actor, Lifecycle, SearchHit
-from knowledge.domain.errors import NotFound
+from knowledge.domain.errors import ModelUnavailable, NotFound
 from knowledge.repositories.tables import (
     Chunk,
     Document,
@@ -24,6 +24,7 @@ from knowledge.repositories.tables import (
 def _affected(result: Result[Any]) -> int:
     # text() 删除在运行期返回 CursorResult；Result 类型上没有 rowcount
     return cast(CursorResult[Any], result).rowcount
+
 
 _FILTERS = """
         kb.owner_id = :owner
@@ -56,6 +57,7 @@ _SEM_CTE = f"""
         JOIN documents d ON d.active_build_id = c.build_id
         JOIN knowledge_bases kb ON kb.id = d.kb_id
         WHERE {_FILTERS}
+          AND b.embedding_model = :model AND b.embedding_dim = :dimension
           AND c.embedding <=> CAST(:vec AS vector) < :max_distance
         LIMIT :recall
     )
@@ -77,9 +79,7 @@ def _build_sql(mode: str) -> str:
         joins = "LEFT JOIN kw ON kw.id = c.id LEFT JOIN sem ON sem.id = c.id"
         # 两路都没命中的分块必须排除，否则 LEFT JOIN 会把全表带出来
         where = "WHERE kw.id IS NOT NULL OR sem.id IS NOT NULL"
-        score = (
-            "COALESCE(1.0 / (:k + kw.rnk), 0) + COALESCE(1.0 / (:k + sem.rnk), 0)"
-        )
+        score = "COALESCE(1.0 / (:k + kw.rnk), 0) + COALESCE(1.0 / (:k + sem.rnk), 0)"
 
     return f"""
     {ctes}
@@ -108,6 +108,8 @@ def search(
     rrf_k: int,
     similarity_floor: float,
     max_distance: float,
+    embedding_model: str | None = None,
+    embedding_dim: int | None = None,
 ) -> list[SearchHit]:
     if mode in ("semantic", "hybrid") and vector is None:
         raise ValueError("该模式需要查询向量")
@@ -122,11 +124,15 @@ def search(
         "top_k": top_k,
         "k": rrf_k,
         "max_distance": max_distance,
+        "model": embedding_model,
+        "dimension": embedding_dim,
     }
     if vector is not None:
         params["vec"] = "[" + ",".join(f"{value:.6f}" for value in vector) + "]"
 
     rows = session.execute(statement, params).mappings().all()
+    if mode in ("semantic", "hybrid"):
+        assert_compatible(session, actor, kb_ids, embedding_model, embedding_dim)
     return [
         SearchHit(
             document_id=str(row["document_id"]),
@@ -141,6 +147,31 @@ def search(
         )
         for row in rows
     ]
+
+
+def assert_compatible(
+    session: Session,
+    actor: Actor,
+    kb_ids: Sequence[uuid.UUID],
+    model: str | None,
+    dimension: int | None,
+) -> None:
+    incompatible = session.scalar(
+        select(IndexBuild.id)
+        .join(Document, Document.active_build_id == IndexBuild.id)
+        .join(KnowledgeBase, KnowledgeBase.id == Document.kb_id)
+        .where(
+            KnowledgeBase.owner_id == actor.subject_id,
+            KnowledgeBase.status == Lifecycle.ACTIVE,
+            Document.status == Lifecycle.ACTIVE,
+            Document.kb_id.in_(kb_ids),
+            IndexBuild.state == "ready",
+            (IndexBuild.embedding_model != model) | (IndexBuild.embedding_dim != dimension),
+        )
+        .limit(1)
+    )
+    if incompatible is not None:
+        raise ModelUnavailable("索引与查询向量配置不兼容，请恢复原配置或重建索引")
 
 
 def insert_many(

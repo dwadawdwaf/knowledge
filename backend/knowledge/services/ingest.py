@@ -8,19 +8,18 @@ from __future__ import annotations
 import time
 import uuid
 
-from sqlalchemy import text
 from sqlalchemy.orm import Session
 
 from knowledge.config import Settings
 from knowledge.domain.chunking import chunk_blocks
-from knowledge.domain.entities import JobState, Lifecycle
-from knowledge.domain.errors import DomainError, ModelUnavailable
+from knowledge.domain.entities import BuildState, JobState
+from knowledge.domain.errors import DomainError, ModelUnavailable, ParseFailed, StaleJob
 from knowledge.domain.ports import Embedder, ObjectStorage
 from knowledge.logging import get_logger
+from knowledge.repositories import builds as build_repo
 from knowledge.repositories import chunks as chunk_repo
-from knowledge.repositories import documents as doc_repo
 from knowledge.repositories import jobs as job_repo
-from knowledge.repositories.tables import EMBEDDING_DIM, Document, IndexBuild
+from knowledge.repositories.tables import EMBEDDING_DIM
 
 log = get_logger("ingest")
 
@@ -28,24 +27,6 @@ log = get_logger("ingest")
 class EmptyContent(DomainError):
     code = "EMPTY_CONTENT"
     http_status = 422
-
-
-class ParseFailed(DomainError):
-    code = "PARSE_FAILED"
-    http_status = 422
-
-
-def _holds_lease(session: Session, job_id: uuid.UUID, token: uuid.UUID) -> bool:
-    row = session.execute(
-        text("SELECT 1 FROM jobs WHERE id = :id AND lease_token = :token AND state = 'running'"),
-        {"id": job_id, "token": token},
-    ).first()
-    return row is not None
-
-
-def _ensure_lease(session: Session, job_id: uuid.UUID, token: uuid.UUID) -> None:
-    if not _holds_lease(session, job_id, token):
-        raise DomainError("租约已失效")
 
 
 def run(
@@ -59,22 +40,22 @@ def run(
     registry,
     embedder: Embedder,
 ) -> None:
-    document = session.get(Document, document_id)
-    if document is None or document.status != Lifecycle.ACTIVE:
+    try:
+        document, _job, build, version = build_repo.lock_execution(session, job_id, lease_token)
+    except StaleJob:
+        session.rollback()
         job_repo.finish(session, job_id, lease_token, JobState.CANCELLED, "cancelled")
         return
-
-    if document.pending_build_id is None:
-        job_repo.finish(session, job_id, lease_token, JobState.CANCELLED, "cancelled")
-        return
-
-    build = session.get(IndexBuild, document.pending_build_id)
-    if build is None:
-        job_repo.finish(session, job_id, lease_token, JobState.CANCELLED, "cancelled")
-        return
-
+    if document.id != document_id:
+        raise StaleJob("任务目标不匹配")
+    if build.embedding_model != embedder.model or build.embedding_dim != embedder.dimension:
+        raise ModelUnavailable("构建向量配置已变化，请按原配置处理或重建")
     generation = document.generation
-    version = doc_repo.get_version(session, build.version_id)
+    build_id, version_id, title = build.id, version.id, document.title
+    object_key, media_type = version.object_key, version.media_type
+    chunk_config = dict(build.chunk_config)
+    build.state = BuildState.RUNNING
+    session.commit()
 
     stage_marks: list[tuple[str, float]] = []
 
@@ -87,7 +68,7 @@ def run(
                 "stage_done",
                 extra={
                     "job_id": str(job_id),
-                    "build_id": str(build.id),
+                    "build_id": str(build_id),
                     "stage": name,
                     "duration_ms": round((now - started_at) * 1000, 1),
                 },
@@ -98,11 +79,9 @@ def run(
     if not job_repo.set_stage(session, job_id, lease_token, "parsing"):
         raise DomainError("租约已失效")
     _enter_stage("parsing")
-    data = storage.get(version.object_key)
+    data = storage.get(object_key)
     try:
-        blocks = registry.for_file(version.media_type, document.title).parse(
-            data, version.media_type, document.title
-        )
+        blocks = registry.for_file(media_type, title).parse(data, media_type, title)
     except DomainError:
         raise
     except Exception as exc:  # 解析器内部异常统一归为失败
@@ -115,7 +94,7 @@ def run(
     if not job_repo.set_stage(session, job_id, lease_token, "chunking"):
         raise DomainError("租约已失效")
     _enter_stage("chunking")
-    pieces = chunk_blocks(blocks, settings.chunk_max_chars, settings.chunk_overlap_chars)
+    pieces = chunk_blocks(blocks, chunk_config["max_chars"], chunk_config["overlap_chars"])
     if not pieces:
         raise EmptyContent("分段结果为空")
 
@@ -128,16 +107,16 @@ def run(
         raise ModelUnavailable("向量数量与分块数量不一致")
     for vector in vectors:
         if len(vector) != EMBEDDING_DIM:
-            raise ModelUnavailable(
-                f"向量维度不符：期望 {EMBEDDING_DIM}，实际 {len(vector)}"
-            )
+            raise ModelUnavailable(f"向量维度不符：期望 {EMBEDDING_DIM}，实际 {len(vector)}")
 
-    # 4) 写分块（先清理本次构建的残留，保证重试幂等）
-    _ensure_lease(session, job_id, lease_token)
-    session.execute(text("DELETE FROM chunks WHERE build_id = :build"), {"build": build.id})
+    # 写入与发布共用短事务；重试使用新 build，不删除任何已有分块。
+    _, _, locked_build, _ = build_repo.lock_execution(session, job_id, lease_token)
+    if locked_build.id != build_id:
+        raise StaleJob("任务构建已变化")
+    build_repo.guard_vector_index(session, job_id, lease_token)
     chunk_repo.insert_many(
         session,
-        build.id,
+        build_id,
         [
             {
                 "ordinal": piece.ordinal,
@@ -149,9 +128,6 @@ def run(
             for piece, vector in zip(pieces, vectors)
         ],
     )
-    build.embedding_model = embedder.model
-    build.embedding_dim = EMBEDDING_DIM
-    session.commit()
     _enter_stage("publishing")
 
     # 5) 原子发布
@@ -159,9 +135,9 @@ def run(
         session,
         job_id=job_id,
         lease_token=lease_token,
-        document_id=document.id,
-        build_id=build.id,
-        version_id=version.id,
+        document_id=document_id,
+        build_id=build_id,
+        version_id=version_id,
         generation=generation,
     )
     _enter_stage("done")
@@ -170,15 +146,19 @@ def run(
             "build_published",
             extra={
                 "job_id": str(job_id),
-                "build_id": str(build.id),
-                "document_id": str(document.id),
+                "build_id": str(build_id),
+                "document_id": str(document_id),
                 "chunk_count": len(pieces),
             },
         )
     else:
         log.warning(
             "build_publish_rejected",
-            extra={"job_id": str(job_id), "build_id": str(build.id), "document_id": str(document.id)},
+            extra={
+                "job_id": str(job_id),
+                "build_id": str(build_id),
+                "document_id": str(document_id),
+            },
         )
 
 
@@ -192,52 +172,18 @@ def publish(
     version_id: uuid.UUID,
     generation: int,
 ) -> bool:
-    row = session.execute(
-        text(
-            "SELECT generation, pending_build_id, active_build_id, status"
-            " FROM documents WHERE id = :id FOR UPDATE"
-        ),
-        {"id": document_id},
-    ).mappings().first()
-
-    if row is None:
-        job_repo.finish(session, job_id, lease_token, JobState.CANCELLED, "cancelled")
-        return False
-
-    if (
-        row["status"] != Lifecycle.ACTIVE.value
-        or row["pending_build_id"] != build_id
-        or row["generation"] != generation
-        or not _holds_lease(session, job_id, lease_token)
-    ):
-        session.rollback()
-        job_repo.finish(session, job_id, lease_token, JobState.CANCELLED, "cancelled")
-        return False
-
-    session.execute(
-        text(
-            "UPDATE documents SET current_version_id = :version, active_build_id = :build,"
-            " pending_build_id = NULL, updated_at = now() WHERE id = :id"
-        ),
-        {"version": version_id, "build": build_id, "id": document_id},
-    )
-    session.execute(
-        text("UPDATE index_builds SET state = 'ready' WHERE id = :build"), {"build": build_id}
-    )
-    if row["active_build_id"] is not None:
-        session.execute(
-            text("UPDATE index_builds SET state = 'retired' WHERE id = :old AND state = 'ready'"),
-            {"old": row["active_build_id"]},
+    try:
+        build_repo.publish(
+            session,
+            job_id=job_id,
+            token=lease_token,
+            document_id=document_id,
+            build_id=build_id,
+            version_id=version_id,
+            generation=generation,
         )
-
-    session.commit()
-    job_repo.finish(session, job_id, lease_token, JobState.SUCCEEDED, "publishing")
+        session.commit()
+    except Exception:
+        session.rollback()
+        raise
     return True
-
-
-def mark_build_failed(session: Session, document_id: uuid.UUID, build_id: uuid.UUID) -> None:
-    session.execute(
-        text("UPDATE index_builds SET state = 'failed' WHERE id = :build AND state <> 'ready'"),
-        {"build": build_id},
-    )
-    session.commit()

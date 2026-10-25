@@ -1,5 +1,9 @@
 from __future__ import annotations
 
+import base64
+import hashlib
+import hmac
+import json
 import time
 
 import pytest
@@ -40,3 +44,30 @@ def test_wrong_secret_rejected(settings):
 def test_malformed_rejected(settings):
     with pytest.raises(AuthenticationFailed):
         verify_token("not-a-token", settings)
+
+
+@pytest.mark.parametrize("token", ["a.x", "中.x", "e30.中", ".", "a.b.c", "!.x"])
+def test_malformed_encoding_rejected(settings, token):
+    with pytest.raises(AuthenticationFailed):
+        verify_token(token, settings)
+
+
+@pytest.mark.parametrize(
+    "claims",
+    [
+        [],
+        None,
+        "text",
+        {"sub": "user-a", "exp": "invalid"},
+        {"sub": "user-a", "exp": True},
+        {"sub": [], "exp": 4102444800},
+        {"sub": "user-a", "exp": 4102444800, "tid": []},
+        {"sub": "user-a", "exp": 4102444800, "jti": {}},
+    ],
+)
+def test_signed_invalid_claims_rejected(settings, claims):
+    payload = json.dumps(claims).encode()
+    encode = lambda value: base64.urlsafe_b64encode(value).decode().rstrip("=")
+    signature = hmac.new(settings.token_secret.encode(), payload, hashlib.sha256).digest()
+    with pytest.raises(AuthenticationFailed):
+        verify_token(f"{encode(payload)}.{encode(signature)}", settings)

@@ -2,27 +2,24 @@
 
 from __future__ import annotations
 
-import json
 import uuid
+from datetime import timedelta
 from typing import Any, cast
 
-from sqlalchemy import Result, select, text
+from sqlalchemy import Result, func, select, text
 from sqlalchemy.engine import CursorResult
 from sqlalchemy.orm import Session
 
-from knowledge.domain.entities import Actor, JobKind, JobState, Lifecycle
-from knowledge.domain.errors import NotFound
-from knowledge.repositories.tables import Document, Job, KnowledgeBase
+from knowledge.domain.entities import Actor, BuildState, JobKind, JobState, Lifecycle
+from knowledge.domain.errors import NotFound, public_job_error
+from knowledge.repositories import builds as build_repo
+from knowledge.repositories.tables import Document, IndexBuild, Job, KnowledgeBase
 
 
 def _affected(result: Result[Any]) -> int:
     # text() 更新在运行期返回 CursorResult；Result 类型上没有 rowcount
     return cast(CursorResult[Any], result).rowcount
 
-
-def _error_param(error: dict | None) -> str | None:
-    # text() SQL 里经 CAST(:error AS jsonb) 写入，须传 JSON 字符串
-    return json.dumps(error, ensure_ascii=False) if error else None
 
 _CLAIM = text(
     """
@@ -34,7 +31,7 @@ _CLAIM = text(
            stage = NULL
     WHERE id = (
         SELECT id FROM jobs
-        WHERE state = 'queued' AND available_at <= now()
+        WHERE state = 'queued' AND available_at <= now() AND attempt < max_attempts
         ORDER BY available_at
         LIMIT 1
         FOR UPDATE SKIP LOCKED
@@ -49,36 +46,28 @@ _HEARTBEAT = text(
     UPDATE jobs SET heartbeat_at = now(),
            lease_expires_at = now() + make_interval(secs => :lease)
     WHERE id = :job_id AND lease_token = :token AND state = 'running'
-    """
-)
-
-_FINISH = text(
-    """
-    UPDATE jobs SET state = :state, stage = :stage, last_error = CAST(:error AS jsonb),
-           lease_token = NULL, lease_expires_at = NULL
-    WHERE id = :job_id AND lease_token = :token
-    """
-)
-
-_SHELVE = text(
-    """
-    UPDATE jobs SET state = 'queued', stage = NULL, last_error = CAST(:error AS jsonb),
-           available_at = now() + make_interval(secs => :delay),
-           lease_token = NULL, lease_expires_at = NULL
-    WHERE id = :job_id AND lease_token = :token
-    """
-)
-
-_RECOVER = text(
-    """
-    UPDATE jobs SET state = 'queued', lease_token = NULL, lease_expires_at = NULL, stage = NULL
-    WHERE state = 'running' AND lease_expires_at < now()
+      AND lease_expires_at > clock_timestamp()
     """
 )
 
 
-def create(session: Session, kind: JobKind, resource_id: uuid.UUID, max_attempts: int = 3) -> Job:
-    job = Job(kind=kind, resource_id=resource_id, state=JobState.QUEUED, max_attempts=max_attempts)
+def create(
+    session: Session,
+    kind: JobKind,
+    resource_id: uuid.UUID,
+    max_attempts: int = 3,
+    *,
+    build_id: uuid.UUID | None = None,
+    generation: int | None = None,
+) -> Job:
+    job = Job(
+        kind=kind,
+        resource_id=resource_id,
+        state=JobState.QUEUED,
+        max_attempts=max_attempts,
+        build_id=build_id,
+        generation=generation,
+    )
     session.add(job)
     session.flush()
     return job
@@ -104,40 +93,98 @@ def finish(
     stage: str | None = None,
     error: dict | None = None,
 ) -> bool:
-    result = session.execute(
-        _FINISH,
-        {
-            "job_id": job_id,
-            "token": token,
-            "state": state.value,
-            "stage": stage,
-            "error": _error_param(error),
-        },
-    )
+    _, job = build_repo.lock_job(session, job_id)
+    now = session.execute(select(func.clock_timestamp())).scalar_one()
+    if (
+        job is None
+        or job.lease_token != token
+        or job.state != JobState.RUNNING
+        or job.lease_expires_at is None
+        or job.lease_expires_at <= now
+    ):
+        session.rollback()
+        return False
+    _terminal_build(session, job, state)
+    job.state, job.stage, job.last_error = state, stage, public_job_error(error)
+    job.lease_token = None
+    job.lease_expires_at = None
     session.commit()
-    return _affected(result) > 0
+    return True
 
 
 def shelve(
     session: Session, job_id: uuid.UUID, token: uuid.UUID, error: dict, delay_seconds: int
 ) -> bool:
-    result = session.execute(
-        _SHELVE,
-        {
-            "job_id": job_id,
-            "token": token,
-            "error": _error_param(error),
-            "delay": delay_seconds,
-        },
-    )
+    document, job = build_repo.lock_job(session, job_id)
+    now = session.execute(select(func.clock_timestamp())).scalar_one()
+    if (
+        job is None
+        or job.lease_token != token
+        or job.state != JobState.RUNNING
+        or job.lease_expires_at is None
+        or job.lease_expires_at <= now
+    ):
+        session.rollback()
+        return False
+    _requeue(session, document, job, error, delay_seconds)
     session.commit()
-    return _affected(result) > 0
+    return True
 
 
 def recover_expired(session: Session) -> int:
-    result = session.execute(_RECOVER)
+    ids = list(
+        session.scalars(
+            select(Job.id).where(
+                Job.state == JobState.RUNNING, Job.lease_expires_at <= func.clock_timestamp()
+            )
+        )
+    )
+    count = 0
+    for job_id in ids:
+        document, job = build_repo.lock_job(session, job_id)
+        now = session.execute(select(func.clock_timestamp())).scalar_one()
+        if (
+            job is not None
+            and job.state == JobState.RUNNING
+            and job.lease_expires_at is not None
+            and job.lease_expires_at <= now
+        ):
+            _requeue(session, document, job, {"code": "STALE_JOB", "retryable": True}, 0)
+            count += 1
+        session.commit()
     session.commit()
-    return _affected(result)
+    return count
+
+
+def _terminal_build(session: Session, job: Job, state: JobState) -> None:
+    if job.build_id is None or state not in (JobState.FAILED, JobState.CANCELLED):
+        return
+    build = session.get(IndexBuild, job.build_id)
+    if build is not None and build.state in (BuildState.QUEUED, BuildState.RUNNING):
+        build.state = BuildState.FAILED if state == JobState.FAILED else BuildState.CANCELLED
+
+
+def _requeue(
+    session: Session, document: Document | None, job: Job, error: dict, delay_seconds: int
+) -> None:
+    state = JobState.QUEUED
+    if job.kind != JobKind.CLEANUP and not build_repo.target_matches(document, job):
+        state = JobState.CANCELLED
+    elif job.attempt >= job.max_attempts:
+        state = JobState.FAILED
+    elif job.kind != JobKind.CLEANUP:
+        assert document is not None
+        if not build_repo.retry_build(session, document, job):
+            state = JobState.CANCELLED
+    _terminal_build(session, job, state)
+    job.state = state
+    job.stage = None
+    job.last_error = public_job_error(error)
+    job.lease_token = None
+    job.lease_expires_at = None
+    job.available_at = session.execute(select(func.clock_timestamp())).scalar_one() + timedelta(
+        seconds=delay_seconds
+    )
 
 
 def set_stage(session: Session, job_id: uuid.UUID, token: uuid.UUID, stage: str) -> bool:
@@ -145,6 +192,7 @@ def set_stage(session: Session, job_id: uuid.UUID, token: uuid.UUID, stage: str)
         text(
             "UPDATE jobs SET stage = :stage WHERE id = :job_id"
             " AND lease_token = :token AND state = 'running'"
+            " AND lease_expires_at > clock_timestamp()"
         ),
         {"stage": stage, "job_id": job_id, "token": token},
     )
@@ -167,10 +215,7 @@ def get_owned(session: Session, actor: Actor, job_id: uuid.UUID) -> Job:
 
 def latest_for_document(session: Session, document_id: uuid.UUID) -> Job | None:
     stmt = (
-        select(Job)
-        .where(Job.resource_id == document_id)
-        .order_by(Job.created_at.desc())
-        .limit(1)
+        select(Job).where(Job.resource_id == document_id).order_by(Job.created_at.desc()).limit(1)
     )
     return session.scalar(stmt)
 

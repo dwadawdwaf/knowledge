@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import base64
+import binascii
 import hashlib
 import hmac
 import json
@@ -21,7 +22,7 @@ def _b64encode(raw: bytes) -> str:
 
 def _b64decode(text: str) -> bytes:
     padding = "=" * (-len(text) % 4)
-    return base64.urlsafe_b64decode(text + padding)
+    return base64.b64decode(text + padding, altchars=b"-_", validate=True)
 
 
 def _sign(payload: bytes, secret: str) -> str:
@@ -53,22 +54,27 @@ def verify_token(token: str, settings: Settings | None = None) -> Actor:
     resolved = settings or get_settings()
     try:
         payload_b64, signature = token.split(".", 1)
-    except ValueError as exc:
+        payload = _b64decode(payload_b64)
+        valid_signature = hmac.compare_digest(_sign(payload, resolved.token_secret), signature)
+    except (ValueError, TypeError, binascii.Error) as exc:
         raise AuthenticationFailed("令牌格式不正确") from exc
 
-    payload = _b64decode(payload_b64)
-    if not hmac.compare_digest(_sign(payload, resolved.token_secret), signature):
+    if not valid_signature:
         raise AuthenticationFailed("令牌签名无效")
 
     try:
         claims = json.loads(payload.decode("utf-8"))
-    except json.JSONDecodeError as exc:
+    except (ValueError, RecursionError) as exc:
         raise AuthenticationFailed("令牌内容不可解析") from exc
 
-    if int(claims.get("exp", 0)) < int(time.time()):
+    if not isinstance(claims, dict) or type(claims.get("exp")) is not int:
+        raise AuthenticationFailed("令牌字段无效")
+    if any(key in claims and not isinstance(claims[key], str) for key in ("sub", "tid", "jti")):
+        raise AuthenticationFailed("令牌字段无效")
+    if claims["exp"] <= int(time.time()):
         raise AuthenticationFailed("令牌已过期")
 
-    subject_id = str(claims.get("sub") or "").strip()
+    subject_id = (claims.get("sub") or "").strip()
     if not subject_id:
         raise AuthenticationFailed("令牌缺少主体标识")
 

@@ -12,6 +12,7 @@ from sqlalchemy.orm import Session
 
 from knowledge.config import Settings
 from knowledge.domain.entities import Actor
+from knowledge.domain.errors import public_job_error
 from knowledge.domain.ports import Embedder, Generator, ObjectStorage
 from knowledge.repositories import chunks as chunk_repo
 from knowledge.repositories import jobs as job_repo
@@ -77,7 +78,7 @@ def job_status(session: Session, actor: Actor, job_id: uuid.UUID) -> dict[str, A
         "state": job.state.value,
         "stage": job.stage,
         "attempt": job.attempt,
-        "last_error": job.last_error,
+        "last_error": public_job_error(job.last_error),
     }
 
 

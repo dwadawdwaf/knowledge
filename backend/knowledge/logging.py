@@ -11,9 +11,11 @@ import logging
 import sys
 from datetime import UTC, datetime
 
-_RESERVED = set(
-    vars(logging.LogRecord("", 0, "", 0, "", (), None)).keys()
-) | {"message", "asctime", "taskName"}
+_RESERVED = set(vars(logging.LogRecord("", 0, "", 0, "", (), None)).keys()) | {
+    "message",
+    "asctime",
+    "taskName",
+}
 
 
 class JsonFormatter(logging.Formatter):
@@ -28,7 +30,7 @@ class JsonFormatter(logging.Formatter):
             if key not in _RESERVED and not key.startswith("_"):
                 payload[key] = value
         if record.exc_info:
-            payload["exception"] = self.formatException(record.exc_info)
+            payload["exception_type"] = record.exc_info[0].__name__ if record.exc_info[0] else None
         return json.dumps(payload, ensure_ascii=False, default=str)
 
 

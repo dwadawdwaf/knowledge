@@ -73,7 +73,7 @@ curl -s -X POST localhost:8010/api/v1/search \
 | 症状 | 判断 | 处置 |
 | --- | --- | --- |
 | 长时间 `queued` | Worker 未启动或已退出 | 启动 Worker；无需重新上传，任务已在表中 |
-| 长期 `running` 且 `heartbeat_at` 不再更新 | 执行进程已死，租约 120 秒后过期 | 重启 Worker 接管；不要手工改 `state` |
+| 长期 `running` 且 `heartbeat_at` 不再更新 | 执行进程已死，租约 120 秒后过期 | 存活 Worker 每轮领取前回收；若全部停止则启动 Worker；不要手工改 `state` |
 | 反复 `failed` 且 `attempt` 已达上限 | 内容本身有问题 | 修文件后重新上传；不要提高重试次数掩盖问题 |
 | 检索 0 命中但文档 active | `active_build_id` 为空或 build 非 ready | 查 §5 指针一致性 SQL；处理完成前属预期行为 |
 | 向量维度错误 | 换了向量模型但未重建 | 新建构建并重建；不得在同一索引混用不同维度 |
@@ -126,3 +126,29 @@ SELECT count(*) FROM jobs WHERE kind = 'cleanup' AND state IN ('queued','running
 3. 涉及检索或引用时用 `build_id` 确认当时生效的构建，不要用当前状态解释历史行为。
 
 日志不含问题正文、分块内容、答案与令牌；需要正文复现时用显式授权的临时调试模式，用完即关。
+
+## 8. 审计修复版本升级与验证
+
+### 任务目标迁移 0002
+
+1. 停止上传入口，等待 ingest/reindex 任务排空；历史卡住任务需先调查并经授权处置，不直接猜测其目标构建。
+2. 停止所有 Worker，备份数据库，执行 `alembic upgrade head`。
+3. 迁移发现未完成 ingest/reindex 时明确失败并回滚；不要绕过检查。已结束任务允许目标字段为空。
+4. 启动新版本 Worker 与 API；确认新任务含 build_id/generation，重试后 job ID 不变而 build ID 改变。
+
+旧失败构建不会再被覆盖；其残留数据随文档清理，不作为检索来源。
+切换向量模型前安排离线索引重建；不兼容时恢复原模型配置，或显式使用 keyword，不得把 503 当作无答案。
+
+### 解析限制
+
+统一 Settings 提供 `KS_PARSE_TIMEOUT_SECONDS`、`KS_PARSE_CPU_SECONDS`、`KS_PARSE_MEMORY_BYTES`、
+`KS_PARSE_OUTPUT_BYTES`、`KS_DOCX_MAX_ENTRIES`、`KS_DOCX_MAX_UNCOMPRESSED_BYTES`。
+默认值见 `backend/knowledge/config.py`，是资源保护配置，不是性能承诺。超限归为 PARSE_FAILED，
+结束解析子进程，不无限续租重试。需要更严格的内存硬限额时在部署层设置进程/容器配额。
+
+### 隔离回归
+
+从仓库根目录运行 `backend/.venv/Scripts/python.exe backend/scripts/test_isolated.py`（Windows）。
+脚本创建独立临时 PostgreSQL 和迁移测试库，仅使用本地模型桩；不连接现有业务数据库，结束后停止服务器。
+Windows 非 ASCII 安装路径会将测试数据库运行组件复制到独立临时目录；临时目录使用 `ks_audit_test_` / `ks_audit_pg_` 前缀，确认进程退出后可清理。
+测试过程不会读取项目 backend/.env；禁止将现有集成测试夹具指向业务库，因为夹具会重建表。

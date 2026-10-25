@@ -32,6 +32,12 @@ def test_invalid_token_rejected():
     assert response.json()["error"]["code"] == "UNAUTHENTICATED"
 
 
+def test_malformed_base64_returns_401():
+    response = _client().get("/api/v1/knowledge-bases", headers={"Authorization": "Bearer a.x"})
+    assert response.status_code == 401
+    assert response.json()["error"]["code"] == "UNAUTHENTICATED"
+
+
 def test_request_id_echoed():
     response = _client().get("/api/v1/knowledge-bases", headers={"X-Request-Id": "trace-123"})
     assert response.headers["X-Request-Id"] == "trace-123"
