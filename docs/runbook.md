@@ -312,6 +312,53 @@ CI 配置位于 `.github/workflows/backend.yml`，使用 Ubuntu、固定 Python�
 人工恢复验收显示 `[recovery 1/4]` 至 `[recovery 4/4]`，在本机 HTTP 模型桩返回 503 后，
 让独立 Worker 按真实退避耗尽三次自动尝试，再经公开重建接口恢复，不手工修改任务状态。
 
+## 12. 固定问题集与效果评测
+
+数据集只取 `backend/testdata/evaluation/` 和既有自制会议室 v1/v2 文件，
+不读取旧语料中的抓取文件、甲方数据或用户任意目录。问题集包含 12 个固定用例：
+精确事实、语义改写、跨来源信息、文号、库外、同主题无答案、版本更新、文档内指令干扰。
+`cases.json` 是初始开发标注，需业务方复核，不是已确认的业务验收标准。
+
+在项目根目录执行离线评测：
+
+```powershell
+.\backend\.venv\Scripts\python.exe -u backend/scripts/evaluate_local.py
+```
+
+显式获得一次真实模型调用授权后，才执行：
+
+```powershell
+.\backend\.venv\Scripts\python.exe -u backend/scripts/evaluate_local.py --real --confirm-real
+```
+
+真实模式读取既有模型白名单配置，仍使用临时独立数据库、API、Worker 和固定自制资料；
+不接受自定义数据路径或问题，缺少确认参数时不读取真实配置、不调用模型。
+固定每题三种检索及一次问答，共 48 次检索/问答 API 请求，上限 60，不自动重跑。
+上传、轮询、引用读取是额外本地 API 请求；上传会产生向量调用，后台故障按原有任务契约重试。
+token 用量与费用因现有 API 未提供而记为 null，不能视作免费，也不能把本地 API 请求数当供应商精确计费次数。
+
+终端逐题显示 ID、分类、状态和自动发现，不打印问题/答案。指标报告写入忽略目录
+`backend/.data/evaluation/<本次编号>/report.json`，保存语料指纹、模型配置名、阈值、逐题指标与耗时，
+不保存问题、答案、原文、令牌、端点或资源存储路径；模型 ID 不等于已固定的模型权重版本。
+
+| 指标 | 表示什么 | 不能据此认定什么 |
+| --- | --- | --- |
+| gold_fact_recall_at_5 / first_relevant_rank / MRR | 正确文档及当前版本的支持片段是否进入 Top5、首次位置 | 生成答案正确 |
+| fact_lexical_coverage | 标注事实的匹配词是否出现在答案 | 否定、推断、额外事实等语义正确 |
+| gold_support_coverage | 标注支持片段是否在实际引用的正确版本原文中 | 答案每句话都得到原文支持 |
+| status_matches_label | answered/no_evidence 状态是否符合可回答标注 | 模型没有编造，或正文拒答与状态完全一致 |
+| forbidden_text_detected | 命中版本过期词或注入探针词，需人工检查 | 单凭命中就能判定恶意服从或事实错误 |
+
+引用另外经 GET chunks 验证可访问性、四个资源 ID、定位与摘录。注入用例先检查探针是否确实进入混合检索证据，
+未暴露时记录 instruction_probe_not_exposed，不宣称抗注入验证成功。
+不可答题被标为 answered 记录 unanswerable_not_no_evidence；这是状态契约不符，不直接等同于事实幻觉。
+上游错误单独记录 qa_error_not_refusal，不能当作正确拒答。统计显示错误数，检索错误按零计入可回答题召回分母。
+
+退出码 0：没有自动发现；2：执行完成但发现待处理项；1：配置、启动或执行未完成；130：人工中止。
+即便退出 0，quality_accepted 仍为 false，语义支持与业务标注均待人工复核。
+评测失败不能通过改标注、阈值或跳过用例掩盖；生产拒答/部分段落无证据行为沿用 design §6.2，变更需评审。
+效果命令与快速回归分开；统一检查仅自动运行离线评测工具与自制 HTTP 夹具测试，不调用真实模型。
+
 ## 13. 浏览器知识工作台
 
 ### 启动与连接
