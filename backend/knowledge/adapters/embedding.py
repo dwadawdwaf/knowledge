@@ -9,8 +9,21 @@ import urllib.error
 import urllib.request
 from collections.abc import Sequence
 
+from pydantic import BaseModel, ConfigDict, Field, ValidationError
+
 from knowledge.config import Settings
 from knowledge.domain.errors import ModelTimeout, ModelUnavailable
+
+
+class _EmbeddingItem(BaseModel):
+    model_config = ConfigDict(strict=True, allow_inf_nan=False)
+
+    index: int | None = Field(default=None, ge=0)
+    embedding: list[float]
+
+
+class _EmbeddingResponse(BaseModel):
+    data: list[_EmbeddingItem] = Field(min_length=1)
 
 
 class HashEmbedder:
@@ -77,21 +90,29 @@ class HttpEmbedder:
         )
         try:
             with urllib.request.urlopen(request, timeout=self.timeout) as response:
-                body = json.loads(response.read().decode("utf-8"))
+                body = _EmbeddingResponse.model_validate_json(response.read())
         except TimeoutError as exc:  # pragma: no cover - 依赖外部服务
             raise ModelTimeout("向量服务超时") from exc
         except urllib.error.HTTPError as exc:  # pragma: no cover
             raise ModelUnavailable(f"向量服务返回 {exc.code}") from exc
         except urllib.error.URLError as exc:  # pragma: no cover
             raise ModelUnavailable("向量服务不可用") from exc
+        except ValidationError as exc:
+            raise ModelUnavailable("向量服务响应结构无效") from exc
 
-        data = body.get("data") or []
-        vectors = [item.get("embedding") or [] for item in data]
+        data = body.data
+        if len(data) != len(texts):
+            raise ModelUnavailable("向量服务返回数量不符")
+        if any(item.index is not None for item in data):
+            if sorted(item.index for item in data if item.index is not None) != list(
+                range(len(texts))
+            ):
+                raise ModelUnavailable("向量服务返回索引无效")
+            data.sort(key=lambda item: item.index if item.index is not None else -1)
+        vectors = [item.embedding for item in data]
         for vector in vectors:
             if len(vector) != self.dimension:
-                raise ModelUnavailable(
-                    f"向量维度不符：期望 {self.dimension}，实际 {len(vector)}"
-                )
+                raise ModelUnavailable(f"向量维度不符：期望 {self.dimension}，实际 {len(vector)}")
         return vectors
 
     def embed(self, texts: Sequence[str]) -> list[list[float]]:

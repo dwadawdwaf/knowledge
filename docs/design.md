@@ -53,6 +53,10 @@ _二创项目 · v0.3 · 2026-10-23 · 实现规格_
 
 同一时间只启用一个向量配置，维度写入迁移。更换模型即新建索引并重建，新旧向量不混检。
 
+模型适配器复用 Pydantic 校验响应结构。上游响应封装无效归为 MODEL_UNAVAILABLE，
+生成内容不符合 sections/evidence_keys 约定归为 CITATION_VALIDATION_FAILED，不伪装成 no_evidence。
+向量响应须数量、维度和有限数值有效；提供 index 时须完整、唯一且连续，并按 index 恢复输入顺序。
+
 ---
 
 ## 3. 架构

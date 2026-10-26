@@ -8,18 +8,43 @@ import urllib.error
 import urllib.request
 from collections.abc import Sequence
 
+from pydantic import BaseModel, ConfigDict, Field, ValidationError
+
 from knowledge.config import Settings
 from knowledge.domain.entities import Evidence, GeneratedAnswer, GeneratedSection
 from knowledge.domain.errors import CitationValidationFailed, ModelTimeout, ModelUnavailable
 
 SYSTEM_PROMPT = (
     "你是知识库问答助手。只能依据给定的证据片段作答，不得使用外部知识。"
-    "输出必须是 JSON：{\"sections\": [{\"text\": \"...\", \"evidence_keys\": [\"E1\"]}]}。"
+    '输出必须是 JSON：{"sections": [{"text": "...", "evidence_keys": ["E1"]}]}。'
     "每个事实性段落都必须给出 evidence_keys；证据不足时返回空 sections。"
     "不得输出文件名、路径、URL 或数据库标识。"
 )
 
 _FENCE = re.compile(r"^```(?:json)?\s*|\s*```$", re.MULTILINE)
+
+
+class _ChatMessage(BaseModel):
+    model_config = ConfigDict(strict=True)
+    content: str
+
+
+class _ChatChoice(BaseModel):
+    message: _ChatMessage
+
+
+class _ChatResponse(BaseModel):
+    choices: list[_ChatChoice] = Field(min_length=1)
+
+
+class _Section(BaseModel):
+    model_config = ConfigDict(strict=True)
+    text: str
+    evidence_keys: list[str] = Field(default_factory=list)
+
+
+class _GeneratedPayload(BaseModel):
+    sections: list[_Section]
 
 
 def build_prompt(question: str, evidence: Sequence[Evidence]) -> str:
@@ -87,33 +112,32 @@ class HttpGenerator:
         )
         try:
             with urllib.request.urlopen(request, timeout=self.timeout) as response:
-                body = json.loads(response.read().decode("utf-8"))
+                body = _ChatResponse.model_validate_json(response.read())
         except TimeoutError as exc:  # pragma: no cover - 依赖外部服务
             raise ModelTimeout("生成服务超时") from exc
         except urllib.error.HTTPError as exc:  # pragma: no cover
             raise ModelUnavailable(f"生成服务返回 {exc.code}") from exc
         except urllib.error.URLError as exc:  # pragma: no cover
             raise ModelUnavailable("生成服务不可用") from exc
+        except ValidationError as exc:
+            raise ModelUnavailable("生成服务响应结构无效") from exc
 
-        choices = body.get("choices") or []
-        if not choices:
-            raise ModelUnavailable("生成服务未返回结果")
-        return choices[0].get("message", {}).get("content", "")
+        return body.choices[0].message.content
 
     def generate(self, question: str, evidence: Sequence[Evidence]) -> GeneratedAnswer:
         raw = self._post(question, evidence)
         cleaned = _FENCE.sub("", raw).strip()
         try:
-            payload = json.loads(cleaned)
-        except json.JSONDecodeError as exc:
-            raise CitationValidationFailed("模型输出不是合法 JSON") from exc
+            payload = _GeneratedPayload.model_validate_json(cleaned)
+        except ValidationError as exc:
+            raise CitationValidationFailed("模型输出结构不符合证据约定") from exc
 
         sections: list[GeneratedSection] = []
-        for item in payload.get("sections") or []:
-            text = (item.get("text") or "").strip()
+        for item in payload.sections:
+            text = item.text.strip()
             if not text:
                 continue
-            keys = tuple(str(key) for key in (item.get("evidence_keys") or []))
+            keys = tuple(item.evidence_keys)
             sections.append(GeneratedSection(text=text, evidence_keys=keys))
 
         return GeneratedAnswer(sections=tuple(sections), model_revision=self.revision)
