@@ -113,7 +113,7 @@ _JOB_MESSAGES = {
 
 
 def public_job_error(error: dict | None) -> dict | None:
-    """Only allow fixed messages, including when reading legacy persisted errors."""
+    """仅返回白名单中的固定说明，历史持久化错误也需再次脱敏。"""
     if error is None:
         return None
     code = error.get("code")

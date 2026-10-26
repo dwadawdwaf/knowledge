@@ -1,4 +1,4 @@
-"""Lease-fenced build access. Lock order: document, job, build."""
+"""通过租约保护构建访问，统一按 document、job、build 顺序加锁。"""
 
 from __future__ import annotations
 
@@ -126,7 +126,7 @@ def retry_build(session: Session, document: Document, job: Job) -> bool:
 
 def guard_vector_index(session: Session, job_id: uuid.UUID, token: uuid.UUID) -> None:
     _, _, build, _ = lock_execution(session, job_id, token)
-    # Serialize the configuration check with inserts, including an initially empty index.
+    # 将配置校验与插入串行化，避免空索引首次写入时混入不同配置。
     session.execute(text("SELECT pg_advisory_xact_lock(hashtext('knowledge.vector_config'))"))
     incompatible = session.scalar(
         select(IndexBuild.id)

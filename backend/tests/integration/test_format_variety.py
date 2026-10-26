@@ -29,9 +29,16 @@ pytestmark = [
 
 def _upload_processed(session, actor, settings, deps, kb, filename: str, data: bytes):
     result = document_service.upload(
-        session, actor, settings, deps.storage, deps.registry,
-        kb_id=kb.id, filename=filename, data=data,
-        embedder_model=deps.embedder.model, embedder_dim=deps.embedder.dimension,
+        session,
+        actor,
+        settings,
+        deps.storage,
+        deps.registry,
+        kb_id=kb.id,
+        filename=filename,
+        data=data,
+        embedder_model=deps.embedder.model,
+        embedder_dim=deps.embedder.dimension,
     )
     while process_next(session, deps):
         pass
@@ -62,7 +69,9 @@ def _make_docx_with_table() -> bytes:
 def test_docx_table_cells_are_indexed(session, settings, deps):
     actor = Actor(subject_id="fmt-user", tenant_id="default")
     kb = knowledge_service.create(session, actor, "格式库")
-    result = _upload_processed(session, actor, settings, deps, kb, "资产登记.docx", _make_docx_with_table())
+    result = _upload_processed(
+        session, actor, settings, deps, kb, "资产登记.docx", _make_docx_with_table()
+    )
 
     job = job_repo.get_owned(session, actor, result.job_id)
     assert job.state is JobState.SUCCEEDED
@@ -70,14 +79,24 @@ def test_docx_table_cells_are_indexed(session, settings, deps):
     # 表格单元格内容可检索（此前被静默丢弃）
     for keyword, expected in [("凭证打印机 刘会敏", "刘会敏"), ("核心交换机 负责人", "陈建工")]:
         hits = retrieval.search(
-            session, actor, settings, deps.embedder, query=keyword, kb_ids=[kb.id],
+            session,
+            actor,
+            settings,
+            deps.embedder,
+            query=keyword,
+            kb_ids=[kb.id],
         )
         assert hits, f"表格内容应可检索：{keyword}"
         assert expected in hits[0].text
 
     # 表格块的 locator 指明表格序号
     hits = retrieval.search(
-        session, actor, settings, deps.embedder, query="凭证打印机", kb_ids=[kb.id],
+        session,
+        actor,
+        settings,
+        deps.embedder,
+        query="凭证打印机",
+        kb_ids=[kb.id],
     )
     assert hits[0].locator["type"] == "docx"
     assert hits[0].locator.get("block") == 1
@@ -94,7 +113,11 @@ def _make_pdf_with_table() -> bytes:
     pdf.add_page()
     pdf.multi_cell(0, 8, "《部门报销汇总表（测试资料）》", new_x="LMARGIN", new_y="NEXT")
     with pdf.table() as table:
-        for row in (("月份", "事项", "金额"), ("三月", "展会物料", "1888.50 元"), ("四月", "差旅住宿", "2350.00 元")):
+        for row in (
+            ("月份", "事项", "金额"),
+            ("三月", "展会物料", "1888.50 元"),
+            ("四月", "差旅住宿", "2350.00 元"),
+        ):
             pdf_row = table.row()
             for cell in row:
                 pdf_row.cell(cell)
@@ -104,12 +127,19 @@ def _make_pdf_with_table() -> bytes:
 def test_pdf_table_text_is_retrievable(session, settings, deps):
     actor = Actor(subject_id="fmt-user", tenant_id="default")
     kb = knowledge_service.create(session, actor, "PDF 表格库")
-    result = _upload_processed(session, actor, settings, deps, kb, "报销汇总.pdf", _make_pdf_with_table())
+    result = _upload_processed(
+        session, actor, settings, deps, kb, "报销汇总.pdf", _make_pdf_with_table()
+    )
     assert job_repo.get_owned(session, actor, result.job_id).state is JobState.SUCCEEDED
 
     # PDF 表格以文本流提取（顺序可能交错），数字与专名应可检索
     hits = retrieval.search(
-        session, actor, settings, deps.embedder, query="展会物料 报销金额", kb_ids=[kb.id],
+        session,
+        actor,
+        settings,
+        deps.embedder,
+        query="展会物料 报销金额",
+        kb_ids=[kb.id],
     )
     assert hits and "1888.50" in hits[0].text
 
@@ -128,7 +158,9 @@ def _make_encrypted_pdf() -> bytes:
 def test_encrypted_pdf_fails_with_password_protected(session, settings, deps):
     actor = Actor(subject_id="fmt-user", tenant_id="default")
     kb = knowledge_service.create(session, actor, "加密库")
-    result = _upload_processed(session, actor, settings, deps, kb, "加密文件.pdf", _make_encrypted_pdf())
+    result = _upload_processed(
+        session, actor, settings, deps, kb, "加密文件.pdf", _make_encrypted_pdf()
+    )
 
     job = job_repo.get_owned(session, actor, result.job_id)
     assert job.state is JobState.FAILED
@@ -158,13 +190,21 @@ def test_blank_pdf_fails_with_empty_content(session, settings, deps):
         ("名单.csv", "部门,负责人\n网络部,陈建工".encode()),
         ("扫描件.jpg", b"\xff\xd8\xff\xe0" + b"\x00" * 32),
     ],
+    ids=["xlsx", "pptx", "csv", "jpg"],
 )
 def test_non_whitelisted_formats_rejected(session, settings, deps, filename, data):
     actor = Actor(subject_id="fmt-user", tenant_id="default")
     kb = knowledge_service.create(session, actor, "白名单库")
     with pytest.raises(UnsupportedFormat):
         document_service.upload(
-            session, actor, settings, deps.storage, deps.registry,
-            kb_id=kb.id, filename=filename, data=data,
-            embedder_model=deps.embedder.model, embedder_dim=deps.embedder.dimension,
+            session,
+            actor,
+            settings,
+            deps.storage,
+            deps.registry,
+            kb_id=kb.id,
+            filename=filename,
+            data=data,
+            embedder_model=deps.embedder.model,
+            embedder_dim=deps.embedder.dimension,
         )

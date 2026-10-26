@@ -1,4 +1,4 @@
-"""Killable parsing subprocess with wall-time, CPU, RSS and output limits."""
+"""可终止的解析子进程，限制运行时间、CPU、驻留内存与输出大小。"""
 
 from __future__ import annotations
 
@@ -31,7 +31,7 @@ def _parse_child(
             raise ParseFailed("解析输出超限")
     except PasswordProtected:
         payload = b'{"error":"PASSWORD_PROTECTED"}'
-    except Exception:  # noqa: BLE001 - Never serialize parser exceptions across the boundary.
+    except Exception:  # noqa: BLE001 - 不跨进程传递可能包含正文的解析异常。
         payload = b'{"error":"PARSE_FAILED"}'
     try:
         connection.send_bytes(payload)

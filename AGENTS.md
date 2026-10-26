@@ -66,6 +66,7 @@ entrypoints → {api, mcp, worker} → services → domain ← repositories / ad
 
 ### 4.3 命名与类型
 
+- 注释与 docstring 以简体中文为主；代码标识符、协议名、日志事件名和工具指令保留原文。不为统一注释改写历史迁移。
 - 文件与函数 `snake_case`；类 `PascalCase`；常量 `UPPER_SNAKE`。
 - 所有公开函数带类型标注；`Any` 需注释理由。
 - 配置经统一 settings 对象注入，禁止在业务代码里 `os.environ[...]` 散读。
