@@ -4,7 +4,14 @@ from __future__ import annotations
 
 import uuid
 
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator
+
+
+class ReindexRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    version_id: uuid.UUID
+    expected_generation: int = Field(ge=0, strict=True)
 
 
 class CreateKnowledgeBaseRequest(BaseModel):

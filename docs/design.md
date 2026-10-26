@@ -340,6 +340,7 @@ semantic/hybrid 调用模型前检查授权范围内已发布构建的模型标�
 | 11 | POST `/qa` | 问答 | 200 |
 | 12 | GET `/chunks/{chunk_id}` | 分块预览，带授权校验 | 200 |
 | 13 | POST `/conversations` | 创建会话，用于问答存档 | 201 |
+| 14 | POST `/documents/{document_id}/reindex` | 最新上传版本的同模型重建/失败恢复，见 §7.1 | 202 |
 
 **成功**：`{"data": {…}, "meta": {"request_id": "…"}}`
 **错误**：`{"error": {"code": "…", "message": "…", "retryable": bool}, "meta": {"request_id": "…"}}`
@@ -375,6 +376,26 @@ semantic/hybrid 调用模型前检查授权范围内已发布构建的模型标�
 ```
 
 ---
+
+### 7.1 同模型重建与人工恢复
+
+请求 JSON：`{"version_id": "UUID", "expected_generation": 1}`，两项必填，代次为非负整数。
+成功 data：`document_id / version_id / build_id / job_id / generation`，返回 202。
+禁止额外字段，不接收 owner、tenant、模型配置或文件路径。
+
+1. 校验文档及知识库均 active 且归属调用者；无权、不存在、已删除或删除中均为 404。
+2. 锁定文档并复核 generation；目标必须是该文档最新上传版本（包括处理失败者），不提供历史回滚。
+3. 存在 queued/running 处理任务、代次过期、目标非最新、向量配置不一致，返回 409 VERSION_CONFLICT。
+   不取消原任务，不创建额外构建；不属于该文档的 version_id 统一为 404。
+4. 新建 build 与 reindex job，generation 递增，job 固定新代次与 build，attempt 从 0 开始。
+   原件和 version 不变，沿用原构建的分段配置与向量模型/维度；不支持在线更换向量配置。
+5. 写入同一事务提交；重建期间旧 active build 继续提供检索/引用，失败不撤销旧发布内容。
+   成功复用 §5.3 原子发布规则；旧 build 仅按该规则 retired，不修改其片段。
+6. 重复旧请求仍返回 409，不另建幂等记录；调用方刷新文档详情、查询已有 job，不能盲目重发。
+
+本节中的 generation 递增属于文档更新；附录 A 与 §4.2 的“更新”包括显式重建。
+最初上传失败时无 current_version_id，调用方使用上传回执的 version_id；
+新版本失败时也使用该次上传回执，而非旧的 current_version_id。重建不替代不可恢复资料的重新上传。
 
 ## 8. 安全
 

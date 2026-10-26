@@ -46,6 +46,14 @@ class UploadAck(BaseModel):
     deduplicated: bool = False
 
 
+class ReindexAck(BaseModel):
+    document_id: uuid.UUID
+    version_id: uuid.UUID
+    build_id: uuid.UUID
+    job_id: uuid.UUID
+    generation: int
+
+
 class SearchHitOut(BaseModel):
     # 检索服务返回的即字符串 ID，JSON 输出与 UUID 形式一致
     document_id: str

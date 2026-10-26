@@ -152,3 +152,36 @@ SELECT count(*) FROM jobs WHERE kind = 'cleanup' AND state IN ('queued','running
 脚本创建独立临时 PostgreSQL 和迁移测试库，仅使用本地模型桩；不连接现有业务数据库，结束后停止服务器。
 Windows 非 ASCII 安装路径会将测试数据库运行组件复制到独立临时目录；临时目录使用 `ks_audit_test_` / `ks_audit_pg_` 前缀，确认进程退出后可清理。
 测试过程不会读取项目 backend/.env；禁止将现有集成测试夹具指向业务库，因为夹具会重建表。
+
+## 11. 人工恢复与同模型重建
+
+接口契约只在 design §7.1 定义。以下是调用顺序，不增加重试/回滚语义。
+
+1. 保留上传/新版本上传回执中的 `document_id`、`version_id`、`job_id`。
+2. 查询 GET `/api/v1/jobs/{job_id}`。queued/running 时继续等待，不发重建请求。
+3. failed 后先排除原因：例如模型恢复可用、Worker 恢复原模型配置。加密、空内容或不可解析文件
+   不是重建可以修好的问题，应按业务要求上传修正后的新版本。
+4. GET `/api/v1/documents/{document_id}` 读取最新 `generation`；保留上传回执中的目标版本。
+5. 在 Swagger 中携带本人的开发令牌，调用 POST `/api/v1/documents/{document_id}/reindex`：
+
+```json
+{"version_id": "目标上传回执中的 UUID", "expected_generation": 2}
+```
+
+这里的 2 仅示例，必须替换为实际代次。首次上传失败时 `current_version_id` 可以为空；
+新版本失败时它仍指向旧发布版本。不要把 current_version_id 误作最新上传版本。
+
+6. 202 响应保存新的 `job_id` / `build_id` / `generation`，按原来的任务查询接口轮询。
+   新任务重新计数，历史失败 job 不改成成功。重建期间仍可检索旧发布内容，成功后引用绑定新 build。
+7. 若遇 409 VERSION_CONFLICT，刷新详情并查询最新任务，不盲目重发。旧 generation 的重复请求不会被当作成功。
+   如果 Worker 不是原模型/维度，恢复原配置后再处理；此接口不执行跨模型迁移或历史版本回滚。
+8. 删除中、删除后或非本人资源返回 404，不需要等物理清理完成。
+
+接口同时可用于已成功最新版本的主动重建，不复制文件或增加版本。
+沿用原构建的分段与向量配置；修改 settings 中分段参数不会借此接口改变原构建配置。
+启动方式仍按 §9：`start.cmd -Mode Demo` 可离线在 Swagger 体验，不调用真实模型。
+开发令牌签发方式见 §9；不要将令牌、正文或真实资料贴入文档或提交记录。
+
+可观察自动验收仍使用 §10 的统一入口。终端显示 `[reindex 1/5]` 至 `[reindex 5/5]`；
+人工恢复验收显示 `[recovery 1/4]` 至 `[recovery 4/4]`，在本机 HTTP 模型桩返回 503 后，
+让独立 Worker 按真实退避耗尽三次自动尝试，再经公开重建接口恢复，不手工修改任务状态。

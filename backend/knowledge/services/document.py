@@ -1,4 +1,4 @@
-"""文档用例：上传、新版本、详情、删除。"""
+"""文档用例：上传、新版本、同模型重建、详情、删除。"""
 
 from __future__ import annotations
 
@@ -22,6 +22,7 @@ from knowledge.domain.ports import ObjectStorage
 from knowledge.repositories import documents as doc_repo
 from knowledge.repositories import jobs as job_repo
 from knowledge.repositories import knowledge_bases as kb_repo
+from knowledge.repositories import reindex as reindex_repo
 from knowledge.repositories.tables import Document, IndexBuild
 
 
@@ -32,6 +33,53 @@ class UploadResult:
     build_id: uuid.UUID
     job_id: uuid.UUID
     deduplicated: bool
+
+
+@dataclass(frozen=True)
+class ReindexResult:
+    document_id: uuid.UUID
+    version_id: uuid.UUID
+    build_id: uuid.UUID
+    job_id: uuid.UUID
+    generation: int
+
+
+def reindex(
+    session: Session,
+    actor: Actor,
+    settings: Settings,
+    *,
+    document_id: uuid.UUID,
+    version_id: uuid.UUID,
+    expected_generation: int,
+    embedder_model: str,
+    embedder_dim: int,
+) -> ReindexResult:
+    """同模型重建最新上传版本；短事务内授权、比较代次并创建固定目标任务。"""
+    document = reindex_repo.lock_document(session, actor, document_id)
+    reindex_repo.get_version(session, actor, document_id, version_id)
+    if (
+        document.generation != expected_generation
+        or reindex_repo.latest_version_id(session, actor, document_id) != version_id
+        or reindex_repo.has_open_job(session, actor, document_id)
+    ):
+        raise VersionConflict("文档或处理状态已变化，请刷新后查询任务")
+    source = reindex_repo.original_build(session, actor, version_id)
+    if source is None or (source.embedding_model, source.embedding_dim) != (
+        embedder_model,
+        embedder_dim,
+    ):
+        raise VersionConflict("重建须使用原向量配置")
+    build, job, generation = reindex_repo.enqueue(
+        session,
+        actor,
+        document_id,
+        source,
+        settings.max_attempts,
+    )
+    result = ReindexResult(document_id, version_id, build.id, job.id, generation)
+    session.commit()
+    return result
 
 
 def _new_build(
