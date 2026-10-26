@@ -1,9 +1,9 @@
 PY ?= python
 
-.PHONY: install db migrate api worker demo test lint token
+.PHONY: install db migrate api worker demo test lint token check frontend-test browser-test
 
 install:
-	pip install -e ".[dev]"
+	$(PY) -m pip install -r requirements-dev.lock
 
 # 启动内置 PostgreSQL（含 pgvector），无需另装数据库；前台运行，Ctrl+C 停止
 db:
@@ -24,6 +24,18 @@ demo:
 
 test:
 	pytest -q
+
+# 完整交付验收：锁版本、lint、类型、隔离数据库与 HTTP E2E。
+check:
+	$(PY) -u scripts/check.py
+
+frontend-test:
+	node --check ../frontend/app.mjs
+	node --test ../frontend/core.test.mjs
+
+# 需要本机已有 Node.js 与独立测试浏览器，不自动安装。
+browser-test:
+	$(PY) -u scripts/browser_smoke.py
 
 lint:
 	ruff check knowledge tests scripts

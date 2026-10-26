@@ -8,7 +8,12 @@ from pathlib import Path
 
 from testdata.corpus.labels import DOCX_PARAGRAPHS, PDF_PAGES
 
-FONT_PATH = Path(os.environ.get("WINDIR", r"C:\Windows")) / "Fonts" / "simhei.ttf"
+FONT_PATH = Path(
+    os.environ.get(
+        "KS_TEST_FONT_PATH",
+        str(Path(os.environ.get("WINDIR", r"C:\Windows")) / "Fonts" / "simhei.ttf"),
+    )
+)
 
 
 def make_docx() -> bytes:

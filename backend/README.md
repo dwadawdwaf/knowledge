@@ -4,11 +4,45 @@
 
 ## 快速开始（不需要安装 PostgreSQL）
 
+**浏览器界面已接入**：根目录启动器在资料就绪后打开“知页”工作台。
+在启动终端输入 `/token`，把本次开发令牌粘贴到页面即可操作知识库、上传、检索、问答与引用。
+离线体验：`start.cmd -Mode Demo`；不打开浏览器：加 `-NoBrowser`。
+这是临时开发环境，退出后资料清理；详见 [工作台操作与验收](../docs/runbook.md#13-浏览器知识工作台)。
+
+首次安装或交付验收请先看 [固定环境与完整检查](../docs/runbook.md#10-固定环境与完整交付检查)。
+完整检查入口：`python -u backend/scripts/check.py`，或在 backend 目录执行 `make check`；
+它验证固定版本并运行隔离回归，不调用真实模型。
+
+失败任务恢复和主动重建使用 `POST /api/v1/documents/{document_id}/reindex`，
+必传上传回执的 `version_id` 与最新 `expected_generation`。操作步骤见
+[人工恢复与重建](../docs/runbook.md#11-人工恢复与同模型重建)；不通过重复上传触发恢复。
+
+**想先看实际运行结果**：在仓库根目录执行以下命令，无需手动分别启动服务：
+
+Windows 下直接双击项目根目录的 `start.cmd`，默认进入**真实模型终端问答**。
+它读取 `backend/.env` 中的模型配置，启动临时数据库、API、Worker 并导入自制资料；
+出现“请输入问题”后直接输入，即可看到回答、引用原文和定位。输入 `/quit` 退出。
+默认自动选择空闲端口，也可指定 `start.cmd -Port 8011`；只检查配置使用 `start.cmd -CheckOnly`。
+真实模式要求向量及生成端点均已配置，且向量为 1024 维；失败明确报错，不回退到模型桩。
+密钥不输出，问答正文不写入报告或服务日志。此入口不使用现有业务数据库，临时资料退出后清理。
+
+不调用真实模型时使用 `start.cmd -Mode Demo`，先跑 10 步验收，再进入本地模型桩终端问答。
+以下直接运行 Python 的方式用于单次离线链路演示：
+
+```powershell
+.\backend\.venv\Scripts\python.exe -u backend/scripts/demo_local.py
+```
+
+终端会显示 10 步 HTTP 验收与任务状态；答案、引用及版本更新前后对比见
+`backend/.data/demo/latest.md`。加 `--serve --port 8010` 可在验收后打开 Swagger 手动操作。
+详细步骤与开发鉴权见 [运行手册 §9](../docs/runbook.md#9-可观察演示与-http-端到端验收)。
+此演示使用自制资料和本地确定性模型桩，不代表真实大模型效果。
+
 依赖里自带 `embedded-postgres`（PostgreSQL 18.6 + pgvector 0.8.6），开发时用它起一个本地库。
 
 ```bash
 cd backend
-pip install -e ".[dev]"
+pip install -r requirements-dev.lock
 
 # 终端 1：本地数据库（前台运行，Ctrl+C 停止）
 python scripts/dev_db.py
@@ -60,6 +94,15 @@ scripts/         本地数据库与端到端演示
 
 ## 测试
 
+推荐从仓库根目录运行完整隔离回归，实时显示测试名称和 HTTP 步骤：
+
+```powershell
+.\backend\.venv\Scripts\python.exe -u backend/scripts/test_isolated.py
+```
+
+它显式启用真实 HTTP + 独立 Worker 的 E2E，并创建专用测试数据库；普通 `pytest` 不设置
+E2E 环境时会跳过该组测试，不等同于完整验收。
+
 ```bash
 pytest -q                                                   # 单元测试，不需要数据库
 KS_TEST_DATABASE_URL=$(cat .data/db_test_url) pytest -q     # 含集成用例（需 dev_db.py 在跑）
@@ -107,6 +150,8 @@ SQL 与排序层随规模增长平稳；真实向量的瓶颈在本机 CPU 嵌�
 ## 模型
 
 未配置端点时使用本地确定性实现：`HashEmbedder`（字符二元组哈希，1024 维）与 `StubGenerator`（复述首条证据）。链路可跑通，**但不代表检索与生成质量**。
+
+上述回退只适用于基础适配器和显式 Demo/测试模式；根目录启动器默认 Real 模式会先验证配置，禁止缺少真实端点时静默回退。
 
 配置写在 `backend/.env`（不入库），两条路线：
 

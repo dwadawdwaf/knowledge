@@ -153,6 +153,132 @@ SELECT count(*) FROM jobs WHERE kind = 'cleanup' AND state IN ('queued','running
 Windows 非 ASCII 安装路径会将测试数据库运行组件复制到独立临时目录；临时目录使用 `ks_audit_test_` / `ks_audit_pg_` 前缀，确认进程退出后可清理。
 测试过程不会读取项目 backend/.env；禁止将现有集成测试夹具指向业务库，因为夹具会重建表。
 
+## 9. 可观察演示与 HTTP 端到端验收
+
+### 一条命令看完整流程
+
+在仓库根目录执行（Windows PowerShell）：
+
+```powershell
+.\backend\.venv\Scripts\python.exe -u backend/scripts/demo_local.py
+```
+
+入口自动创建临时数据库、执行迁移、启动独立 API 与 Worker，再通过真实 HTTP 执行 10 步验收。
+它只使用仓库自制资料、HashEmbedder 和 StubGenerator，不读取项目 `.env`，不调用外部模型，
+不重置现有数据库。终端逐步输出启动进度、进程 PID、任务 state/stage/attempt 与校验结果，
+每条输出立即刷新。服务日志只包含运行元数据，不把答案、问题或令牌写入日志。
+
+演示结束后自动停止进程与临时数据库，结果保存在 `backend/.data/demo/latest.md`：
+包括实际 HTTP 返回的版本一/版本二答案、引用和定位，明确标注为确定性桩的链路演示。
+答案不是预填文本；该演示不代替真实模型效果评测。每次报告含生成时间，避免与历史结果混淆。
+
+API、Worker 与迁移日志保存在 `backend/.data/e2e/<本次运行编号>/`，失败时按终端路径查看。
+
+### 保持服务运行，自己调用
+
+根目录 `start.cmd` 默认进入真实模型终端问答：
+
+```powershell
+.\start.cmd
+# 显式指定端口；默认 0 自动选择，避免误连旧演示实例。
+.\start.cmd -Port 8011
+# 仅检查依赖及真实模型配置，不启动服务或调用模型。
+.\start.cmd -CheckOnly
+# 完全离线：10 步验收后进入模型桩终端问答。
+.\start.cmd -Mode Demo
+```
+
+`start.cmd` 优先使用 PowerShell 7，没有时使用 Windows PowerShell 5.1，统一调用根目录
+`start.ps1`；也可直接执行 `.\start.ps1 -Port 8011`。它检查项目虚拟环境、依赖与端口，
+失败时明确提示，不自动下载依赖、不停止其他进程。模式为 `Real` / `Demo`，均使用隔离临时数据库与资料卷，
+不会采用 `.env` 中的数据库地址、存储路径或身份密钥。
+
+Real 模式从 `backend/.env` 和环境变量读取模型字段：`KS_EMBEDDING_BASE_URL` / `MODEL` / `API_KEY` / `DIM`，
+`KS_GENERATOR_BASE_URL` / `MODEL` / `API_KEY`，以及相关超时、检索阈值和任务配置。
+维度必须为 1024；端点、模型名缺失时拒绝启动，不回退 HashEmbedder / StubGenerator。
+可选字段留空会忽略。首次仅导入仓库自制会议室资料，准备好后在当前终端输入问题，
+显示答案、服务端引用原文、文件名和字符/页码定位；等待期间持续显示耗时。
+非敏感示例问题：“会议室使用后需要做什么？”“预约需要提前多久？”
+
+真实模式的问题和证据会发送到已配置模型服务，可能产生费用；仅用经授权的资料和问题。
+启动器不打印 API 密钥；终端问答不传 conversation_id，不保存问答存档，也不写 Demo 报告。
+输入 `/quit` / `/exit`、EOF 或 Ctrl+C 退出并清理本次进程。此控制台按当前问题独立问答，不实现多轮指代。
+
+真实模式的单次复验命令（建议仅用于自制示例，真实问题不要写入 shell 历史）：
+
+```powershell
+.\backend\.venv\Scripts\python.exe -u backend/scripts/ask_local.py --question "会议室使用后需要做什么？"
+```
+
+Demo 模式直接运行 Python 的等价命令：
+
+```powershell
+.\backend\.venv\Scripts\python.exe -u backend/scripts/demo_local.py --serve --port 8010
+```
+
+Demo 正常验收后，程序额外建立一个供手动体验的知识库，并输出其 ID，然后进入终端问答。打开本机
+`http://127.0.0.1:8010/docs`；端口占用时换一个端口，或者省略 `--port` 自动选空闲端口。
+服务仅监听 127.0.0.1；终端中的实际地址以本次输出为准。输入 `/quit` 或按 Ctrl+C 结束体验。临时资料不作为持久知识库保存。
+
+演示环境使用默认的本地开发令牌桩，主体为 `demo-owner`。在另一个终端、仓库根目录执行：
+
+```powershell
+$env:KS_TOKEN_SECRET = "dev-only-secret"
+.\backend\.venv\Scripts\python.exe -m knowledge.security issue --subject demo-owner
+```
+
+这是显式签发开发令牌的命令，不是服务日志。令牌只用于当前本机演示，不提交、不写入报告。
+Swagger 中每个需要鉴权的操作有 `authorization` 请求头参数，填写 `Bearer <开发令牌>`。
+先调用 GET `/api/v1/knowledge-bases` 查看手动体验库，再用其 ID 调用 POST `/api/v1/qa`。
+建议问题与样本答案见演示报告。此入口不接入真实身份或真实资料。
+
+### 运行有实时进度的完整回归
+
+```powershell
+.\backend\.venv\Scripts\python.exe -u backend/scripts/test_isolated.py
+```
+
+默认打印测试名称、通过/失败与 E2E 步骤。入口复用临时数据库管理，为服务层集成、迁移和
+HTTP E2E 使用不同数据库；显式启用进程测试，不能用跳过 E2E 的普通 pytest 结果代替完整验收。
+完整验收禁止跳过或排除用例；传入 `-k` 排除测试会以非零退出，不能当作完整验收通过。
+完整回归中的模型接口故障由本机 HTTP 桩制造，
+Worker 崩溃测试会实际终止处于 embedding 阶段的 Worker，再在租约过期前重启，
+等待其自动回收并以新 build 完成，不手动修改数据库租约。
+
+## 10. 固定环境与完整交付检查
+
+开发验收基线固定为根目录 `.python-version` 中的 Python 版本；依赖版本统一维护在
+`backend/requirements-dev.lock`。这是版本快照，不含制品哈希，不表示供应链完整性验证。
+`pyproject.toml` 保留库依赖范围；安装时使用锁文件，修改依赖后必须同步锁文件并重跑验收。
+
+新环境安装（在项目根目录执行，需允许从软件包源下载依赖）：
+
+```powershell
+py -3.12 -m venv backend/.venv
+.\backend\.venv\Scripts\python.exe -m pip install -r backend/requirements-dev.lock
+.\backend\.venv\Scripts\python.exe -u backend/scripts/check.py
+```
+
+创建环境前确认解释器的补丁版本也与 `.python-version` 一致；`py -3.12` 本身不保证补丁版本。
+脚本从源码目录运行，不要求 editable 安装。Linux 使用 `.venv/bin/python` 对应命令。
+现有环境不要盲目重装或删除；完整检查会列出缺失、漂移的依赖并退出，不自行安装。
+
+统一入口按顺序显示：版本预检 → lint → 业务类型检查 → 脚本类型检查 → 独立数据库完整回归。
+任一步失败立即停止；数据库迁移、HTTP 生命周期、Worker 重启均在回归内。
+跳过、xfail/xpass、排除用例或未收集到测试均不能让完整验收显示成功。
+普通 `pytest` 仍可用于快速开发，但不能替代此入口。
+
+PDF 中文测试默认使用 Windows 黑体。其他环境须提供本地中文字体，例如：
+
+```bash
+export KS_TEST_FONT_PATH=/usr/share/fonts/truetype/wqy/wqy-zenhei.ttc
+python -u backend/scripts/check.py
+```
+
+CI 配置位于 `.github/workflows/backend.yml`，使用 Ubuntu、固定 Python、同一锁文件及检查入口，
+额外安装文泉驿中文测试字体。CI 不注入模型密钥或业务数据库配置，不上传问答/服务日志。
+本地 Windows 验证与远端 Ubuntu 流水线结果须分别记录，不能把配置文件存在当作云端运行通过。
+
 ## 11. 人工恢复与同模型重建
 
 接口契约只在 design §7.1 定义。以下是调用顺序，不增加重试/回滚语义。
@@ -185,3 +311,52 @@ Windows 非 ASCII 安装路径会将测试数据库运行组件复制到独立�
 可观察自动验收仍使用 §10 的统一入口。终端显示 `[reindex 1/5]` 至 `[reindex 5/5]`；
 人工恢复验收显示 `[recovery 1/4]` 至 `[recovery 4/4]`，在本机 HTTP 模型桩返回 503 后，
 让独立 Worker 按真实退避耗尽三次自动尝试，再经公开重建接口恢复，不手工修改任务状态。
+
+## 13. 浏览器知识工作台
+
+### 启动与连接
+
+根目录双击 start.cmd，默认 Real 模式；自制资料处理完成后会打开本次服务的 `/workbench/` 页面。
+离线体验用 `start.cmd -Mode Demo`；避免自动打开浏览器用 `-NoBrowser`。
+浏览器与终端共用本次临时 API/Worker，不增加前端服务，不需要 npm install 或构建步骤。
+
+1. 在启动终端输入 `/token`，显式显示本次本机开发令牌；不要截图、提交或转发令牌。
+2. 点击页面“连接工作台”，粘贴令牌。不会创建账号、改变 owner 或向第三方发送令牌。
+3. 创建/打开知识库，上传自制文件并等待状态“已就绪”；不是按假百分比展示进度。
+4. 检索测试支持三种方式，显示接口片段、来源、实际分数；智能问答点击引用可重新读取授权原文。
+5. 页面支持新版本上传、同模型重建、文档与知识库删除。删除有确认框；重建沿用 §11 的既有契约。
+6. 终端 `/quit` 或 Ctrl+C 结束本次临时服务，临时数据库和原件被清理，**不是持久个人资料部署**。
+
+无证据、模型故障、引用失败分别展示；同主题无答案的已知 502 不会包装成成功或正常拒答。
+问答每次独立，没有多轮上下文。引用仅为文本分块，不提供原文件保真预览。
+真实模式上传与提问可能向配置的模型发送内容；开发体验只用自制资料。
+
+### 身份、刷新与限制
+
+令牌、上传回执和问答仅在页面内存中；刷新需重新连接。点击左下身份按钮或右上“我”可断开并清空内容。
+不使用 localStorage/sessionStorage 保存令牌、问答，不把令牌放进 URL，也不传模型密钥到页面。
+旧身份未结束的响应在断开/切换后丢弃。
+
+失败的新版本可能没有 current_version_id。若刷新丢失上传回执，页面不能可靠推断恢复目标，
+因此禁用对应重建操作；此时按 §11 使用保留的回执调用接口，不以旧发布版本替代。
+页面保留明确的上传跳过/失败信息；自动刷新失败会提示，不静默假装处理完成。
+
+### 检查与浏览器验收
+
+```powershell
+node --check frontend/app.mjs
+node --test frontend/core.test.mjs
+.\backend\.venv\Scripts\python.exe -u backend/scripts/check.py
+.\backend\.venv\Scripts\python.exe -u backend/scripts/browser_smoke.py
+```
+
+界面运行本身无需 Node；测试需已有 Node.js 22+。浏览器验收另需本机 Edge/Chrome，缺少即报错，
+不自动安装、不跳过后宣称通过。使用独立浏览器配置，不读取个人浏览器状态。
+截图及测试配置保存在忽略目录 `backend/.data/workbench/<编号>/`，不是生产数据或提交产物。
+
+浏览器验证连接、实际建库/上传、任务就绪、回答/引用、正常无证据、检索、重建/更新/删除、
+HTML 文本安全、窄屏和刷新清理；HTTP 502 的界面分支采用显式浏览器故障注入，不冒充真实模型结果。
+CI 增加 Node 原生协议测试；本机浏览器通过不等于远端 CI 浏览器验收通过。
+
+静态目录由源码布局定位；独立安装后端 wheel 不会自动打包根目录 frontend。
+正式交付需按主系统部署方式提供静态资产和正式身份；没有完成这一步就不能宣称生产前端已交付。

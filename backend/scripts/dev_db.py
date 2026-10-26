@@ -17,6 +17,7 @@ import pathlib
 import shutil
 import tempfile
 import time
+from types import ModuleType
 
 DATA_URL = pathlib.Path(".data/db_url")
 TEST_URL = pathlib.Path(".data/db_test_url")
@@ -28,20 +29,18 @@ def _prepare_environment(data_dir: pathlib.Path) -> None:
     os.environ.setdefault("LANG", "C")
 
     if not str(data_dir).isascii():
-        raise SystemExit(
-            f"数据目录必须为纯英文路径（postmaster.pid 按本地编码写入）：{data_dir}"
-        )
+        raise SystemExit(f"数据目录必须为纯英文路径（postmaster.pid 按本地编码写入）：{data_dir}")
 
     import embedded_postgres._commands as commands
 
-    class _TempFile:
+    class _TempFile(ModuleType):
         @staticmethod
         def TemporaryFile(*args, **kwargs):
             kwargs.setdefault("encoding", "utf-8")
             kwargs.setdefault("errors", "replace")
             return tempfile.TemporaryFile(*args, **kwargs)
 
-    commands.tempfile = _TempFile  # 仅替换该模块内的引用
+    commands.tempfile = _TempFile("embedded_postgres_tempfile")  # 仅替换该模块内的引用
 
 
 def main() -> int:

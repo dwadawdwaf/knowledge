@@ -1,0 +1,37 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self'; style-src 'self'; connect-src 'self'; img-src 'self' data:; object-src 'none'; base-uri 'none'; form-action 'self'">
+  <title>知页 · 知识工作台</title>
+  <link rel="stylesheet" href="./style.css">
+  <script type="module" src="./app.mjs"></script>
+</head>
+<body>
+  <a class="skip" href="#content">跳到主要内容</a>
+  <aside class="sidebar">
+    <a class="brand" href="#knowledge"><span class="brand-mark">知</span><span>知页<span class="brand-en">KNOWLEDGE WORKSPACE</span></span></a>
+    <div class="workspace"><span class="workspace-mark">W</span><div>我的工作空间<small>个人知识服务</small></div><span class="workspace-arrow">⌄</span></div>
+    <div class="nav-label">工作台</div>
+    <nav aria-label="主导航">
+      <button data-page="knowledge" class="nav-item active"><span data-icon="library"></span>知识库<span class="nav-dot"></span></button>
+      <button data-page="search" class="nav-item"><span data-icon="search"></span>检索测试</button>
+      <button data-page="chat" class="nav-item"><span data-icon="chat"></span>智能问答</button>
+    </nav>
+    <div class="sidebar-note"><span data-icon="layers"></span><strong>从资料，到有据可循的答案</strong><p>管理内容，测试检索，<br>让每一次回答都有出处。</p></div>
+    <div class="sidebar-bottom"><a href="/docs" target="_blank" rel="noreferrer"><span data-icon="book"></span>接口文档<span>↗</span></a><button id="connection" class="account"><span class="avatar">我</span><span><strong id="connection-label">未连接</strong><small>开发访问令牌</small></span><span data-icon="settings"></span></button></div>
+  </aside>
+  <div class="shell">
+    <header class="topbar"><div class="breadcrumb">工作空间<span>/</span><strong id="breadcrumb">知识库</strong></div><div class="topbar-right"><span class="dev-pill"><i></i>开发工作台</span><button id="help" class="icon-button" aria-label="使用说明"><span data-icon="help"></span></button><button id="top-connection" class="top-avatar" type="button" aria-label="连接或断开工作台">我</button></div></header>
+    <main id="content" tabindex="-1"></main>
+    <footer class="footer">知页 · 知识检索与智能问答<span>数据来自当前后端 · 不在浏览器持久保存令牌或问答</span></footer>
+  </div>
+  <div id="notice" role="status" aria-live="polite" hidden></div>
+  <dialog id="connection-dialog" class="modal">
+    <form id="connection-form"><div class="modal-heading"><span class="small-mark">知</span><button type="button" class="icon-button" data-close aria-label="关闭连接窗口">×</button></div><h2>连接你的知识工作台</h2><p class="muted">沿用后端开发令牌，不创建账号或新的身份。</p><label for="token">开发访问令牌</label><input id="token" type="password" autocomplete="off" placeholder="粘贴访问令牌，不含 Bearer 前缀" required><p class="field-hint">在启动终端输入 <code>/token</code> 获取本次开发令牌。令牌仅存在页面内存中，刷新后需重新连接。</p><p id="connect-error" class="error-text" role="alert"></p><button class="primary full" id="connect-submit">连接工作台<span>→</span></button><div class="security-note"><span data-icon="shield"></span>仅连接同源 API，不向其他网站传递令牌。</div></form>
+  </dialog>
+  <dialog id="action-dialog" class="modal"><form id="action-form"><div class="modal-heading"><h2 id="action-title"></h2><button type="button" data-close class="icon-button" aria-label="关闭操作窗口">×</button></div><p id="action-description" class="muted"></p><label for="action-input" id="action-label">知识库名称</label><input id="action-input" maxlength="200" autocomplete="off"><p id="action-error" role="alert" class="error-text"></p><div class="modal-actions"><button type="button" data-close class="secondary">取消</button><button id="action-submit" class="primary">确认</button></div></form></dialog>
+  <dialog id="source-dialog" class="source-drawer"><header><div><span class="eyebrow">SOURCE EVIDENCE</span><h2>引用原文</h2></div><button type="button" class="icon-button" data-close aria-label="关闭引用原文">×</button></header><div id="source-content"></div></dialog>
+</body>
+</html>

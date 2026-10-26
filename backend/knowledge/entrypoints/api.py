@@ -4,9 +4,11 @@ from __future__ import annotations
 
 import time
 import uuid
+from pathlib import Path
 
 from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse
+from fastapi.staticfiles import StaticFiles
 
 from knowledge.api import errors
 from knowledge.api.v1.routers import chunks, documents, jobs, knowledge_bases, qa, search
@@ -44,6 +46,10 @@ def create_app() -> FastAPI:
         return response
 
     errors.install(app)
+
+    frontend = Path(__file__).resolve().parents[3] / "frontend"
+    if frontend.is_dir():
+        app.mount("/workbench", StaticFiles(directory=frontend, html=True), name="workbench")
 
     for module in (knowledge_bases, documents, jobs, search, chunks, qa):
         app.include_router(module.router, prefix=API_PREFIX)
