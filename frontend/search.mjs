@@ -1,7 +1,7 @@
 // 检索测试：只调用 /search，不触发生成模型。
 import { el, icon, toast, emptyState, loading, autoGrow } from './dom.mjs';
 import { scopeControl, scopeIds } from './scope.mjs';
-import { locatorText } from './core.mjs';
+import { locatorText, warningLabel } from './core.mjs';
 
 const MODES = [
   ['hybrid', '混合检索'],
@@ -123,7 +123,7 @@ function paintResults(app, container, result) {
   }
   (result.warnings || []).forEach(warning => {
     const line = el('div', 'notice-line warn');
-    line.append(icon('alert'), el('span', '', warning));
+    line.append(icon('alert'), el('span', '', warningLabel(warning)));
     container.append(line);
   });
 
