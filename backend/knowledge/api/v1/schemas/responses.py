@@ -72,6 +72,7 @@ class SearchResultOut(BaseModel):
     hits: list[SearchHitOut]
     score_type: str = "rrf"
     degraded: bool = False
+    warnings: list[str] = Field(default_factory=list)
 
 
 class CitationOut(BaseModel):
@@ -101,6 +102,7 @@ class ChunkOut(BaseModel):
     title: str
     text: str
     locator: dict
+    warnings: list[str] = Field(default_factory=list)
 
 
 class ConversationOut(BaseModel):

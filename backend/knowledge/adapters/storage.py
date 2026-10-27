@@ -20,6 +20,9 @@ def new_object_key(media_type: str) -> str:
         "application/vnd.openxmlformats-officedocument.wordprocessingml.document": "docx",
         "text/markdown": "md",
         "text/plain": "txt",
+        "image/png": "png",
+        "image/jpeg": "jpg",
+        "image/tiff": "tiff",
     }.get(media_type, "bin")
     return f"{uuid.uuid4().hex[:2]}/{uuid.uuid4().hex}.{suffix}"
 

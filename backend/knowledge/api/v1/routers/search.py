@@ -53,5 +53,7 @@ def search(
             for hit in hits
         ],
         score_type=hits[0].score_type if hits else payload.mode,
+        warnings=sorted({warning for hit in hits for warning in hit.warnings}),
+        degraded=any(hit.warnings for hit in hits),
     )
     return envelope(result.model_dump(mode="json"), request_id(request))

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from functools import lru_cache
+from typing import Literal
 
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
@@ -36,6 +37,10 @@ class Settings(BaseSettings):
     parse_output_bytes: int = 16 * 1024 * 1024
     docx_max_entries: int = 2048
     docx_max_uncompressed_bytes: int = 100 * 1024 * 1024
+    document_parser_profile: Literal["legacy-v1", "deepdoc-v0.22.0-v1"] = "legacy-v1"
+    deepdoc_url: str = "http://127.0.0.1:9381"
+    deepdoc_token: str | None = None
+    deepdoc_timeout_seconds: float = 330.0
     query_max_chars: int = 2000
     top_k_default: int = 5
     top_k_max: int = 20

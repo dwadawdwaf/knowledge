@@ -62,6 +62,8 @@ class Locator:
     page: int | None = None
     block: int | None = None
     paragraph: int | None = None
+    # DeepDoc 原始块位置：[页码, 左, 右, 上, 下]；不代表子片段精确字框。
+    positions: tuple[tuple[int, float, float, float, float], ...] = ()
 
     def to_dict(self) -> dict[str, Any]:
         out: dict[str, Any] = {
@@ -76,6 +78,8 @@ class Locator:
             out["block"] = self.block
         if self.paragraph is not None:
             out["paragraph"] = self.paragraph
+        if self.positions:
+            out["positions"] = [list(position) for position in self.positions]
         return out
 
 
@@ -85,6 +89,7 @@ class ParsedBlock:
 
     text: str
     locator: Locator
+    warnings: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -148,6 +153,7 @@ class SearchHit:
     locator: dict[str, Any]
     score: float
     score_type: str = "rrf"
+    warnings: tuple[str, ...] = ()
 
     @property
     def excerpt(self) -> str:

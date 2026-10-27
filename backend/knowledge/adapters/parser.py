@@ -29,6 +29,12 @@ def detect_media_type(data: bytes, filename: str) -> str:
     """按内容签名判断类型，扩展名只作兜底。"""
     if data.startswith(b"%PDF"):
         return APPLICATION_PDF
+    if data.startswith(b"\x89PNG\r\n\x1a\n"):
+        return "image/png"
+    if data.startswith(b"\xff\xd8\xff"):
+        return "image/jpeg"
+    if data.startswith((b"II*\x00", b"MM\x00*")):
+        return "image/tiff"
     if data.startswith(b"PK\x03\x04") and filename.lower().endswith(".docx"):
         return DOCX
 
@@ -199,10 +205,19 @@ class DocxParser:
 
 
 class ParserRegistry:
-    def __init__(self, parsers: list) -> None:
+    def __init__(self, parsers: list, *, deepdoc: Parser | None = None,
+                 profile: str = "legacy-v1") -> None:
         self._parsers = parsers
+        self._deepdoc = deepdoc
+        self.profile = profile
 
-    def for_file(self, media_type: str, filename: str):
+    def for_file(self, media_type: str, filename: str, *, profile: str | None = None):
+        selected = profile or self.profile
+        if selected not in {"legacy-v1", "deepdoc-v0.22.0-v1"}:
+            raise ParseFailed("处理策略版本不受支持")
+        if (selected == "deepdoc-v0.22.0-v1" and self._deepdoc is not None
+                and self._deepdoc.supports(media_type, filename)):
+            return self._deepdoc
         for parser in self._parsers:
             if parser.supports(media_type, filename):
                 return parser
@@ -210,6 +225,7 @@ class ParserRegistry:
 
 
 def build_parser_registry(settings: Settings | None = None) -> ParserRegistry:
+    from knowledge.adapters.deepdoc import DeepDocParser
     from knowledge.adapters.parse_process import BoundedParser
 
     resolved = settings or Settings.model_construct()
@@ -218,4 +234,8 @@ def build_parser_registry(settings: Settings | None = None) -> ParserRegistry:
         PdfParser(),
         DocxParser(resolved.docx_max_entries, resolved.docx_max_uncompressed_bytes),
     ]
-    return ParserRegistry([BoundedParser(parser, resolved) for parser in parsers])
+    # 远端调用自身有超时；服务端负责可终止的重型解析，不受本地 512MiB 上限误杀。
+    return ParserRegistry(
+        [BoundedParser(parser, resolved) for parser in parsers],
+        deepdoc=DeepDocParser(resolved), profile=resolved.document_parser_profile,
+    )

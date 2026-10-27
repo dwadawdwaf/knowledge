@@ -97,6 +97,8 @@ def search(
         session, actor, settings, embedder, query=query, kb_ids=kb_ids, mode=mode, top_k=top_k
     )
     return {
+        "warnings": sorted({warning for hit in hits for warning in hit.warnings}),
+        "degraded": any(hit.warnings for hit in hits),
         "hits": [
             {
                 "document_id": hit.document_id,

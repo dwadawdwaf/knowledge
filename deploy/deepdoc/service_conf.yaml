@@ -1,0 +1,7 @@
+# 上游解析模块导入时要求存在配置；不启动或连接这些平台服务。
+mysql:
+  name: unused_sidecar_only
+  host: 127.0.0.1
+  port: 1
+  user: unused_sidecar_only
+  password: "unused-sidecar-only"

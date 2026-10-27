@@ -81,7 +81,9 @@ def run(
     _enter_stage("parsing")
     data = storage.get(object_key)
     try:
-        blocks = registry.for_file(media_type, title).parse(data, media_type, title)
+        blocks = registry.for_file(
+            media_type, title, profile=chunk_config.get("parser_profile", "legacy-v1")
+        ).parse(data, media_type, title)
     except DomainError:
         raise
     except Exception as exc:  # 解析器内部异常统一归为失败
@@ -113,6 +115,7 @@ def run(
     _, _, locked_build, _ = build_repo.lock_execution(session, job_id, lease_token)
     if locked_build.id != build_id:
         raise StaleJob("任务构建已变化")
+    locked_build.warnings = sorted({warning for block in blocks for warning in block.warnings})
     build_repo.guard_vector_index(session, job_id, lease_token)
     chunk_repo.insert_many(
         session,

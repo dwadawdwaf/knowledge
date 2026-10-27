@@ -83,7 +83,11 @@ class BoundedParser:
                     if result.get("error"):
                         raise ParseFailed("文件解析失败")
                     return [
-                        ParsedBlock(text=block["text"], locator=Locator(**block["locator"]))
+                        ParsedBlock(
+                            text=block["text"],
+                            locator=Locator(**block["locator"]),
+                            warnings=tuple(block.get("warnings", ())),
+                        )
                         for block in result["blocks"]
                     ]
                 if not process.is_alive():
