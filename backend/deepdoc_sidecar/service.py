@@ -88,6 +88,8 @@ def create_app(settings: SidecarSettings | None = None) -> FastAPI:
                                 "text": b.text,
                                 "page": b.locator.page,
                                 "positions": b.locator.to_dict()["positions"],
+                                # 按块回传：只给并集会让纯文本块也带上表格/OCR 标签。
+                                "warnings": sorted(b.warnings),
                             }
                             for b in blocks
                         ],

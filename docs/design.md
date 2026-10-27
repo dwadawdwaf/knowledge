@@ -220,7 +220,7 @@ backend/
 
 ### 4.5 `chunks`
 
-`id` · `build_id` · `ordinal` · `text` · `locator` jsonb · `embedding` vector(1024) · `tsv` text
+`id` · `build_id` · `ordinal` · `text` · `locator` jsonb · `warnings` jsonb · `embedding` vector(1024) · `tsv` text
 
 索引：唯一 `(build_id, ordinal)`；`GIN (tsv gin_trgm_ops)`；`HNSW (embedding vector_cosine_ops)`
 
@@ -231,7 +231,10 @@ backend/
   "char_start": 0, "char_end": 11, "precision": "block" }
 ```
 
-页码从 1 开始；字符偏移按 Unicode 码点计数、左闭右开。DOCX 用 `{"type":"docx","paragraph":37}`，`page` 为 `null`。无法定位到字符时降级为 `block` 或 `page`，并把原因写入 `warnings`。
+页码从 1 开始；字符偏移按 Unicode 码点计数、左闭右开。DOCX 用 `{"type":"docx","paragraph":37}`，`page` 为 `null`。
+无法定位到字符时降级为 `block` 或 `page`。`chunks.warnings` 按块保存解析降级信号（OCR 需复核、表格已线性化、
+图片未描述、存在空白页），build 级 `warnings` 是全部块的并集；只看并集无法判断哪一块受影响，前端与检索
+据此只提示受影响的片段。
 
 ### 4.7 `jobs`
 

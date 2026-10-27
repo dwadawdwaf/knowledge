@@ -79,3 +79,34 @@ def test_invalid_configuration_never_prints_token():
     with pytest.raises(ValidationError) as failure:
         SidecarSettings(token="private-short-token")
     assert "private-short-token" not in str(failure.value)
+
+
+def test_warnings_attach_per_block_and_reading_order_is_sorted():
+    boxes = [
+        {"text": "第二条　内容乙这句话足够长不会触发短块合并。", "layout_type": "text",
+         "positions": [[1, 30, 260, 45, 70]]},
+        {"text": "<table><tr><td>A</td></tr></table>", "layout_type": "table",
+         "positions": [[1, 30, 300, 200, 240]]},
+        {"text": "第一条　内容甲这句话足够长不会触发短块合并。", "layout_type": "text",
+         "positions": [[1, 30, 120, 20, 40]]},
+    ]
+    result = normalize_boxes(boxes, 1)
+    assert [b.text[:3] for b in result] == ["第一条", "第二条", "A"]
+    assert "deepdoc_table_linearized" in result[2].warnings
+    # 纯文本块不得带上表格警告：只看 build 并集无法判断哪一块是表格。
+    assert "deepdoc_table_linearized" not in result[0].warnings
+    assert result[0].warnings == ("deepdoc_ocr_requires_review",)
+    assert result[0].locator.page == 1
+    # 表格定位在上边距 200，应排在两条正文之后。
+    assert result[2].locator.page == 1
+
+
+def test_short_heading_merges_into_following_block():
+    boxes = [
+        {"text": "第二条", "layout_type": "text", "positions": [[1, 30, 120, 20, 40]]},
+        {"text": "出差前应提交行程单并经批准。", "layout_type": "text",
+         "positions": [[1, 30, 130, 45, 70]]},
+    ]
+    result = normalize_boxes(boxes, 1)
+    assert len(result) == 1
+    assert result[0].text == "第二条 出差前应提交行程单并经批准。"

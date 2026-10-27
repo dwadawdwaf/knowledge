@@ -125,6 +125,7 @@ def run(
                 "ordinal": piece.ordinal,
                 "text": piece.text,
                 "locator": piece.locator,
+                "warnings": piece.warnings,
                 "embedding": vector,
                 "tsv": piece.text,
             }

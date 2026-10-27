@@ -1,5 +1,6 @@
 // 对话页：800px 居中列、时间分隔、用户气泡右对齐、助手答案无气泡 + 引用芯片。
 import { el, icon, toast, autoGrow, clockLabel, dayLabel } from './dom.mjs';
+import { warningLabel } from './core.mjs';
 import { scopeControl, scopeIds } from './scope.mjs';
 
 const MODE_LABEL = { hybrid: '混合检索', semantic: '语义检索', keyword: '关键词检索' };
@@ -278,7 +279,7 @@ function answerBlocks(app, answer) {
 
   (answer.warnings || []).forEach(warning => {
     const line = el('div', 'notice-line warn');
-    line.append(icon('alert'), el('span', '', warning));
+    line.append(icon('alert'), el('span', '', warningLabel(warning)));
     blocks.push(line);
   });
   if (answer.retrieval?.degraded) {

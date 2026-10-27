@@ -186,6 +186,7 @@ def insert_many(
             ordinal=row["ordinal"],
             text=row["text"],
             locator=row["locator"],
+            warnings=list(row.get("warnings") or ()),
             embedding=row["embedding"],
             tsv=row["tsv"],
         )
@@ -238,7 +239,7 @@ def list_for_document(
 ) -> list[dict]:
     """按序返回当前已发布 build 的分块，用于前端查看分段结果。"""
     stmt = (
-        select(Chunk.id, Chunk.ordinal, Chunk.text, Chunk.locator, Chunk.build_id)
+        select(Chunk.id, Chunk.ordinal, Chunk.text, Chunk.locator, Chunk.build_id, Chunk.warnings)
         .join(Document, Document.active_build_id == Chunk.build_id)
         .join(KnowledgeBase, KnowledgeBase.id == Document.kb_id)
         .where(
@@ -256,6 +257,7 @@ def list_for_document(
             "text": row[2],
             "locator": row[3],
             "build_id": str(row[4]),
+            "warnings": list(row[5] or ()),
         }
         for row in session.execute(stmt)
     ]

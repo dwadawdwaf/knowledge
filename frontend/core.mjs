@@ -59,8 +59,25 @@ export function locatorText(locator = {}) {
   const parts = [];
   if (locator.page != null) parts.push(`第 ${locator.page} 页`);
   if (locator.paragraph != null) parts.push(`段落索引 ${locator.paragraph}`);
-  if (locator.char_start != null) parts.push(`字符 [${locator.char_start}, ${locator.char_end})`);
+  if (locator.char_start != null) {
+    const range = `[${locator.char_start}, ${locator.char_end})`;
+    // DeepDoc 与 DOCX 只给块/段内偏移，标成“字符”会被误读成文档级位置。
+    const scope = locator.precision !== 'block' ? '字符'
+      : locator.paragraph != null ? '段落内' : '块内';
+    parts.push(`${scope} ${range}`);
+  }
   return parts.join(' · ') || '原文分块';
+}
+
+const WARNING_LABELS = {
+  deepdoc_ocr_requires_review: 'OCR 识别，需复核',
+  deepdoc_table_linearized: '表格已线性化',
+  deepdoc_figures_not_described: '含未描述的图片',
+  deepdoc_empty_page: '存在空白页',
+};
+
+export function warningLabel(code) {
+  return WARNING_LABELS[code] || code;
 }
 // 分块视图只做度量与相对定位；缺字符偏移时退化为等宽，不伪造覆盖比例。
 export function chunkMetrics(items = []) {
@@ -71,7 +88,12 @@ export function chunkMetrics(items = []) {
     return { ordinal: item.ordinal, chars: (item.text || '').length, start, end, page: locator.page ?? null };
   });
   const chars = spans.reduce((sum, span) => sum + span.chars, 0);
-  const usable = spans.length > 0 && spans.every(span => span.start !== null && span.end !== null && span.end > span.start);
+  // 块内偏移（DeepDoc）每块都从 0 开始，按比例画会得出错误的覆盖关系；
+  // 只有偏移在文档内单调递增时才认为可以等比例排列。
+  const starts = spans.map(span => span.start);
+  const monotonic = spans.every((span, index) => index === 0 || starts[index] > starts[index - 1]);
+  const usable = spans.length > 0 && monotonic
+    && spans.every(span => span.start !== null && span.end !== null && span.end > span.start);
   const maxEnd = usable ? Math.max(...spans.map(span => span.end)) : 0;
   let overlaps = 0;
   for (let index = 1; index < spans.length; index += 1) {
@@ -85,6 +107,8 @@ export function chunkMetrics(items = []) {
     const width = Math.max(((span.end - span.start) / maxEnd) * 100, 1.2);
     return { ordinal: span.ordinal, left, width, start: span.start, end: span.end, chars: span.chars, page: span.page };
   });
+  const blockPrecision = items.length > 0
+    && items.every(item => (item.locator || {}).precision === 'block');
   return { count: spans.length, chars, avg: spans.length ? Math.round(chars / spans.length) : 0,
-    usable, maxEnd, overlaps, pages, segments };
+    usable, blockPrecision, maxEnd, overlaps, pages, segments };
 }

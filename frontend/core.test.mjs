@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { ApiClient, ApiError, reindexTarget, jobLabel, locatorText, chunkMetrics } from './core.mjs';
+import { ApiClient, ApiError, reindexTarget, jobLabel, locatorText, chunkMetrics, warningLabel } from './core.mjs';
 
 test('无令牌也发起请求，由服务端决定是否放行', async () => {
   let sent;
@@ -78,4 +78,28 @@ test('空分块不产生除零或假装有内容', () => {
   const metrics = chunkMetrics([]);
   assert.equal(metrics.count, 0); assert.equal(metrics.avg, 0);
   assert.deepEqual(metrics.segments, []);
+});
+
+test('块内偏移不被说成文档字符位置', () => {
+  const deepdoc = locatorText({ page: 2, char_start: 0, char_end: 20, precision: 'block' });
+  assert.equal(deepdoc, '第 2 页 · 块内 [0, 20)');
+  const markdown = locatorText({ char_start: 76, char_end: 119, precision: 'char' });
+  assert.equal(markdown, '字符 [76, 119)');
+  const docx = locatorText({ paragraph: 0, char_start: 0, char_end: 8, precision: 'block' });
+  assert.equal(docx, '段落索引 0 · 段落内 [0, 8)');
+});
+test('未知警告码原样显示，不隐藏', () => {
+  assert.equal(warningLabel('deepdoc_table_linearized'), '表格已线性化');
+  assert.equal(warningLabel('something_new'), 'something_new');
+});
+
+test('块内偏移不按文档比例排列，避免给出错误的覆盖关系', () => {
+  const metrics = chunkMetrics([
+    { ordinal: 0, text: 'a'.repeat(17), locator: { char_start: 0, char_end: 17, precision: 'block', page: 1 } },
+    { ordinal: 1, text: 'b'.repeat(74), locator: { char_start: 0, char_end: 74, precision: 'block', page: 1 } },
+  ]);
+  assert.equal(metrics.usable, false);
+  assert.equal(metrics.blockPrecision, true);
+  assert.equal(metrics.segments[0].width, 49.5);
+  assert.equal(metrics.segments[1].left, 50);
 });

@@ -521,10 +521,36 @@ docker compose -p ks-deepdoc -f deploy/deepdoc/compose.yaml exec deepdoc /opt/ks
 - 本机 Docker Desktop 4.97.0 的 D 盘程序、独立配置目录及实际 WSL 数据盘已核验，Linux 引擎可用。
   镜像已构建并跑过真实推理（2026-10-27）：自制版面 PNG/JPEG/TIFF/PDF 四格式字符全部识别正确，
   表格与跨帧页码正确，但**词间空格在整行文本中丢失**，导致 `deepdoc_sidecar.smoke` 的正常断言
-  4/4 失败；另有适配层 warnings 被全局共享的缺陷。记录与证据见
-  `reports/deepdoc-parse-validation-2026-10-27.html`。
+  4/4 失败（该自检按英文带空格断言，中文不受影响）。适配层 warnings 全局共享的缺陷已于当日修复，
+  见 14.4。记录与证据见 `reports/deepdoc-parse-validation-2026-10-27.html`。
   **不能据此宣告 DeepDoc 移植验收完成**：多栏、跨页表格、复杂公式与真实扫描件仍未验证，
   容量与吞吐也没有实测结论。
+
+### 14.4 边车输出归一（2026-10-27 实测后修订）
+
+`normalize_boxes` 在边车内做三件事，均为实测后确认的行为：
+
+1. **阅读顺序**：上游按版面探测批次返回块，同一页会出现“第二条”排在“第一条”之前；
+   按页、上边距、左边距排序后恢复阅读顺序。局限：只处理单一阅读顺序，多栏排版会按行交错。
+2. **短块合并**：版面模型会把“第二条”这类编号单独切成 3 字块，单独成段是检索噪声；
+   不足 16 字的块并入紧随其后的同页块（表格块不并入）。
+3. **警告按块归属**：`deepdoc_table_linearized` 只标表格块，`deepdoc_figures_not_described`
+   标在图形所在页的块上（无定位则记到首块），`deepdoc_ocr_requires_review` 标全部块。
+   早先跨块复用一个集合，纯文本块也带表格警告。边车按块回传 `warnings` 字段，
+   旧客户端按文档级并集回退兼容。
+
+`chunks.warnings`（迁移 0003）把块级信号落库；分块继承来源块的警告。
+前端分块抽屉按块显示橙色标签；`locator.precision="block"` 的偏移是块内偏移，
+覆盖条退化为等宽并说明，不伪造文档级比例。
+
+多格式自制样本在 `backend/testdata/multiformat/`（生成脚本 `generate.py`）：
+文本层 PDF、扫描版 PDF、PNG、JPEG、双页 TIFF、DOCX。同内容双格式（文本 PDF 与扫描 PDF）
+可对照 DeepDoc 的版面/表格能力与纯 OCR 路径；实测中文 OCR 字符级准确，扫描表格可识别并线性化
+（线性化按列序输出，行列对应关系需人工核对）。单页解析约 33 秒（2 核 CPU）。
+
+重建镜像需要拉取 RAGFlow 基础镜像；基础镜像不在本地时须可访问 Docker Hub。
+本机开发时边车代码改动可直接 `docker cp` 进容器后 `docker restart`，但容器重建后会丢失，
+以源码为准。
 
 ## 15. 外部数据库（可选）
 

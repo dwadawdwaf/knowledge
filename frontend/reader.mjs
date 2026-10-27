@@ -1,6 +1,6 @@
 // 引用原文与分块结果：两个抽屉共用一套读取与渲染逻辑。
 import { el, icon, emptyState, loading } from './dom.mjs';
-import { chunkMetrics, locatorText } from './core.mjs';
+import { chunkMetrics, locatorText, warningLabel } from './core.mjs';
 
 export async function openSource(app, chunkId) {
   const dialog = document.querySelector('#source-dialog');
@@ -19,7 +19,7 @@ export async function openSource(app, chunkId) {
     (chunk.warnings || []).forEach(warning => {
       const line = el('div', 'notice-line warn');
       line.style.marginTop = '12px';
-      line.append(icon('alert'), el('span', '', warning));
+      line.append(icon('alert'), el('span', '', warningLabel(warning)));
       content.append(line);
     });
   } catch (error) {
@@ -77,7 +77,9 @@ function map(metrics) {
   box.append(el('h4', '', '分块覆盖'));
   box.append(el('p', 'chunk-map-hint', metrics.usable
     ? `按字符区间等比例排列，横向重叠即分块之间的共享内容（文档共 ${metrics.maxEnd} 字符）。`
-    : '当前分块缺少字符偏移，按顺序等宽展示，不代表实际覆盖比例。'));
+    : metrics.blockPrecision
+      ? '解析只提供块内偏移，按块序等宽展示，不代表文档字符比例；页码与块序见下方明细。'
+      : '当前分块缺少字符偏移，按顺序等宽展示，不代表实际覆盖比例。'));
   const canvas = el('div', 'chunk-map');
   metrics.segments.forEach(segment => {
     const bar = el('span', 'chunk-seg');
@@ -99,6 +101,9 @@ function list(items) {
     head.append(el('span', 'chunk-tag', `#${item.ordinal + 1}`));
     head.append(el('span', 'source-location', locatorText(item.locator)));
     head.append(el('span', 'chunk-chars', `${(item.text || '').length} 字`));
+    (item.warnings || []).forEach(code => {
+      head.append(el('span', 'chunk-warn', warningLabel(code)));
+    });
     const toggle = el('button', 'chunk-toggle', '展开');
     toggle.type = 'button';
     toggle.setAttribute('aria-expanded', 'false');

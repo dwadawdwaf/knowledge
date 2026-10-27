@@ -28,6 +28,8 @@ class _Block(BaseModel):
     text: StrictStr = Field(min_length=1)
     page: StrictInt = Field(ge=1)
     positions: list[tuple[StrictInt, float, float, float, float]] = Field(min_length=1)
+    # 兼容旧边车：早期版本没有块级字段，此时回退到文档级并集。
+    warnings: list[str] | None = None
 
     @model_validator(mode="after")
     def validate_positions(self) -> _Block:
@@ -124,7 +126,7 @@ class DeepDocParser:
                     precision="block",
                     positions=tuple(block.positions),
                 ),
-                warnings=tuple(result.warnings),
+                warnings=tuple(block.warnings if block.warnings is not None else result.warnings),
             )
             for index, block in enumerate(result.blocks)
         ]

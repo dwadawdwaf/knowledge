@@ -15,6 +15,7 @@ class TextChunk:
     ordinal: int
     text: str
     locator: dict
+    warnings: tuple[str, ...] = ()
 
 
 def _split_text(text: str, max_chars: int, overlap: int) -> list[tuple[int, int]]:
@@ -66,7 +67,14 @@ def chunk_blocks(
                 paragraph=base.paragraph,
                 positions=base.positions,
             )
-            chunks.append(TextChunk(ordinal=ordinal, text=piece, locator=locator.to_dict()))
+            chunks.append(
+                TextChunk(
+                    ordinal=ordinal,
+                    text=piece,
+                    locator=locator.to_dict(),
+                    warnings=block.warnings,
+                )
+            )
             ordinal += 1
 
     return chunks

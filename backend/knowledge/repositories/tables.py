@@ -138,6 +138,10 @@ class Chunk(Base):
     ordinal: Mapped[int] = mapped_column(Integer, nullable=False)
     text: Mapped[str] = mapped_column(Text, nullable=False)
     locator: Mapped[dict] = mapped_column(JSONB, nullable=False)
+    # 解析阶段的降级信号按块保存：只看 build 级并集无法判断哪一块是 OCR 或表格。
+    warnings: Mapped[list[str]] = mapped_column(
+        JSONB, nullable=False, default=list, server_default="[]"
+    )
     embedding: Mapped[list[float]] = mapped_column(Vector(EMBEDDING_DIM), nullable=False)
     tsv: Mapped[str] = mapped_column(Text, nullable=False)
 
