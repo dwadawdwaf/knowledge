@@ -2,9 +2,18 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { ApiClient, ApiError, reindexTarget, jobLabel, locatorText, chunkMetrics } from './core.mjs';
 
-test('未连接不能访问接口', async () => {
-  const api = new ApiClient(() => assert.fail('不得发送请求'));
-  await assert.rejects(api.request('/knowledge-bases'), error => error.status === 401);
+test('无令牌也发起请求，由服务端决定是否放行', async () => {
+  let sent;
+  const api = new ApiClient(async (_, options) => {
+    sent = options.headers;
+    return Response.json({ data: { items: [] } });
+  });
+  await api.request('/knowledge-bases');
+  assert.equal(sent.Authorization, undefined);
+});
+test('服务端要求令牌时把 401 抛给页面', async () => {
+  const api = new ApiClient(async () => Response.json({ error: { code: 'UNAUTHENTICATED' }, meta: { request_id: 'r' } }, { status: 401 }));
+  await assert.rejects(api.request('/knowledge-bases'), error => error.status === 401 && error.code === 'UNAUTHENTICATED');
 });
 test('身份仅由 Authorization 传递，不使用 Cookie', async () => {
   const api = new ApiClient(async (url, options) => {

@@ -8,6 +8,7 @@ import shutil
 import socket
 import subprocess
 import sys
+import secrets
 import tempfile
 import time
 import uuid
@@ -82,6 +83,8 @@ class LocalRuntime:
         self.processes: dict[str, tuple[subprocess.Popen, BinaryIO]] = {}
         self.log_dir = BACKEND / ".data" / "e2e" / uuid.uuid4().hex[:12]
         self.owner = "demo-owner"
+        # 每次运行用新密钥签发令牌：上一轮落在浏览器历史里的令牌对下一次无效。
+        self.token_secret = secrets.token_urlsafe(32)
 
     def say(self, message: str) -> None:
         # 仅步骤提示绕过 pytest 的 Python 输出捕获，服务日志仍正常捕获。
@@ -122,7 +125,7 @@ class LocalRuntime:
                     "NO_PROXY": "127.0.0.1,localhost",
                     "KS_DATABASE_URL": self.database_url,
                     "KS_STORAGE_ROOT": str(self.directory / "objects"),
-                    "KS_TOKEN_SECRET": "dev-only-secret",
+                    "KS_TOKEN_SECRET": self.token_secret,
                     "KS_EMBEDDING_MODEL": "hash-1024",
                     "KS_EMBEDDING_BASE_URL": self.embedding_url,
                     "KS_GENERATOR_BASE_URL": self.generator_url,
@@ -250,9 +253,18 @@ class LocalRuntime:
         self._stop("worker")
         self._stop("api")
 
+    def dev_token(self, subject: str | None = None) -> str:
+        """本次运行有效的开发令牌。"""
+        settings = Settings.model_construct(token_secret=self.token_secret)
+        return issue_token(subject or self.owner, settings=settings)
+
+    def workbench_url(self, *, autologin: bool = True) -> str:
+        """工作台地址；令牌走 URL 片段，不进请求行也不落盘。"""
+        url = f"{self.base_url}/workbench/"
+        return f"{url}#t={self.dev_token()}" if autologin else url
+
     def client(self, subject: str | None = None) -> httpx.Client:
-        settings = Settings.model_construct(token_secret=self.env["KS_TOKEN_SECRET"])
-        token = issue_token(subject or self.owner, settings=settings)
+        token = self.dev_token(subject)
         return httpx.Client(
             base_url=self.base_url,
             trust_env=False,

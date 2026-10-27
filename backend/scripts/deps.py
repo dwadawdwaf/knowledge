@@ -278,11 +278,8 @@ def ensure_database(
             f"数据库 {parsed.hostname}:{port} 未监听，且未配置 KS_TUNNEL_SSH。"
             "请手动建立隧道，或写入 KS_TUNNEL_SSH=<user>@<host>。"
         )
-    command = ["ssh", "-N", "-o", "BatchMode=yes", "-o", "ExitOnForwardFailure=yes",
-               "-o", "ServerAliveInterval=15", "-o", "ServerAliveCountMax=6",
-               "-L", f"{port}:127.0.0.1:5432", target]
-    if settings.tunnel_key:
-        command[1:1] = ["-i", settings.tunnel_key]
+    # 交给守护进程维持：链路被重置后自动重连，启动器退出也不影响。
+    command = [sys.executable, "-m", "scripts.db_tunnel"]
     progress(f"[依赖] 建立数据库隧道：{parsed.hostname}:{port} -> {target}:5432")
     log_dir = BACKEND / ".data" / "deps"
     log_dir.mkdir(parents=True, exist_ok=True)
@@ -290,6 +287,8 @@ def ensure_database(
     try:
         subprocess.Popen(
             command,
+            cwd=str(BACKEND),
+            stdin=subprocess.DEVNULL,
             stdout=output,
             stderr=subprocess.STDOUT,
             creationflags=(

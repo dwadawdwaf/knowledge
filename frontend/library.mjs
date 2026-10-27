@@ -399,6 +399,9 @@ function actionBar(app, doc) {
 
   const chunks = el('button', 'link-btn', '分块');
   chunks.type = 'button';
+  // 没有已发布内容时明确置灰，而不是点开一个空抽屉。
+  chunks.disabled = !doc.active_build_id;
+  chunks.title = doc.active_build_id ? '查看当前版本的分段结果' : '还没有已发布内容，无法查看分块';
   chunks.addEventListener('click', () => app.openChunks(doc));
 
   const remove = el('button', 'link-btn danger', '删除');

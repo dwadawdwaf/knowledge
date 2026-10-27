@@ -20,12 +20,12 @@ export class ApiError extends Error {
 export class ApiClient {
   constructor(fetcher = globalThis.fetch.bind(globalThis)) { this.fetcher = fetcher; this.token = ''; }
   async request(path, { method = 'GET', body, timeout = 120000 } = {}) {
-    if (!this.token) throw new ApiError('UNAUTHENTICATED', 401);
+    // 开发态服务端不校验令牌，无令牌也照常发起；需要令牌时由 401 引导用户连接。
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), timeout);
     const token = this.token;
     try {
-      const headers = { Authorization: `Bearer ${token}` };
+      const headers = token ? { Authorization: `Bearer ${token}` } : {};
       const isFile = body instanceof FormData;
       if (body !== undefined && !isFile) headers['Content-Type'] = 'application/json';
       const response = await this.fetcher(`/api/v1${path}`, { method, headers,

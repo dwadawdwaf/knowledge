@@ -189,6 +189,7 @@ function renderSessions() {
 /* ---------------------------------------------------------------- 路由 */
 
 function navigate(page) {
+  if (page === state.page) { closeMobileNav(); return; }  // 重复点同一入口不重绘
   if (page === 'chat' && !state.sessionId) ensureSession();
   stopPolling();
   state.page = page;
@@ -432,6 +433,26 @@ document.querySelectorAll('[data-close]').forEach(node => {
   node.addEventListener('click', () => node.closest('dialog')?.close());
 });
 
+// 点遮罩关闭：目标是 dialog 本体说明落在 backdrop 上，避免“点了没反应”。
+document.querySelectorAll('dialog').forEach(dialog => {
+  dialog.addEventListener('click', event => {
+    if (event.target === dialog) dialog.close();
+  });
+});
+
+async function connect(value) {
+  api.token = String(value || '').trim().replace(/^Bearer\s+/i, '');
+  try {
+    await loadLibraries();
+    state.connected = true;
+    connectionLabel.textContent = '已连接 · 开发身份';
+    return true;
+  } catch (error) {
+    api.token = '';
+    throw error;
+  }
+}
+
 document.querySelector('#connection-form').addEventListener('submit', async event => {
   event.preventDefault();
   const submit = document.querySelector('#connect-submit');
@@ -439,18 +460,14 @@ document.querySelector('#connection-form').addEventListener('submit', async even
   const error = document.querySelector('#connect-error');
   submit.disabled = true;
   error.textContent = '';
-  api.token = field.value.trim().replace(/^Bearer\s+/i, '');
   try {
-    await loadLibraries();
-    state.connected = true;
+    await connect(field.value);
     field.value = '';
-    connectionLabel.textContent = '已连接 · 开发身份';
     connectionDialog.close();
     render();
     renderSessions();
     notify('已连接后端，正在展示当前身份的数据。');
   } catch (error_) {
-    api.token = '';
     error.textContent = errorText(error_);
   } finally {
     submit.disabled = false;
@@ -470,10 +487,33 @@ window.addEventListener('hashchange', () => {
   if (['chat', 'knowledge', 'files', 'search'].includes(page) && page !== state.page) navigate(page);
 });
 
-const initial = location.hash.replace('#', '');
-if (['chat', 'knowledge', 'files', 'search'].includes(initial)) {
-  state.page = initial;
-  if (initial === 'chat') ensureSession();
+function consumeStartupToken() {
+  const match = /^#t=(.+)$/.exec(location.hash);
+  if (!match) return '';
+  // 读到就抹掉：令牌不留在地址栏，也不会随刷新再次出现。
+  history.replaceState(null, '', location.pathname + location.search);
+  return decodeURIComponent(match[1]);
 }
-render();
-renderSessions();
+
+async function bootstrap() {
+  const token = consumeStartupToken();
+  const initial = location.hash.replace('#', '');
+  if (['chat', 'knowledge', 'files', 'search'].includes(initial)) {
+    state.page = initial;
+    if (initial === 'chat') ensureSession();
+  }
+  render();
+  renderSessions();
+  if (!token) { openConnection(); return; }
+  try {
+    await connect(token);
+    render();
+    renderSessions();
+    notify('已自动连接本次工作台。');
+  } catch (error) {
+    notify(`自动连接失败：${errorText(error)}`);
+    openConnection();
+  }
+}
+
+bootstrap();

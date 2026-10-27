@@ -49,8 +49,7 @@ def main() -> int:
         env = {key: value for key, value in os.environ.items() if not key.startswith("KS_")}
         env.update(
             KS_UI_BROWSER=str(browser),
-            KS_UI_URL=runtime.base_url + "/workbench/",
-            KS_UI_TOKEN=client.headers["Authorization"].removeprefix("Bearer "),
+            KS_UI_URL=runtime.workbench_url(),
             PYTHONIOENCODING="utf-8",
         )
         return subprocess.call(
