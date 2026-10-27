@@ -12,6 +12,8 @@ class Settings(BaseSettings):
     model_config = SettingsConfigDict(env_prefix="KS_", env_file=".env", extra="ignore")
 
     database_url: str = "postgresql+psycopg://postgres:postgres@localhost:5432/knowledge"
+    # 浏览器验收使用独立库：它用桩模型（hash-1024），与真实模型不能共用同一个向量索引。
+    smoke_database_url: str | None = None
     storage_root: str = "./.data/objects"
 
     token_secret: str = "dev-only-secret"

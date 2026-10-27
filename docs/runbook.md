@@ -538,6 +538,9 @@ docker compose -p ks-deepdoc -f deploy/deepdoc/compose.yaml exec deepdoc /opt/ks
 ssh -N -L 5433:127.0.0.1:5432 root@<server>
 ```
 
+浏览器验收用**独立库**：它使用桩模型 `hash-1024`，而全库共用一个向量索引，与真实模型的 `bge-m3` 混用会被 `guard_vector_index` 拒绝（任务表现为 `MODEL_UNAVAILABLE`）。
+用 `KS_SMOKE_DATABASE_URL` 指定验收库；未配置时退回临时库。两个库不要互换使用。
+
 前提：库内已启用 `vector` 与 `pg_trgm`（扩展需超级用户创建一次）；应用角色对该库有 CREATE 权限。
 演示数据会留在该库，重复运行浏览器验收前先重置 `public` schema 再重建扩展，否则脚本内的数量断言
 会被历史数据打乱。连接串含口令，只写进被忽略的 `.env`，不提交、不写日志。

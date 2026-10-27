@@ -69,6 +69,11 @@ def external_database_url_from_file() -> str | None:
     return external_database_url(_RealSettings())
 
 
+def smoke_database_url_from_file() -> str | None:
+    """浏览器验收专用库；未配置时返回 None，退回临时库。"""
+    return _RealSettings().smoke_database_url
+
+
 def real_model_environment(settings: Settings) -> dict[str, str]:
     validate_real_settings(settings)
     fields = (

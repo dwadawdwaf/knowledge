@@ -176,6 +176,7 @@ def _handle_failure(
                 "attempt": attempt,
                 "max_attempts": max_attempts,
                 "error_code": error["code"],
+                "error_detail": exc.message,
             },
         )
         return
@@ -188,6 +189,7 @@ def _handle_failure(
             "attempt": attempt,
             "max_attempts": max_attempts,
             "error_code": error["code"],
+            "error_detail": exc.message,
         },
     )
 

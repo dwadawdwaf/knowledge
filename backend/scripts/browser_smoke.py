@@ -14,7 +14,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from scripts.http_scenario import expect, upload_sample, wait_job
 from scripts.local_runtime import BACKEND, LocalRuntime
 from scripts.model_fixture import ModelFixture
-from scripts.real_model import external_database_url_from_file
+from scripts.real_model import smoke_database_url_from_file
 
 
 def main() -> int:
@@ -37,7 +37,7 @@ def main() -> int:
         LocalRuntime(
             embedding_url=model.url,
             generator_url=model.url,
-            database_url=external_database_url_from_file(),
+            database_url=smoke_database_url_from_file(),
         ) as runtime,
         runtime.client() as client,
     ):

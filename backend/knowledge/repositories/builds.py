@@ -128,8 +128,8 @@ def guard_vector_index(session: Session, job_id: uuid.UUID, token: uuid.UUID) ->
     _, _, build, _ = lock_execution(session, job_id, token)
     # 将配置校验与插入串行化，避免空索引首次写入时混入不同配置。
     session.execute(text("SELECT pg_advisory_xact_lock(hashtext('knowledge.vector_config'))"))
-    incompatible = session.scalar(
-        select(IndexBuild.id)
+    incompatible = session.execute(
+        select(IndexBuild.embedding_model, IndexBuild.embedding_dim)
         .where(
             (
                 (IndexBuild.embedding_model != build.embedding_model)
@@ -138,6 +138,11 @@ def guard_vector_index(session: Session, job_id: uuid.UUID, token: uuid.UUID) ->
             select(Chunk.id).where(Chunk.build_id == IndexBuild.id).exists(),
         )
         .limit(1)
-    )
+    ).first()
     if incompatible is not None:
-        raise ModelUnavailable("向量索引配置不兼容，请恢复原配置或离线重建索引")
+        # 全库共用一个向量索引，混用模型会让近邻检索失去意义；报错要指出双方配置。
+        raise ModelUnavailable(
+            f"库内已有 {incompatible[0]}({incompatible[1]} 维) 分块，"
+            f"本次是 {build.embedding_model}({build.embedding_dim} 维)；"
+            "同一向量索引不允许混用模型，请换库或清空后重建"
+        )
