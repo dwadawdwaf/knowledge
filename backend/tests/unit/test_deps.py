@@ -32,3 +32,22 @@ def test_model_tag_matching_ignores_latest_suffix():
     assert _matches("bge-m3", ["bge-m3:latest", "qwen2.5:7b"])
     assert _matches("bge-m3:latest", ["bge-m3:latest"])
     assert not _matches("bge-m3", ["qwen2.5:7b"])
+
+
+def test_ensure_database_skips_remote_host():
+    from knowledge.config import Settings
+    from scripts.deps import ensure_database
+
+    settings = Settings(_env_file=None, database_url="postgresql+psycopg://u:p@db.example.com:5432/knowledge")
+    ensure_database(settings, progress=lambda message: None)  # 远端不归启动器管
+
+
+def test_ensure_database_requires_tunnel_when_port_closed():
+    import pytest
+
+    from knowledge.config import Settings
+    from scripts.deps import DependencyError, ensure_database
+
+    settings = Settings(_env_file=None, database_url="postgresql+psycopg://u:p@127.0.0.1:1/knowledge")
+    with pytest.raises(DependencyError):
+        ensure_database(settings, progress=lambda message: None)

@@ -261,6 +261,57 @@ def verify_generator(
         raise DependencyError("生成服务响应缺少 choices，模型可能不可用。")
 
 
+def ensure_database(
+    settings, *, progress: Callable[[str], None] = _say
+) -> None:
+    """数据库指向本机端口但无人监听时，按配置建立 SSH 隧道。"""
+    parsed = urlsplit(settings.database_url)
+    if parsed.hostname not in LOOPBACK_HOSTS:
+        return
+    port = parsed.port or 5432
+    if _port_open(parsed.hostname, port):
+        progress(f"[依赖] 数据库端口已就绪：{parsed.hostname}:{port}")
+        return
+    target = settings.tunnel_ssh
+    if not target:
+        raise DependencyError(
+            f"数据库 {parsed.hostname}:{port} 未监听，且未配置 KS_TUNNEL_SSH。"
+            "请手动建立隧道，或写入 KS_TUNNEL_SSH=<user>@<host>。"
+        )
+    command = ["ssh", "-N", "-o", "BatchMode=yes", "-o", "ExitOnForwardFailure=yes",
+               "-o", "ServerAliveInterval=15", "-o", "ServerAliveCountMax=6",
+               "-L", f"{port}:127.0.0.1:5432", target]
+    if settings.tunnel_key:
+        command[1:1] = ["-i", settings.tunnel_key]
+    progress(f"[依赖] 建立数据库隧道：{parsed.hostname}:{port} -> {target}:5432")
+    log_dir = BACKEND / ".data" / "deps"
+    log_dir.mkdir(parents=True, exist_ok=True)
+    output = (log_dir / "tunnel.log").open("ab")
+    try:
+        subprocess.Popen(
+            command,
+            stdout=output,
+            stderr=subprocess.STDOUT,
+            creationflags=(
+                subprocess.CREATE_NO_WINDOW | subprocess.DETACHED_PROCESS
+                if os.name == "nt"
+                else 0
+            ),
+        )
+    finally:
+        output.close()
+    deadline = time.monotonic() + START_TIMEOUT_SECONDS
+    while time.monotonic() < deadline:
+        if _port_open(parsed.hostname, port):
+            progress(f"[依赖] 隧道就绪：{parsed.hostname}:{port}")
+            return
+        time.sleep(0.3)
+    raise DependencyError(
+        f"数据库隧道未就绪（{START_TIMEOUT_SECONDS:.0f}s 内端口未监听）；"
+        "请检查 SSH 密钥与服务器状态，日志见 backend/.data/deps/tunnel.log。"
+    )
+
+
 def ensure_dependencies(
     settings,
     *,
@@ -269,6 +320,7 @@ def ensure_dependencies(
     progress: Callable[[str], None] = _say,
 ) -> None:
     """启动本机依赖并验证两个模型端点；失败抛 DependencyError。"""
+    ensure_database(settings, progress=progress)
     base_url = settings.embedding_base_url or ""
     if not base_url:
         raise DependencyError("缺少向量端点 KS_EMBEDDING_BASE_URL。")

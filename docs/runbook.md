@@ -532,6 +532,9 @@ docker compose -p ks-deepdoc -f deploy/deepdoc/compose.yaml exec deepdoc /opt/ks
 该行被注释掉即回到临时库。使用外部库时运行环境自动把租约放宽到 60 秒、心跳 15 秒
 （临时库仍是 8/5 秒）：每次心跳都是一个网络往返，秒级租约会在发布前过期并让任务被判取消。
 
+配置 `KS_TUNNEL_SSH=<user>@<host>`（可选 `KS_TUNNEL_KEY`）后，启动器在数据库端口未监听时
+自动建立隧道，无需手动执行下面的命令；隧道随启动器结束保留，下次直接复用。
+
 远端库不要直接暴露公网，用隧道把本机端口转到服务器回环地址：
 
 ```bash

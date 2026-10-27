@@ -14,6 +14,9 @@ class Settings(BaseSettings):
     database_url: str = "postgresql+psycopg://postgres:postgres@localhost:5432/knowledge"
     # 浏览器验收使用独立库：它用桩模型（hash-1024），与真实模型不能共用同一个向量索引。
     smoke_database_url: str | None = None
+    # 数据库在远端时，由启动器按需建立本机到服务器的 SSH 隧道（仅开发用）。
+    tunnel_ssh: str | None = None
+    tunnel_key: str | None = None
     storage_root: str = "./.data/objects"
 
     token_secret: str = "dev-only-secret"
