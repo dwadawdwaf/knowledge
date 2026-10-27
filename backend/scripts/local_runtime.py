@@ -63,12 +63,17 @@ class LocalRuntime:
         generator_url: str = "",
         port: int = 0,
         model_settings: Settings | None = None,
+        lease_seconds: int | None = None,
+        heartbeat_seconds: int | None = None,
     ) -> None:
         self.database_url = database_url
         self.embedding_url = embedding_url
         self.generator_url = generator_url
         self.port = port
         self.model_settings = model_settings
+        # 留空时按库的类型取值：临时库 8/5 秒，外部库 60/15 秒。
+        self.lease_seconds = lease_seconds
+        self.heartbeat_seconds = heartbeat_seconds
         self.request_timeout = (
             (model_settings.generator_timeout_seconds + 60) if model_settings else 15
         )
@@ -100,8 +105,12 @@ class LocalRuntime:
                 )
             else:
                 self.say("[mode] 真实模型 + 自制资料；问题和证据将发送到已配置端点")
-            if self.database_url is None:
+            external_database = self.database_url is not None
+            if not external_database:
                 self.database_url = self.stack.enter_context(isolated_database(self.say))
+            # 外部库的心跳与写入都是网络往返，租约按临时库的秒级取值会在发布前过期。
+            lease = self.lease_seconds or (60 if external_database else 8)
+            heartbeat = self.heartbeat_seconds or (15 if external_database else 5)
             self.env = {
                 key: value for key, value in os.environ.items() if not key.startswith("KS_")
             }
@@ -118,8 +127,8 @@ class LocalRuntime:
                     "KS_EMBEDDING_BASE_URL": self.embedding_url,
                     "KS_GENERATOR_BASE_URL": self.generator_url,
                     "KS_GENERATOR_MODEL": "fixture",
-                    "KS_LEASE_SECONDS": "8",
-                    "KS_HEARTBEAT_SECONDS": "5",
+                    "KS_LEASE_SECONDS": str(lease),
+                    "KS_HEARTBEAT_SECONDS": str(heartbeat),
                     "KS_WORKER_POLL_SECONDS": "0.2",
                 }
             )

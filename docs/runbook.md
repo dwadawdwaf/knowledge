@@ -529,7 +529,8 @@ docker compose -p ks-deepdoc -f deploy/deepdoc/compose.yaml exec deepdoc /opt/ks
 默认每次运行都创建临时库。要让服务与验证改用已有 PostgreSQL（例如远端服务器），在 `backend/.env`
 写一行 `KS_DATABASE_URL=postgresql+psycopg://<user>:<password>@127.0.0.1:5433/<db>`：
 `ask_local.py` 与 `browser_smoke.py` 检测到这一行被显式配置后，就不再创建临时库，改为对该库执行迁移。
-该行被注释掉即回到临时库。
+该行被注释掉即回到临时库。使用外部库时运行环境自动把租约放宽到 60 秒、心跳 15 秒
+（临时库仍是 8/5 秒）：每次心跳都是一个网络往返，秒级租约会在发布前过期并让任务被判取消。
 
 远端库不要直接暴露公网，用隧道把本机端口转到服务器回环地址：
 

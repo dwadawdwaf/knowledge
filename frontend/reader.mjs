@@ -99,6 +99,15 @@ function list(items) {
     head.append(el('span', 'chunk-tag', `#${item.ordinal + 1}`));
     head.append(el('span', 'source-location', locatorText(item.locator)));
     head.append(el('span', 'chunk-chars', `${(item.text || '').length} 字`));
+    const toggle = el('button', 'chunk-toggle', '展开');
+    toggle.type = 'button';
+    toggle.setAttribute('aria-expanded', 'false');
+    toggle.addEventListener('click', () => {
+      const expanded = card.classList.toggle('expanded');
+      toggle.textContent = expanded ? '收起' : '展开';
+      toggle.setAttribute('aria-expanded', String(expanded));
+    });
+    head.append(toggle);
     card.append(head, el('p', 'chunk-text', item.text || ''));
     box.append(card);
   });

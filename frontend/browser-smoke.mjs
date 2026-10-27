@@ -67,6 +67,9 @@ try {
   assert.equal(chunkView.overlapWarned, false, '有字符偏移时不应退化为等宽展示');
   assert.equal(chunkView.firstTag, '#1');
   await shot('chunks');
+  await js(`document.querySelector('#chunks-content .chunk-toggle').click()`);
+  await wait(`document.querySelector('#chunks-content .chunk-card.expanded') && document.querySelector('#chunks-content .chunk-toggle').getAttribute('aria-expanded') === 'true'`);
+  await shot('chunks-expanded');
   await send('Input.dispatchKeyEvent', { type: 'keyDown', key: 'Escape', code: 'Escape', windowsVirtualKeyCode: 27, nativeVirtualKeyCode: 27 });
   await send('Input.dispatchKeyEvent', { type: 'keyUp', key: 'Escape', code: 'Escape', windowsVirtualKeyCode: 27, nativeVirtualKeyCode: 27 });
   await wait(`!document.querySelector('#chunks-dialog').open`);
