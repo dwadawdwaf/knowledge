@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { ApiClient, ApiError, reindexTarget, jobLabel, locatorText } from './core.mjs';
+import { ApiClient, ApiError, reindexTarget, jobLabel, locatorText, chunkMetrics } from './core.mjs';
 
 test('未连接不能访问接口', async () => {
   const api = new ApiClient(() => assert.fail('不得发送请求'));
@@ -42,4 +42,31 @@ test('不能将失败新版本的旧发布版本用作重建目标', () => {
 test('处理状态和定位不虚构百分比', () => {
   assert.equal(jobLabel({ job: { state: 'running', stage: 'embedding' } }), '正在向量化');
   assert.equal(locatorText({ page: 2, char_start: 3, char_end: 9 }), '第 2 页 · 字符 [3, 9)');
+});
+test('分块度量按字符区间计算重叠与覆盖', () => {
+  const items = [
+    { ordinal: 0, text: 'a'.repeat(100), locator: { char_start: 0, char_end: 100, page: 1 } },
+    { ordinal: 1, text: 'b'.repeat(80), locator: { char_start: 80, char_end: 160, page: 1 } },
+    { ordinal: 2, text: 'c'.repeat(40), locator: { char_start: 160, char_end: 200, page: 2 } },
+  ];
+  const metrics = chunkMetrics(items);
+  assert.equal(metrics.count, 3); assert.equal(metrics.chars, 220);
+  assert.equal(metrics.avg, 73); assert.equal(metrics.usable, true);
+  assert.equal(metrics.maxEnd, 200); assert.equal(metrics.overlaps, 20);
+  assert.deepEqual(metrics.pages, [1, 2]);
+  assert.equal(metrics.segments[0].left, 0); assert.equal(metrics.segments[0].width, 50);
+  assert.equal(metrics.segments[1].left, 40);
+});
+test('缺字符偏移时退化为等宽且不声明重叠', () => {
+  const metrics = chunkMetrics([
+    { ordinal: 0, text: 'x', locator: { page: 1 } },
+    { ordinal: 1, text: 'xx', locator: { page: 1 } },
+  ]);
+  assert.equal(metrics.usable, false); assert.equal(metrics.overlaps, 0);
+  assert.equal(metrics.segments[1].left, 50);
+});
+test('空分块不产生除零或假装有内容', () => {
+  const metrics = chunkMetrics([]);
+  assert.equal(metrics.count, 0); assert.equal(metrics.avg, 0);
+  assert.deepEqual(metrics.segments, []);
 });

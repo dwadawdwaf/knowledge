@@ -38,10 +38,11 @@ browser-test:
 	$(PY) -u scripts/browser_smoke.py
 
 lint:
-	ruff check knowledge tests scripts
+	ruff check knowledge deepdoc_sidecar tests scripts
 
 typecheck:
 	mypy
+	mypy -p deepdoc_sidecar
 
 token:
 	$(PY) -m knowledge.security issue --subject $${SUBJECT:-dev-user}

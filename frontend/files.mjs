@@ -1,0 +1,176 @@
+// 全部文件：把各知识库的文档汇总到一张表，只做只读视图 + 分块预览。
+import { el, icon, emptyState, loading, actionButton } from './dom.mjs';
+import { jobLabel } from './core.mjs';
+
+const COLUMNS = ['文件', '所属知识库', '处理状态', '已发布版本', '操作'];
+
+export function renderFiles(app) {
+  const page = el('div', 'page');
+  const head = el('div', 'page-head');
+  const text = el('div');
+  text.append(el('h1', '', '全部文件'), el('p', '', '汇总各知识库的文档与处理状态；更新与删除在所属知识库内完成。'));
+  const actions = el('div', 'head-actions');
+  actions.append(actionButton('刷新', 'btn ghost', () => app.loadAllFiles(true), 'refresh'));
+  head.append(text, actions);
+  page.append(head);
+
+  if (!app.state.connected) {
+    const cta = el('button', 'btn primary', '连接工作台');
+    cta.type = 'button';
+    cta.addEventListener('click', () => app.openConnection());
+    page.append(emptyState('连接后查看全部文件', '使用开发令牌连接后端；汇总结果全部来自各知识库的真实接口。', cta));
+    return page;
+  }
+
+  if (!app.state.libraries.length) {
+    page.append(emptyState('还没有知识库', '先创建一个知识库，再上传资料。',
+      actionButton('新建知识库', 'btn primary', () => app.createLibrary(), 'plus')));
+    return page;
+  }
+
+  const stats = el('div');
+  stats.id = 'file-stats';
+  stats.append(statsRow(app));
+  page.append(stats);
+  page.append(shoulder(app));
+  const panel = el('div', 'table-wrap');
+  panel.id = 'file-list';
+  page.append(panel);
+  paint(app, panel);
+  if (!app.state.allFiles.length && !app.state.fileLoading) app.loadAllFiles();
+  return page;
+}
+
+function statsRow(app) {
+  const all = app.state.allFiles;
+  const ready = all.filter(item => item.version_no).length;
+  const running = all.filter(item => ['running', 'queued'].includes(item.job?.state)).length;
+  const failed = all.filter(item => item.job?.state === 'failed').length;
+  const row = el('div', 'stat-row');
+  [
+    ['文档总数', all.length, `${app.state.libraries.length} 个知识库`],
+    ['可检索', ready, '已发布构建'],
+    ['处理中', running, '解析 / 分段 / 向量化'],
+    ['失败', failed, '可在知识库内重建'],
+  ].forEach(([label, value, hint]) => {
+    const card = el('div', 'stat-card');
+    card.append(el('span', '', label), el('strong', '', String(value)), el('small', '', hint));
+    row.append(card);
+  });
+  return row;
+}
+
+function shoulder(app) {
+  const row = el('div', 'shoulder');
+  const field = el('label', 'search-field');
+  const input = el('input');
+  input.type = 'search';
+  input.placeholder = '按文件名筛选';
+  input.setAttribute('aria-label', '按文件名筛选全部文件');
+  input.value = app.state.fileFilter;
+  field.append(icon('search'), input);
+
+  const select = el('select', 'input');
+  select.style.width = '160px';
+  select.style.height = '34px';
+  select.setAttribute('aria-label', '按知识库筛选');
+  const allOption = el('option', '', '全部知识库');
+  allOption.value = '';
+  select.append(allOption);
+  app.state.libraries.forEach(kb => {
+    const option = el('option', '', kb.name);
+    option.value = kb.id;
+    select.append(option);
+  });
+  select.value = app.state.fileKb;
+
+  row.append(field, select, el('div', 'spacer'));
+
+  input.addEventListener('input', () => {
+    app.state.fileFilter = input.value;
+    paint(app, document.querySelector('#file-list'));
+  });
+  select.addEventListener('change', () => {
+    app.state.fileKb = select.value;
+    paint(app, document.querySelector('#file-list'));
+  });
+  return row;
+}
+
+export function updateFilesView(app) {
+  paint(app, document.querySelector('#file-list'));
+}
+
+function paint(app, panel) {
+  if (!panel) return;
+  const stats = document.querySelector('#file-stats');
+  if (stats) stats.replaceChildren(statsRow(app));
+  panel.replaceChildren();
+  if (app.state.fileLoading) { panel.append(loading('正在汇总各知识库的文档…')); return; }
+
+  const keyword = app.state.fileFilter.trim().toLowerCase();
+  const items = app.state.allFiles
+    .filter(item => !app.state.fileKb || item.kb_id === app.state.fileKb)
+    .filter(item => !keyword || (item.title || '').toLowerCase().includes(keyword));
+
+  if (!items.length) {
+    panel.append(emptyState('没有匹配的文件', '调整筛选条件，或到知识库里上传资料。'));
+    return;
+  }
+
+  const table = el('table', 'document-table');
+  const thead = el('thead');
+  const headRow = el('tr');
+  COLUMNS.forEach(title => headRow.append(el('th', '', title)));
+  thead.append(headRow);
+  const tbody = el('tbody');
+  items.forEach(item => tbody.append(fileRow(app, item)));
+  table.append(thead, tbody);
+
+  const scroll = el('div', 'table-scroll');
+  scroll.append(table);
+  panel.replaceChildren(scroll);
+}
+
+function fileRow(app, item) {
+  const tr = el('tr');
+
+  const nameCell = el('td');
+  const cell = el('div', 'file-cell');
+  const mark = el('span', 'file-ico');
+  mark.append(icon('file'));
+  const meta = el('div', 'file-meta');
+  meta.append(el('strong', 'file-name', item.title));
+  meta.append(el('small', 'file-sub', `代次 ${item.generation}${item.active_build_id ? ' · 已有可用内容' : ' · 暂无发布内容'}`));
+  cell.append(mark, meta);
+  nameCell.append(cell);
+
+  const kbCell = el('td');
+  const open = el('button', 'link-btn');
+  open.type = 'button';
+  open.textContent = item.kb_name || '未知知识库';
+  open.addEventListener('click', () => app.openLibraryById(item.kb_id));
+  kbCell.append(open);
+
+  const statusCell = el('td');
+  const badge = el('span', `status ${item.job?.state || ''}`);
+  badge.append(el('i'), document.createTextNode(jobLabel(item)));
+  statusCell.append(badge);
+
+  const versionCell = el('td', 'version-cell');
+  versionCell.append(document.createTextNode(item.version_no ? `V${item.version_no}` : '尚未发布'));
+
+  const actionCell = el('td');
+  const bar = el('div', 'row-actions');
+  const chunks = el('button', 'link-btn', '分块');
+  chunks.type = 'button';
+  chunks.addEventListener('click', () => app.openChunks(item));
+  const jump = el('button', 'link-btn', '所在知识库');
+  jump.type = 'button';
+  jump.addEventListener('click', () => app.openLibraryById(item.kb_id));
+  bar.append(chunks, jump);
+  actionCell.append(bar);
+
+  tr.append(nameCell, kbCell, statusCell, versionCell, actionCell);
+  return tr;
+}

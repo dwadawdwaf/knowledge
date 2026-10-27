@@ -62,3 +62,29 @@ export function locatorText(locator = {}) {
   if (locator.char_start != null) parts.push(`字符 [${locator.char_start}, ${locator.char_end})`);
   return parts.join(' · ') || '原文分块';
 }
+// 分块视图只做度量与相对定位；缺字符偏移时退化为等宽，不伪造覆盖比例。
+export function chunkMetrics(items = []) {
+  const spans = items.map(item => {
+    const locator = item.locator || {};
+    const start = Number.isFinite(locator.char_start) ? locator.char_start : null;
+    const end = Number.isFinite(locator.char_end) ? locator.char_end : null;
+    return { ordinal: item.ordinal, chars: (item.text || '').length, start, end, page: locator.page ?? null };
+  });
+  const chars = spans.reduce((sum, span) => sum + span.chars, 0);
+  const usable = spans.length > 0 && spans.every(span => span.start !== null && span.end !== null && span.end > span.start);
+  const maxEnd = usable ? Math.max(...spans.map(span => span.end)) : 0;
+  let overlaps = 0;
+  for (let index = 1; index < spans.length; index += 1) {
+    if (usable && spans[index].start < spans[index - 1].end) overlaps += spans[index - 1].end - spans[index].start;
+  }
+  const pages = [...new Set(spans.map(span => span.page).filter(page => page != null))].sort((left, right) => left - right);
+  const step = spans.length ? 100 / spans.length : 0;
+  const segments = spans.map((span, index) => {
+    if (!usable) return { ordinal: span.ordinal, left: index * step, width: Math.max(step - 0.5, 1), start: null, end: null, chars: span.chars, page: span.page };
+    const left = (span.start / maxEnd) * 100;
+    const width = Math.max(((span.end - span.start) / maxEnd) * 100, 1.2);
+    return { ordinal: span.ordinal, left, width, start: span.start, end: span.end, chars: span.chars, page: span.page };
+  });
+  return { count: spans.length, chars, avg: spans.length ? Math.round(chars / spans.length) : 0,
+    usable, maxEnd, overlaps, pages, segments };
+}

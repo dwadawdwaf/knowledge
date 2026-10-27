@@ -19,6 +19,7 @@ from knowledge.domain.errors import (
     public_job_error,
 )
 from knowledge.domain.ports import ObjectStorage
+from knowledge.repositories import chunks as chunk_repo
 from knowledge.repositories import documents as doc_repo
 from knowledge.repositories import jobs as job_repo
 from knowledge.repositories import knowledge_bases as kb_repo
@@ -95,6 +96,7 @@ def _new_build(
         chunk_config={
             "max_chars": settings.chunk_max_chars,
             "overlap_chars": settings.chunk_overlap_chars,
+            "parser_profile": settings.document_parser_profile,
         },
         embedding_model=embedder_model,
         embedding_dim=embedder_dim,
@@ -279,6 +281,32 @@ def detail(session: Session, actor: Actor, document_id: uuid.UUID) -> dict:
         "version_no": version.version_no if version else None,
         "pending_build_state": pending.state.value if pending else None,
         "job": _job_dict(latest) if latest else None,
+    }
+
+
+def chunks(
+    session: Session, actor: Actor, document_id: uuid.UUID, limit: int = 200
+) -> dict:
+    """当前已发布 build 的分块视图；未发布时返回空列表而不是报错。"""
+    document = doc_repo.get_owned(session, actor, document_id)
+    version = (
+        doc_repo.get_version(session, document.current_version_id)
+        if document.current_version_id
+        else None
+    )
+    items: list[dict] = []
+    total = 0
+    if document.active_build_id:
+        items = chunk_repo.list_for_document(session, actor, document.id, limit)
+        total = chunk_repo.count_for_build(session, document.active_build_id)
+    return {
+        "document_id": str(document.id),
+        "title": document.title,
+        "version_no": version.version_no if version else None,
+        "build_id": str(document.active_build_id) if document.active_build_id else None,
+        "total": total,
+        "truncated": total > len(items),
+        "items": items,
     }
 
 

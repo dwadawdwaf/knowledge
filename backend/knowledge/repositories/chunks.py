@@ -84,7 +84,7 @@ def _build_sql(mode: str) -> str:
     return f"""
     {ctes}
     SELECT c.id AS chunk_id, c.build_id, b.version_id, d.id AS document_id,
-           d.title, c.text, c.locator, {score} AS score
+           d.title, c.text, c.locator, b.warnings, {score} AS score
     FROM chunks c
     JOIN index_builds b ON b.id = c.build_id
     JOIN documents d ON d.active_build_id = c.build_id
@@ -144,6 +144,7 @@ def search(
             locator=row["locator"],
             score=float(row["score"]),
             score_type="rrf" if mode != "semantic" else "cosine_rank",
+            warnings=tuple(row["warnings"] or ()),
         )
         for row in rows
     ]
@@ -205,6 +206,7 @@ def get_owned(session: Session, actor: Actor, chunk_id: uuid.UUID) -> dict:
             IndexBuild.version_id,
             Document.id,
             Document.title,
+            IndexBuild.warnings,
         )
         .join(IndexBuild, IndexBuild.id == Chunk.build_id)
         .join(DocumentVersion, DocumentVersion.id == IndexBuild.version_id)
@@ -227,7 +229,36 @@ def get_owned(session: Session, actor: Actor, chunk_id: uuid.UUID) -> dict:
         "version_id": str(row[4]),
         "document_id": str(row[5]),
         "title": row[6],
+        "warnings": row[7] or [],
     }
+
+
+def list_for_document(
+    session: Session, actor: Actor, document_id: uuid.UUID, limit: int
+) -> list[dict]:
+    """按序返回当前已发布 build 的分块，用于前端查看分段结果。"""
+    stmt = (
+        select(Chunk.id, Chunk.ordinal, Chunk.text, Chunk.locator, Chunk.build_id)
+        .join(Document, Document.active_build_id == Chunk.build_id)
+        .join(KnowledgeBase, KnowledgeBase.id == Document.kb_id)
+        .where(
+            Document.id == document_id,
+            KnowledgeBase.owner_id == actor.subject_id,
+            Document.status == Lifecycle.ACTIVE,
+        )
+        .order_by(Chunk.ordinal)
+        .limit(limit)
+    )
+    return [
+        {
+            "chunk_id": str(row[0]),
+            "ordinal": row[1],
+            "text": row[2],
+            "locator": row[3],
+            "build_id": str(row[4]),
+        }
+        for row in session.execute(stmt)
+    ]
 
 
 def delete_for_document(session: Session, document_id: uuid.UUID) -> int:

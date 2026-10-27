@@ -19,7 +19,7 @@ _二创项目 · v0.3 · 2026-10-23 · 实现规格_
 | 能力 | 内容 |
 | --- | --- |
 | 知识库管理 | 个人知识库的创建、列出、删除 |
-| 文档导入 | TXT、MD、文本型 PDF、DOCX 单文件上传；同库同字节去重 |
+| 文档导入 | TXT、MD、文本型 PDF、DOCX 单文件上传；可选 DeepDoc 扩展见 §2.1；同库同字节去重 |
 | 异步处理 | 解析 → 分段 → 向量化 → 原子发布；任务查询；有限重试；崩溃恢复 |
 | 内容检索 | 关键词与语义双路召回，RRF 融合；返回来源、定位与实际模式 |
 | 智能问答 | 显式知识范围；证据约束生成；结构化引用；无证据显式返回 |
@@ -32,7 +32,10 @@ _二创项目 · v0.3 · 2026-10-23 · 实现规格_
 
 以下能力不在本版本内，需求出现时按 §10.2 单独评估，不夹带实现：
 
-部门库与跨用户共享 · 扫描件 OCR、图片、网页抓取 · 重排模型与多步检索 · 多轮指代消解与冲突裁定 · 分块手工编辑、QA 对导入、知识图谱 · Office 保真预览 · 账号体系与 SSO · 答案流式输出
+部门库与跨用户共享 · 网页抓取 · 重排模型与多步检索 · 多轮指代消解与冲突裁定 · 分块手工编辑、QA 对导入、知识图谱 · Office 保真预览 · 账号体系与 SSO · 答案流式输出
+
+2026-10-27 经用户明确评审同意：扫描件 OCR、图片与 PDF 表格识别作为可选 DeepDoc 扩展，
+例外范围只在 §2.1 定义。AGENTS 原首期排除条款在此范围内由本规格覆盖，不扩大其他边界。
 
 ---
 
@@ -56,6 +59,40 @@ _二创项目 · v0.3 · 2026-10-23 · 实现规格_
 模型适配器复用 Pydantic 校验响应结构。上游响应封装无效归为 MODEL_UNAVAILABLE，
 生成内容不符合 sections/evidence_keys 约定归为 CITATION_VALIDATION_FAILED，不伪装成 no_evidence。
 向量响应须数量、维度和有限数值有效；提供 index 时须完整、唯一且连续，并按 index 恢复输入顺序。
+
+### 2.1 可选 DeepDoc 解析扩展
+
+- 复用 RAGFlow **v0.22.0** 的 `RAGFlowPdfParser.parse_into_bboxes`，不复制整个平台业务，
+  不接入它的账号、任务、向量库或生成链。上游源码、依赖与预置模型复用独立镜像，
+  主后端不安装 OCR/ONNX 等重依赖；边车部署源码位于 `backend/deepdoc_sidecar/`。
+- 默认 `legacy-v1` 保持原处理行为；显式启用 `deepdoc-v0.22.0-v1` 后，PDF（含扫描件）和
+  PNG/JPEG/TIFF 送往**同机**边车。图片先本地转为 PDF，再进入同一 OCR/版面/表格链；
+  多帧 TIFF 保留帧顺序。TXT/MD/DOCX 仍用现有解析器，DOCX 复杂结构不在本次范围。
+- 引用保留上游所有页位置 `positions = [[page, left, right, top, bottom], ...]`，页码从 1 开始，
+  坐标为上游 PDF 页面坐标。`page` 是首个位置页，`precision=block`；字符区间是**提取块文本**
+  的码点偏移，不冒充原文件字节偏移或精确字框。子片段保留原块位置，跨页块不裁成假的单页。
+- 表格结构先由 DeepDoc 识别，再将 HTML 按行、制表符列分隔转换为证据文本；不返回可执行 HTML，
+  不宣称完整恢复合并单元格语义。不引入视觉生成模型；图形内容不作自动描述。
+- 每个新 build 的 `chunk_config.parser_profile` 记录处理策略；无该键的历史构建按 `legacy-v1`。
+  重试与现有 reindex 复制原配置，不受运行期默认值改变影响；已发布块不改动。
+  该字段不改变字符切分策略，不能把 `max_chars` 宣称为 token 上限。无需 DDL 迁移。
+- 原版本不能借现有 reindex 偷换解析策略；体验新解析请在新建知识库中重新导入。
+  后续若需同版本跨策略迁移，必须另评审契约，不修改原重建语义。
+- `ParsedBlock.warnings` 随发布写入 build，检索、问答和分块读取返回相关警告；
+  检索 `degraded` 在命中带警告时为 true。新增响应字段仅为可选 `warnings`，既有错误码不变。
+  固定警告码：`deepdoc_ocr_requires_review`（OCR 需核对）、`deepdoc_table_linearized`（表格线性化）、
+  `deepdoc_figures_not_described`（图形未描述）、`deepdoc_empty_page`（有页面未提取可用正文）。
+- 边车只接受受信任 Worker 经令牌提交的原始文件，不收路径、URL、原文件名或自述身份。
+  本机回环端口发布、容器内部网络禁外连、不挂载业务库与对象存储、不启动上游平台服务。
+  部署入口复用同镜像 Nginx 固定反向代理：网关连接入口和内部网络，仅转发 health/parse；
+  解析容器仅连接内部网络，无外网默认路由。网关不是可传入任意目标的 HTTP 代理。
+  文件内容只在内存处理；子进程可终止，输入/输出/页数/像素/CPU/RSS/耗时均有限制。
+  配置上限是保护阈值，不是性能或容量承诺；错误不包含第三方输出，禁止静默回退。
+- 固定上游 release 不等于模型权重已做独立指纹验收；部署应进一步固定镜像 digest，
+  模型变更须新建处理策略版本。健康接口仅表示 HTTP 存活，实际推理验收见 runbook §14。
+
+上游依据：[PDF 解析器](https://github.com/infiniflow/ragflow/blob/v0.22.0/deepdoc/parser/pdf_parser.py)、
+[上游镜像构建](https://github.com/infiniflow/ragflow/blob/v0.22.0/Dockerfile)。
 
 ---
 
@@ -346,6 +383,7 @@ semantic/hybrid 调用模型前检查授权范围内已发布构建的模型标�
 | 12 | GET `/chunks/{chunk_id}` | 分块预览，带授权校验 | 200 |
 | 13 | POST `/conversations` | 创建会话，用于问答存档 | 201 |
 | 14 | POST `/documents/{document_id}/reindex` | 最新上传版本的同模型重建/失败恢复，见 §7.1 | 202 |
+| 15 | GET `/documents/{document_id}/chunks` | 分块结果视图：当前已发布 build 的片段、定位与总数，`limit` 默认 200 | 200 |
 
 **成功**：`{"data": {…}, "meta": {"request_id": "…"}}`
 **错误**：`{"error": {"code": "…", "message": "…", "retryable": bool}, "meta": {"request_id": "…"}}`
@@ -545,6 +583,7 @@ metadata:
 | `version` | 一次不可变的上传；正文变化才产生新版本 |
 | `build` | 对某版本按一组配置生成的一次索引；重建索引只产生新 build |
 | `chunk` | 检索与引用的最小证据单位，属于某个 build |
+| `parser_profile` | build 固定的解析策略标记；具体契约见 §2.1，不代表模型权重指纹 |
 | `locator` | 分块在原文中的位置；页码从 1 开始，字符偏移按码点、左闭右开 |
 | `generation` | 文档级版本号，每次更新或删除递增，用于判定任务是否过期 |
 | `lease_token` | 每次领取任务重新生成的凭证，写入前必须校验 |

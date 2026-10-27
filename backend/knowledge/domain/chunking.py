@@ -64,6 +64,7 @@ def chunk_blocks(
                 page=base.page,
                 block=base.block,
                 paragraph=base.paragraph,
+                positions=base.positions,
             )
             chunks.append(TextChunk(ordinal=ordinal, text=piece, locator=locator.to_dict()))
             ordinal += 1

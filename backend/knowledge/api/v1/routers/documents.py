@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import uuid
 
-from fastapi import APIRouter, Depends, File, Request, Response, UploadFile
+from fastapi import APIRouter, Depends, File, Query, Request, Response, UploadFile
 from sqlalchemy.orm import Session
 
 from knowledge.api.deps import (
@@ -137,6 +137,20 @@ def detail(
     actor: Actor = Depends(get_actor),
 ) -> dict:
     return envelope(document_service.detail(session, actor, document_id), request_id(request))
+
+
+@router.get("/documents/{document_id}/chunks", response_model=Envelope)
+def chunks(
+    document_id: uuid.UUID,
+    request: Request,
+    limit: int = Query(200, ge=1, le=500, description="最多返回的分块数"),
+    session: Session = Depends(get_session),
+    actor: Actor = Depends(get_actor),
+) -> dict:
+    """分块结果视图：按序返回当前已发布 build 的片段与定位。"""
+    return envelope(
+        document_service.chunks(session, actor, document_id, limit), request_id(request)
+    )
 
 
 @router.post("/documents/{document_id}/versions", status_code=202, response_model=Envelope)

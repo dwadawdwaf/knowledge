@@ -16,7 +16,7 @@ from scripts.ask_console import ask_once, run_console
 from scripts.deps import DependencyError, ensure_dependencies
 from scripts.http_scenario import expect, upload_sample, wait_job
 from scripts.local_runtime import LocalRuntime
-from scripts.real_model import load_real_settings
+from scripts.real_model import external_database_url, load_real_settings
 from scripts.workbench import open_workbench
 
 
@@ -45,7 +45,11 @@ def main() -> int:
                 progress=lambda message: print(message, flush=True),
             )
         with (
-            LocalRuntime(port=args.port, model_settings=settings) as runtime,
+            LocalRuntime(
+                port=args.port,
+                model_settings=settings,
+                database_url=external_database_url(settings),
+            ) as runtime,
             runtime.client() as client,
         ):
             runtime.say("[准备] 建立真实模型体验库，仅导入自制会议室资料")

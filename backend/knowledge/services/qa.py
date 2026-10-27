@@ -147,6 +147,9 @@ def answer(
     evidence = _build_evidence(hits, settings.evidence_max_items)
     generated = generator.generate(question, evidence)
     body, citations, warnings = _assemble(generated, evidence)
+    warnings = sorted(set(warnings) | {
+        warning for hit in hits[:settings.evidence_max_items] for warning in hit.warnings
+    })
 
     if not _sources_unchanged(session, hits):
         log.warning("qa_source_changed", extra={"hits": len(hits)})

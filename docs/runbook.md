@@ -417,7 +417,128 @@ node --test frontend/core.test.mjs
 
 浏览器验证连接、实际建库/上传、任务就绪、回答/引用、正常无证据、检索、重建/更新/删除、
 HTML 文本安全、窄屏和刷新清理；HTTP 502 的界面分支采用显式浏览器故障注入，不冒充真实模型结果。
+其中「分块结果」一步会打开文档行的分块视图，核对覆盖条色块数与明细卡片数一致、首块编号为 `#1`，
+截图存为 `chunks.png`。缺少字符偏移时视图退化为等宽展示并在提示中说明，不伪造覆盖比例。
 CI 增加 Node 原生协议测试；本机浏览器通过不等于远端 CI 浏览器验收通过。
 
 静态目录由源码布局定位；独立安装后端 wheel 不会自动打包根目录 frontend。
 正式交付需按主系统部署方式提供静态资产和正式身份；没有完成这一步就不能宣称生产前端已交付。
+## 14. DeepDoc 可选服务（2026-10-27）
+
+契约见 design §2.1，决策见 decisions 0015。主后端默认仍走旧解析，不会因缺少模型静默降级。
+
+### 14.1 环境与启动
+
+需要支持 Linux 容器的 Docker Desktop + Compose、可拉取镜像的软件网络及足够的磁盘/内存。
+复用的 RAGFlow 镜像包含较多依赖，首次构建不是轻量下载；不自动安装 Docker 或改系统配置。
+
+本机按用户要求将 Docker 程序安装到 `D:\Docker\Desktop`，WSL 数据盘指定为 `D:\Docker\wsl`，
+安装包与临时目录为 `D:\Docker\Downloads`、`D:\Docker\Temp`，不把镜像/容器大数据放到 C 盘。
+这不等于 Windows 零系统盘写入：注册信息及少量用户配置由操作系统管理。
+根目录 `install-docker.ps1` 只运行 D 盘指定位置、数字签名有效的官方安装包，
+使用官方 `--installation-dir` / `--wsl-default-data-root` 参数；需要管理员确认，不自动重启。
+安装成功与引擎就绪分开验证，数据盘实际位置确认前不拉取业务镜像；不会修改已有 Ubuntu 发行版。
+
+本机默认 C 盘 Docker 配置目录写入失败，目录带 Encrypted 属性；复制及改名也被拒绝，
+未更改其权限、加密设置或原文件，未生成备份或目录链接。实际采用根目录 `start-docker.ps1`：
+仅给 Docker 子进程指定 `D:\Docker\UserData\Roaming`、`D:\Docker\UserData\Local` 和 D 盘临时目录，
+启动后恢复调用终端的环境变量。不要从普通快捷方式启动来绕过该入口；它可能再次使用原 C 盘配置。
+2026-10-27 已验证 Linux 引擎及 Compose 可用，实际业务数据盘为
+`D:\Docker\wsl\disk\docker_data.vhdx`。该结论不等于 DeepDoc 镜像或解析效果已验收。
+
+根目录 PowerShell：
+
+```powershell
+.\start-docker.ps1
+.\start-deepdoc.ps1 -CheckOnly
+.\start-deepdoc.ps1 -LaunchWorkbench
+```
+
+脚本按步骤实时输出检查、构建和启动信息；生成的共享令牌不打印、不写文件。
+只启动边车可省略 `-LaunchWorkbench`，再在**同一个 PowerShell 会话**运行 `.\start.cmd`。
+工作台仍是原真实模型模式，问题/证据会送配置的生成与向量服务；DeepDoc 本身不调用外部模型。
+演示/隔离测试仍保持旧解析，不继承真实解析端点。
+
+主系统自行部署 API/Worker 时，两者显式配置相同的 `KS_DOCUMENT_PARSER_PROFILE`、
+`KS_DEEPDOC_URL`、`KS_DEEPDOC_TOKEN`；令牌与边车 `DEEPDOC_TOKEN` 相同（至少32字符）。
+不得把令牌提交进仓库。`KS_DEEPDOC_TIMEOUT_SECONDS` 是网络等待上限，不是处理时延目标。
+主服务连边车仅支持回环 HTTP；跨机/TLS/外部解析 SaaS 不属于本次契约。
+
+`deploy/deepdoc/compose.yaml` 可独立使用；固定 release 镜像后可通过 `RAGFLOW_IMAGE`
+指定同一 release 的镜像 digest。构建检查上游 VERSION，边车 HTTP 依赖锁定且不改上游环境。
+容器运行期禁外连并设置 HuggingFace 离线模式，模型缺失时失败，不在处理资料时偷偷下载。
+这里的禁外连指 `deepdoc` 解析容器。`gateway` 是复用同镜像 Nginx 的固定入口，连接入口和内部网络，
+仅发布宿主回环端口；不加载模型，不接收动态目标，不打印请求或正文。部署依据见 decisions 0016。
+不要把解析容器额外接到普通桥接网络；本机仅内部网络直接发布端口不可达，必须保留入口代理。
+
+Docker Hub 令牌请求超时时，可显式使用同版本的上游国内镜像，不改系统 DNS 或使用未知加速源：
+
+```powershell
+$env:RAGFLOW_IMAGE = 'swr.cn-north-4.myhuaweicloud.com/infiniflow/ragflow:v0.22.0@sha256:3e7f2b8a796f55bf7fde363638086f32f7017e9d01bee753f827b50725ba8d7a'
+.\start-deepdoc.ps1
+```
+
+地址依据：[上游 v0.22.0 配置](https://github.com/infiniflow/ragflow/blob/v0.22.0/docker/.env)。
+此 digest 是本次解析到的镜像内容标识，不冒充模型权重的独立指纹验收。
+
+### 14.2 查看与停止
+
+```powershell
+Invoke-RestMethod http://127.0.0.1:9381/health
+docker compose -p ks-deepdoc -f deploy/deepdoc/compose.yaml logs -f
+docker compose -p ks-deepdoc -f deploy/deepdoc/compose.yaml down
+```
+
+这些命令需要同一个 `DEEPDOC_TOKEN` 环境变量以解析 Compose 配置；日志只输出请求 ID 和耗时，
+不输出 OCR 文本/文件名。`health.models_verified=false` 是设计上的提示，不是推理就绪证明。
+工作台退出**不停止**边车；停止后已发布内容仍可检索，但新的 DeepDoc 任务会失败。
+重启 PowerShell 后令牌不会保留；重新运行脚本会生成新令牌并重建相同项目的容器，
+同时需重启使用旧令牌的 API/Worker，不要只重启一侧。
+
+### 14.3 验证与故障边界
+
+环境启动后执行真实解析自检（容器内动态生成自制扫描 PDF、PNG/JPEG、双页 TIFF 与简单表格）：
+
+```powershell
+docker compose -p ks-deepdoc -f deploy/deepdoc/compose.yaml exec deepdoc /opt/ks-sidecar-venv/bin/python -m deepdoc_sidecar.smoke
+```
+
+逐项输出 blocks 数量、正文/表格/页码检查结果，不保存 OCR 正文；任一项失败退出1。
+这是最小解析冒烟测试，不替代复杂多栏/跨页表格及完整业务链路验收。
+
+- `backend/scripts/check.py` 包含边车 lint/类型检查、协议单测与真实数据库/本机 HTTP 协议集成测试。
+  测试服务明确使用自制响应夹具，只验证集成、警告、引用、授权和删除，不代表识别效果。
+- 真实模型验收须在新建的独立知识库中上传自制扫描 PDF、PNG/JPEG、多帧 TIFF、
+  多栏 PDF 和跨页表格；人工逐项核对提取文本、页码、所有 positions、表头/行列关系及 warnings。
+  再验证旧内容不受失败新版本影响、引用可读、他人 ID 与删除后返回404；不得使用甲方资料替代。
+- 不要对旧 build 改库：原 reindex 保留原 parser_profile，不能用来偷换算法。
+  升级策略用新库重导入；同版本跨策略迁移待另评审。
+- 服务不可达、忙碌、模型缺失或无效输出统一在主任务表现为现有 `PARSE_FAILED`，
+  不调用 pypdf 兜底，不变成 `no_evidence`。当前按既有确定性解析失败策略不自动重试；
+  修复服务后用现有人工重建恢复。加密文件仍为 `PASSWORD_PROTECTED`。
+- 本机 Docker Desktop 4.97.0 的 D 盘程序、独立配置目录及实际 WSL 数据盘已核验，Linux 引擎可用。
+  镜像已构建并跑过真实推理（2026-10-27）：自制版面 PNG/JPEG/TIFF/PDF 四格式字符全部识别正确，
+  表格与跨帧页码正确，但**词间空格在整行文本中丢失**，导致 `deepdoc_sidecar.smoke` 的正常断言
+  4/4 失败；另有适配层 warnings 被全局共享的缺陷。记录与证据见
+  `reports/deepdoc-parse-validation-2026-10-27.html`。
+  **不能据此宣告 DeepDoc 移植验收完成**：多栏、跨页表格、复杂公式与真实扫描件仍未验证，
+  容量与吞吐也没有实测结论。
+
+## 15. 外部数据库（可选）
+
+默认每次运行都创建临时库。要让服务与验证改用已有 PostgreSQL（例如远端服务器），在 `backend/.env`
+写一行 `KS_DATABASE_URL=postgresql+psycopg://<user>:<password>@127.0.0.1:5433/<db>`：
+`ask_local.py` 与 `browser_smoke.py` 检测到这一行被显式配置后，就不再创建临时库，改为对该库执行迁移。
+该行被注释掉即回到临时库。
+
+远端库不要直接暴露公网，用隧道把本机端口转到服务器回环地址：
+
+```bash
+ssh -N -L 5433:127.0.0.1:5432 root@<server>
+```
+
+前提：库内已启用 `vector` 与 `pg_trgm`（扩展需超级用户创建一次）；应用角色对该库有 CREATE 权限。
+演示数据会留在该库，重复运行浏览器验收前先重置 `public` schema 再重建扩展，否则脚本内的数量断言
+会被历史数据打乱。连接串含口令，只写进被忽略的 `.env`，不提交、不写日志。
+
+2026-10-27 实测：Ubuntu 22.04 + PostgreSQL 16.15 + pgvector 0.8.7，经隧道完成集成用例与浏览器全链路。

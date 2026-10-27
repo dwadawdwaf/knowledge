@@ -54,6 +54,21 @@ def load_real_settings() -> Settings:
     return settings
 
 
+def external_database_url(settings: Settings) -> str | None:
+    """显式配置了 KS_DATABASE_URL 时返回该地址，否则返回 None（沿用临时库）。
+
+    只有写进 `.env` 才会出现在 model_fields_set 里，配置类自带的默认值不触发外部库。
+    """
+    if "database_url" in settings.model_fields_set:
+        return settings.database_url
+    return None
+
+
+def external_database_url_from_file() -> str | None:
+    """不校验模型配置，只读取 backend/.env 中显式配置的数据库地址。"""
+    return external_database_url(_RealSettings())
+
+
 def real_model_environment(settings: Settings) -> dict[str, str]:
     validate_real_settings(settings)
     fields = (
@@ -74,6 +89,10 @@ def real_model_environment(settings: Settings) -> dict[str, str]:
         "lease_seconds",
         "heartbeat_seconds",
         "max_attempts",
+        "document_parser_profile",
+        "deepdoc_url",
+        "deepdoc_token",
+        "deepdoc_timeout_seconds",
     )
     # 不透传业务库、文件卷或身份密钥，避免演示配置意外触及现有数据。
     return {

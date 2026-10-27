@@ -1,0 +1,5 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32" role="img" aria-label="知页">
+  <rect width="32" height="32" rx="9" fill="#046a82"/>
+  <text x="16" y="22.5" font-family="-apple-system, 'Noto Sans SC', 'Microsoft YaHei', sans-serif"
+        font-size="16" font-weight="600" fill="#ffffff" text-anchor="middle">知</text>
+</svg>

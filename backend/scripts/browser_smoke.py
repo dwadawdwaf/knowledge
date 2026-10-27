@@ -14,6 +14,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from scripts.http_scenario import expect, upload_sample, wait_job
 from scripts.local_runtime import BACKEND, LocalRuntime
 from scripts.model_fixture import ModelFixture
+from scripts.real_model import external_database_url_from_file
 
 
 def main() -> int:
@@ -33,7 +34,11 @@ def main() -> int:
         return 1
     with (
         ModelFixture() as model,
-        LocalRuntime(embedding_url=model.url, generator_url=model.url) as runtime,
+        LocalRuntime(
+            embedding_url=model.url,
+            generator_url=model.url,
+            database_url=external_database_url_from_file(),
+        ) as runtime,
         runtime.client() as client,
     ):
         for name in ("行政制度 · 自制样本", "信息安全 · 自制样本", "项目资料 · 自制样本"):
