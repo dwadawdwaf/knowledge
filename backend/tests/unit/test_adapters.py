@@ -9,6 +9,7 @@ from unittest import mock
 
 import pytest
 
+from knowledge.adapters import outbound
 from knowledge.adapters.embedding import HttpEmbedder, build_embedder
 from knowledge.adapters.generator import HttpGenerator, build_generator
 from knowledge.config import Settings
@@ -35,7 +36,7 @@ def test_embedder_sends_bearer_and_dimensions():
         api_key="sk-test",
         dimensions=1024,
     )
-    with mock.patch.object(urllib.request, "urlopen", fake):
+    with mock.patch.object(outbound, "open_request", fake):
         vectors = embedder.embed(["文本一", "文本二"])
 
     assert len(vectors) == 2
@@ -50,7 +51,7 @@ def test_embedder_sends_bearer_and_dimensions():
 def test_embedder_omits_auth_and_dimensions_when_unset():
     captured, fake = _fake_urlopen({"data": [{"embedding": [0.1]}]})
     embedder = HttpEmbedder(base_url="https://models.example", model="m", dimension=1)
-    with mock.patch.object(urllib.request, "urlopen", fake):
+    with mock.patch.object(outbound, "open_request", fake):
         embedder.embed(["文本"])
 
     assert "Authorization" not in captured[0].headers
@@ -60,7 +61,7 @@ def test_embedder_omits_auth_and_dimensions_when_unset():
 def test_embedder_rejects_wrong_dimension():
     _, fake = _fake_urlopen({"data": [{"embedding": [0.1, 0.2, 0.3]}]})
     embedder = HttpEmbedder(base_url="https://models.example", model="m", dimension=2)
-    with mock.patch.object(urllib.request, "urlopen", fake), pytest.raises(Exception) as exc_info:
+    with mock.patch.object(outbound, "open_request", fake), pytest.raises(Exception) as exc_info:
         embedder.embed(["文本"])
     assert "维度" in str(exc_info.value)
 
@@ -82,7 +83,7 @@ def test_generator_sends_bearer():
         text="正文",
         locator={},
     )
-    with mock.patch.object(urllib.request, "urlopen", fake):
+    with mock.patch.object(outbound, "open_request", fake):
         generator.generate("问题", [evidence])
 
     request = captured[0]
@@ -118,7 +119,7 @@ def test_build_adapters_wire_api_key():
 def test_embedder_invalid_response_is_model_unavailable(payload):
     _, fake = _fake_urlopen(payload)
     embedder = HttpEmbedder(base_url="http://fixture.invalid", model="m", dimension=1)
-    with mock.patch.object(urllib.request, "urlopen", fake), pytest.raises(ModelUnavailable):
+    with mock.patch.object(outbound, "open_request", fake), pytest.raises(ModelUnavailable):
         embedder.embed(["synthetic"])
 
 
@@ -132,7 +133,7 @@ def test_embedder_sorts_response_indices_and_checks_count():
         }
     )
     embedder = HttpEmbedder(base_url="http://fixture.invalid", model="m", dimension=1)
-    with mock.patch.object(urllib.request, "urlopen", fake):
+    with mock.patch.object(outbound, "open_request", fake):
         assert embedder.embed(["first", "second"]) == [[1.0], [2.0]]
         with pytest.raises(ModelUnavailable):
             embedder.embed(["only-one"])
@@ -152,7 +153,7 @@ def test_generator_malformed_sections_are_citation_error(content):
     _, fake = _fake_urlopen({"choices": [{"message": {"content": content}}]})
     generator = HttpGenerator(base_url="http://fixture.invalid", model="m")
     with (
-        mock.patch.object(urllib.request, "urlopen", fake),
+        mock.patch.object(outbound, "open_request", fake),
         pytest.raises(CitationValidationFailed),
     ):
         generator.generate("synthetic", [])
@@ -167,7 +168,7 @@ def test_generator_malformed_sections_are_citation_error(content):
 )
 def test_upstream_timeout_is_model_timeout(adapter):
     with (
-        mock.patch.object(urllib.request, "urlopen", side_effect=TimeoutError),
+        mock.patch.object(outbound, "open_request", side_effect=TimeoutError),
         pytest.raises(ModelTimeout),
     ):
         if isinstance(adapter, HttpEmbedder):

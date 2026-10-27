@@ -182,8 +182,10 @@ API、Worker 与迁移日志保存在 `backend/.data/e2e/<本次运行编号>/`�
 .\start.cmd
 # 显式指定端口；默认 0 自动选择，避免误连旧演示实例。
 .\start.cmd -Port 8011
-# 仅检查依赖及真实模型配置，不启动服务或调用模型。
+# 检查环境、启动依赖并自检模型，不进入问答。
 .\start.cmd -CheckOnly
+# 本机缺少向量模型时自动拉取（约 1.2 GB）。
+.\start.cmd -PullMissing
 # 完全离线：10 步验收后进入模型桩终端问答。
 .\start.cmd -Mode Demo
 ```
@@ -196,6 +198,18 @@ API、Worker 与迁移日志保存在 `backend/.data/e2e/<本次运行编号>/`�
 Real 模式从 `backend/.env` 和环境变量读取模型字段：`KS_EMBEDDING_BASE_URL` / `MODEL` / `API_KEY` / `DIM`，
 `KS_GENERATOR_BASE_URL` / `MODEL` / `API_KEY`，以及相关超时、检索阈值和任务配置。
 维度必须为 1024；端点、模型名缺失时拒绝启动，不回退 HashEmbedder / StubGenerator。
+
+### 依赖自动启动
+
+Real 模式在启动服务前先处理依赖：端点为本机（`localhost` / `127.0.0.1`）且端口未监听时，
+自动拉起 `ollama serve`（日志 `backend/.data/deps/ollama.log`），并确认配置的向量模型已安装；
+缺模型时默认提示 `ollama pull <model>`，加 `-PullMissing` 改为自动拉取。
+
+随后真实调用一次 `/embeddings` 校验实际维度与配置一致，再用 1 个 token 调用 `/chat/completions`
+校验生成端点、密钥与余额。任一环节失败即停止启动并输出具体原因（未启动 / 鉴权 / 余额 / 模型名 /
+维度不符），不回退桩模型。数据库、API 与 Worker 仍由运行环境按每次运行现起。
+
+出口策略：本机端点直连，不经过系统代理；远程端点沿用环境代理配置。
 可选字段留空会忽略。首次仅导入仓库自制会议室资料，准备好后在当前终端输入问题，
 显示答案、服务端引用原文、文件名和字符/页码定位；等待期间持续显示耗时。
 非敏感示例问题：“会议室使用后需要做什么？”“预约需要提前多久？”

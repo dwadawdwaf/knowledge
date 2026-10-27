@@ -11,6 +11,7 @@ from collections.abc import Sequence
 
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
+from knowledge.adapters import outbound
 from knowledge.config import Settings
 from knowledge.domain.errors import ModelTimeout, ModelUnavailable
 
@@ -89,7 +90,7 @@ class HttpEmbedder:
             method="POST",
         )
         try:
-            with urllib.request.urlopen(request, timeout=self.timeout) as response:
+            with outbound.open_request(request, timeout=self.timeout) as response:
                 body = _EmbeddingResponse.model_validate_json(response.read())
         except TimeoutError as exc:  # pragma: no cover - 依赖外部服务
             raise ModelTimeout("向量服务超时") from exc

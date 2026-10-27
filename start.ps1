@@ -5,6 +5,7 @@ param(
     [ValidateSet('Real', 'Demo')]
     [string]$Mode = 'Real',
     [switch]$CheckOnly,
+    [switch]$PullMissing,
     [switch]$NoBrowser
 )
 
@@ -14,6 +15,7 @@ $ErrorActionPreference = 'Stop'
 $python = Join-Path $PSScriptRoot 'backend\.venv\Scripts\python.exe'
 $entryName = if ($Mode -eq 'Real') { 'ask_local.py' } else { 'demo_local.py' }
 $entry = Join-Path $PSScriptRoot "backend\scripts\$entryName"
+$deps = Join-Path $PSScriptRoot 'backend\scripts\deps.py'
 $previousConsoleEncoding = [Console]::OutputEncoding
 $previousOutputEncoding = $OutputEncoding
 $exitCode = 1
@@ -22,7 +24,7 @@ Push-Location -LiteralPath $PSScriptRoot
 try {
     [Console]::OutputEncoding = New-Object System.Text.UTF8Encoding($false)
     $OutputEncoding = [Console]::OutputEncoding
-    Write-Host '[1/4] 检查本地 Python 环境...' -ForegroundColor Cyan
+    Write-Host '[1/5] 检查本地 Python 环境...' -ForegroundColor Cyan
     if (-not (Test-Path -LiteralPath $python -PathType Leaf)) {
         throw '缺少 backend\.venv\Scripts\python.exe，请先按 backend\README.md 安装开发环境；脚本不会自动下载依赖。'
     }
@@ -50,7 +52,7 @@ print('Python ' + sys.version.split()[0] + '：开发依赖检查通过')
         throw '环境检查失败，请按 backend\README.md 安装或修复开发依赖。'
     }
 
-    Write-Host '[2/4] 检查模型模式与配置...' -ForegroundColor Cyan
+    Write-Host '[2/5] 检查模型模式与配置...' -ForegroundColor Cyan
     if ($Mode -eq 'Real') {
         & $python -X utf8 -u $entry --check
         if ($LASTEXITCODE -ne 0) {
@@ -60,7 +62,20 @@ print('Python ' + sys.version.split()[0] + '：开发依赖检查通过')
     else {
         Write-Host '本地演示模式：不调用外部模型，也不读取真实模型密钥。'
     }
-    Write-Host '[3/4] 检查端口...' -ForegroundColor Cyan
+    Write-Host '[3/5] 启动依赖服务...' -ForegroundColor Cyan
+    if ($Mode -eq 'Real') {
+        $depsArgs = @()
+        if ($PullMissing) { $depsArgs += '--pull-missing' }
+        & $python -X utf8 -u $deps $depsArgs
+        if ($LASTEXITCODE -ne 0) {
+            throw '依赖服务未就绪，请按上方提示处理后重试；不会回退到模型桩。'
+        }
+        $env:KS_DEPS_READY = '1'
+    }
+    else {
+        Write-Host '演示模式使用内置向量桩，无需启动外部服务。'
+    }
+    Write-Host '[4/5] 检查端口...' -ForegroundColor Cyan
     if ($Port -ne 0) {
         $listener = New-Object System.Net.Sockets.TcpListener([System.Net.IPAddress]::Loopback, $Port)
         try {
@@ -79,12 +94,12 @@ print('Python ' + sys.version.split()[0] + '：开发依赖检查通过')
     }
 
     if ($CheckOnly) {
-        Write-Host '[4/4] 检查通过，未启动任何服务或调用模型。' -ForegroundColor Green
+        Write-Host '[5/5] 检查通过，依赖服务已就绪，未启动问答服务。' -ForegroundColor Green
         $exitCode = 0
     }
     else {
-        Write-Host '[4/4] 启动问答服务，终端将持续输出执行进度...' -ForegroundColor Cyan
-        Write-Host '创建临时数据库，仅导入自制资料，不修改现有业务数据。'
+        Write-Host '[5/5] 启动问答服务，终端将持续输出执行进度...' -ForegroundColor Cyan
+        Write-Host '自动启动临时数据库与 API/Worker，仅导入自制资料，不修改现有业务数据。'
         Write-Host '准备完成后自动打开浏览器工作台；在终端输入 /token 复制本次开发令牌到页面。'
         Write-Host '也可继续在终端提问。输入 /quit 或按 Ctrl+C 退出；-NoBrowser 可关闭自动打开。'
         $browserArgs = @()
@@ -110,6 +125,7 @@ catch {
 finally {
     [Console]::OutputEncoding = $previousConsoleEncoding
     $OutputEncoding = $previousOutputEncoding
+    Remove-Item Env:\KS_DEPS_READY -ErrorAction SilentlyContinue
     Pop-Location
 }
 exit $exitCode
