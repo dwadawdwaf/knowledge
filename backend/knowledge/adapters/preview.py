@@ -29,7 +29,7 @@ def to_png(data: bytes, *, max_side: int = MAX_IMAGE_SIDE) -> bytes:
             frame = image.copy()
             if frame.mode not in {"RGB", "RGBA", "L"}:
                 frame = frame.convert("RGB")
-            frame.thumbnail((max_side, max_side), Image.LANCZOS)
+            frame.thumbnail((max_side, max_side), Image.Resampling.LANCZOS)
             buffer = io.BytesIO()
             frame.save(buffer, format="PNG")
             return buffer.getvalue()

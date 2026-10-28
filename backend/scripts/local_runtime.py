@@ -4,11 +4,11 @@ from __future__ import annotations
 
 import os
 import pathlib
+import secrets
 import shutil
 import socket
 import subprocess
 import sys
-import secrets
 import tempfile
 import time
 import uuid
@@ -121,6 +121,8 @@ class LocalRuntime:
             # 外部库的心跳与写入都是网络往返，租约按临时库的秒级取值会在发布前过期。
             lease = self.lease_seconds or (60 if external_database else 8)
             heartbeat = self.heartbeat_seconds or (15 if external_database else 5)
+            # 临时库或外部库都已在上面确定；此处只收窄类型，不改变运行语义。
+            assert self.database_url is not None
             self.env = {
                 key: value for key, value in os.environ.items() if not key.startswith("KS_")
             }

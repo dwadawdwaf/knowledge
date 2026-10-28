@@ -350,6 +350,7 @@ def _docker_engine_running(docker: str) -> bool:
     try:
         completed = subprocess.run(
             [docker, "info", "--format", "{{.OSType}}"],
+            check=False,  # 退出码自行判断，不用异常表达
             capture_output=True,
             text=True,
             encoding="utf-8",
@@ -436,6 +437,7 @@ def ensure_deepdoc(
     try:
         completed = subprocess.run(
             [docker, "compose", "-p", "ks-deepdoc", "-f", str(COMPOSE_FILE), "up", "-d"],
+            check=False,  # 退出码自行判断，不用异常表达
             cwd=str(BACKEND.parent),
             env=env,
             capture_output=True,

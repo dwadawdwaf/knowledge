@@ -238,7 +238,7 @@ class XlsxParser:
             workbook = openpyxl.load_workbook(
                 io.BytesIO(data), read_only=True, data_only=True
             )
-        except Exception as exc:  # noqa: BLE001 - 统一转为可预期的解析失败
+        except Exception as exc:
             raise ParseFailed("表格无法读取或已加密") from exc
 
         blocks: list[ParsedBlock] = []

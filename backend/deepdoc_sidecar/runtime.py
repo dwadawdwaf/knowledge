@@ -2,12 +2,11 @@
 
 from __future__ import annotations
 
-from dataclasses import replace
-
 import contextlib
 import io
 import logging
 import os
+from dataclasses import replace
 from html.parser import HTMLParser
 
 from knowledge.adapters.deepdoc import PROFILE
@@ -163,8 +162,8 @@ def normalize_boxes(boxes: list[dict], page_count: int) -> list[ParsedBlock]:
         if page not in seen_pages:
             orphan |= signals
     for index, block in enumerate(result):
-        page = block.locator.page
-        extra = set(page_signals.get(page, ()))
+        block_page = block.locator.page
+        extra = set(page_signals.get(block_page, ())) if block_page is not None else set()
         if index == 0:
             extra |= orphan
         if extra:
