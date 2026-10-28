@@ -160,7 +160,8 @@ class LocalRuntime:
                     stdout=output,
                     stderr=subprocess.STDOUT,
                     check=True,
-                    timeout=45,
+                    # 外部库经隧道访问时迁移可能明显慢于本机库，留出余量
+                    timeout=240,
                 )
             self.say("[migration] Schema ready")
             with socket.socket() as listener:
@@ -222,7 +223,7 @@ class LocalRuntime:
         self.say(f"[{name}] Started independent process PID={process.pid}")
 
     def _wait_api(self) -> None:
-        deadline = time.monotonic() + 30
+        deadline = time.monotonic() + 90
         last_notice = 0.0
         with httpx.Client(trust_env=False, timeout=1) as client:
             while time.monotonic() < deadline:
