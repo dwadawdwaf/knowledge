@@ -80,6 +80,7 @@ curl -s -X POST localhost:8010/api/v1/search \
 | 迁移卡住 | 另一进程持锁 | 查 `pg_locks`，确认无其他迁移进程后重试 |
 | 磁盘持续增长 | 孤儿对象或清理积压 | Worker 启动时自动回收超过 1 小时且无引用的对象（`orphans_reclaimed` 日志）；反复增长说明上传事务持续失败或 cleanup 积压，查 `jobs` 表与 `upload` 接口错误 |
 | 删除后仍能检索到 | 逻辑删除未提交，或代码缺陷 | 查文档 `status` 与 `active_build_id`；本服务不缓存检索结果 |
+| 浏览器显示「无法访问此网站 / 可能已永久移动到新网址」，但终端已打印访问地址且 `curl` 能通 | 端口落在 Chromium 保留列表（如 5060 = SIP、6000、6665–6669），浏览器在建立连接前就拒绝，报 `ERR_UNSAFE_PORT`；服务本身正常 | 换端口重启：`.\start.cmd -Port 8011`。启动器现在自动选端口时已跳过这些端口，仅旧实例或手工指定才会踩到 |
 
 ## 5. 诊断 SQL
 
@@ -180,7 +181,7 @@ API、Worker 与迁移日志保存在 `backend/.data/e2e/<本次运行编号>/`�
 
 ```powershell
 .\start.cmd
-# 显式指定端口；默认 0 自动选择，避免误连旧演示实例。
+# 显式指定端口；默认 0 表示自动选择，避免误连旧演示实例。
 .\start.cmd -Port 8011
 # 检查环境、启动依赖并自检模型，不进入问答。
 .\start.cmd -CheckOnly
@@ -189,6 +190,11 @@ API、Worker 与迁移日志保存在 `backend/.data/e2e/<本次运行编号>/`�
 # 完全离线：10 步验收后进入模型桩终端问答。
 .\start.cmd -Mode Demo
 ```
+
+省略 `-Port` 时，启动器在 8010–8099 内取第一个空闲端口，并跳过 Chromium 拒绝连接的端口
+（5060、5061、6000、6665–6669 等）；这些端口上服务能起、`curl` 也通，但 Chrome/Edge 会直接显示
+「网页可能已永久移动到新网址」，即 `ERR_UNSAFE_PORT`。手工指定端口时同样会被拦下并提示换端口。
+本机动态端口范围被改成从 1024 起时，系统自动分配的端口可能正好落在该列表内，这是自动选端口必须排除它们的理由。
 
 `start.cmd` 优先使用 PowerShell 7，没有时使用 Windows PowerShell 5.1，统一调用根目录
 `start.ps1`；也可直接执行 `.\start.ps1 -Port 8011`。它检查项目虚拟环境、依赖与端口，
@@ -585,7 +591,21 @@ docker compose -p ks-deepdoc -f deploy/deepdoc/compose.yaml exec deepdoc /opt/ks
 - 阅读页只用块级定位：DeepDoc 的偏移是块内偏移，正文视图标注「块内 [a, b)」，
   不冒充文档级字符位置。
 
-## 16. 外部数据库（可选）
+## 16. 表格文件（XLSX）
+
+`.xlsx` 走旧解析器（DeepDoc 只处理 PDF 与图片），按工作表与行区间出块：
+
+- 一行一条记录，单元格用制表符分隔；块头带 `工作表《名称》第a-b行`，便于检索命中后回到具体行。
+- 空行跳过，但行区间仍按真实 Excel 行号给出（用户看到的行号一致）。
+- 单个文件最多读取 `KS_XLSX_MAX_ROWS`（默认 5000）行；超出时在最后一块加
+  `xlsx_rows_truncated` 警告，界面提示「表格行数超上限」，不静默截断。
+- 每块行数由 `KS_XLSX_ROWS_PER_BLOCK`（默认 40）控制；块过大会让行号失去定位意义。
+- 合并单元格只保留左上角的值（openpyxl 行为），其余为空。
+- 旧格式 `.xls` 与加密表格不支持：分别返回 `UNSUPPORTED_FORMAT` / `PARSE_FAILED`，不猜测解析。
+- 阅读页：表格无法在浏览器内嵌，原文视图给下载；正文视图用等宽字体并按 `│` 分隔列，
+  复制仍给原始制表符（可直接粘回 Excel）。
+
+## 17. 外部数据库（可选）
 
 默认每次运行都创建临时库。要让服务与验证改用已有 PostgreSQL（例如远端服务器），在 `backend/.env`
 写一行 `KS_DATABASE_URL=postgresql+psycopg://<user>:<password>@127.0.0.1:5433/<db>`：

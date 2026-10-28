@@ -2000,3 +2000,12 @@ html[data-theme="dark"] .modal-mark { color: #06202a; }
   color: var(--accent);
   padding: 0
 }
+
+/* 表格块：等宽呈现，列间用可见分隔，避免制表符在比例字体下错位 */
+.browse-text.sheet {
+  font-family: var(--mono);
+  font-size: 12.5px;
+  line-height: 1.85;
+  letter-spacing: 0;
+  color: var(--text-2)
+}

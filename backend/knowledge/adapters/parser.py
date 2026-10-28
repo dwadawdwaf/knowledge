@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import io
 import zipfile
+from datetime import datetime, time
 
 from knowledge.config import Settings
 from knowledge.domain.entities import Locator, ParsedBlock
@@ -14,6 +15,7 @@ TEXT_PLAIN = "text/plain"
 TEXT_MARKDOWN = "text/markdown"
 APPLICATION_PDF = "application/pdf"
 DOCX = "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+XLSX = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
 OCTET_STREAM = "application/octet-stream"
 
 _EXT_MAP = {
@@ -22,6 +24,7 @@ _EXT_MAP = {
     ".markdown": TEXT_MARKDOWN,
     ".pdf": APPLICATION_PDF,
     ".docx": DOCX,
+    ".xlsx": XLSX,
 }
 
 
@@ -35,8 +38,13 @@ def detect_media_type(data: bytes, filename: str) -> str:
         return "image/jpeg"
     if data.startswith((b"II*\x00", b"MM\x00*")):
         return "image/tiff"
-    if data.startswith(b"PK\x03\x04") and filename.lower().endswith(".docx"):
-        return DOCX
+    if data.startswith(b"PK\x03\x04"):
+        # 两者都是 zip 容器，只能靠扩展名区分；认不出就交给白名单兜底拒绝。
+        lowered = filename.lower()
+        if lowered.endswith(".docx"):
+            return DOCX
+        if lowered.endswith(".xlsx"):
+            return XLSX
 
     suffix = ""
     if "." in filename:
@@ -204,6 +212,105 @@ class DocxParser:
         return blocks
 
 
+XLSX_TRUNCATED = "xlsx_rows_truncated"
+
+
+class XlsxParser:
+    """把工作表按行展开为文本：一行一条记录，制表符分隔单元格。
+
+    不重建表头语境：块头标注工作表名与行区间，检索命中后能回到具体行。
+    合并单元格只保留左上角的值（openpyxl 行为），其余为空。
+    """
+
+    name = "xlsx"
+
+    def __init__(self, max_rows: int = 5000, rows_per_block: int = 40) -> None:
+        self.max_rows = max_rows
+        self.rows_per_block = max(1, rows_per_block)
+
+    def supports(self, media_type: str, filename: str) -> bool:
+        return media_type == XLSX
+
+    def parse(self, data: bytes, media_type: str, filename: str) -> list[ParsedBlock]:
+        import openpyxl
+
+        try:
+            workbook = openpyxl.load_workbook(
+                io.BytesIO(data), read_only=True, data_only=True
+            )
+        except Exception as exc:  # noqa: BLE001 - 统一转为可预期的解析失败
+            raise ParseFailed("表格无法读取或已加密") from exc
+
+        blocks: list[ParsedBlock] = []
+        read_rows = 0
+        truncated = False
+        try:
+            for sheet in workbook.worksheets:
+                title = sheet.title or "Sheet"
+                batch: list[str] = []
+                batch_start = 0
+                row_number = 0
+                for row in sheet.iter_rows(values_only=True):
+                    row_number += 1
+                    cells = [_cell_text(value) for value in row]
+                    if not any(cells):
+                        continue
+                    if read_rows >= self.max_rows:
+                        truncated = True
+                        break
+                    read_rows += 1
+                    if not batch:
+                        batch_start = row_number
+                    batch.append("\t".join(cells).rstrip())
+                    if len(batch) >= self.rows_per_block:
+                        blocks.append(
+                            _sheet_block(title, batch_start, row_number, batch)
+                        )
+                        batch = []
+                if batch:
+                    blocks.append(_sheet_block(title, batch_start, row_number, batch))
+                if truncated:
+                    break
+        finally:
+            workbook.close()
+
+        if not blocks:
+            raise ParseFailed("表格中没有可提取的内容")
+        if truncated:
+            last = blocks[-1]
+            blocks[-1] = ParsedBlock(
+                last.text, last.locator, tuple(sorted({*last.warnings, XLSX_TRUNCATED}))
+            )
+        return blocks
+
+
+def _cell_text(value: object) -> str:
+    if value is None:
+        return ""
+    if isinstance(value, datetime):
+        return value.date().isoformat() if value.time() == time.min else value.isoformat()
+    if isinstance(value, float) and value.is_integer():
+        return str(int(value))
+    return str(value).replace("\n", " ").strip()
+
+
+def _sheet_block(sheet: str, start: int, end: int, rows: list[str]) -> ParsedBlock:
+    header = f"工作表《{sheet}》第{start}-{end}行"
+    text = header + "\n" + "\n".join(rows)
+    return ParsedBlock(
+        text=text,
+        locator=Locator(
+            type="xlsx",
+            sheet=sheet,
+            row_start=start,
+            row_end=end,
+            char_start=0,
+            char_end=len(text),
+            precision="sheet",
+        ),
+    )
+
+
 class ParserRegistry:
     def __init__(self, parsers: list, *, deepdoc: Parser | None = None,
                  profile: str = "legacy-v1") -> None:
@@ -233,6 +340,7 @@ def build_parser_registry(settings: Settings | None = None) -> ParserRegistry:
         TextParser(),
         PdfParser(),
         DocxParser(resolved.docx_max_entries, resolved.docx_max_uncompressed_bytes),
+        XlsxParser(resolved.xlsx_max_rows, resolved.xlsx_rows_per_block),
     ]
     # 远端调用自身有超时；服务端负责可终止的重型解析，不受本地 512MiB 上限误杀。
     return ParserRegistry(

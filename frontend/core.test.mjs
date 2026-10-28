@@ -164,3 +164,13 @@ test('取文件字节成功时返回原始响应', async () => {
   assert.equal(response.status, 200);
   assert.equal((await response.blob()).size, 8);
 });
+
+test('表格按工作表与行定位，不冒充字符区间', () => {
+  const text = locatorText({
+    type: 'xlsx', sheet: '资产清单', row_start: 1, row_end: 9,
+    char_start: 0, char_end: 307, precision: 'sheet',
+  });
+  assert.equal(text, '工作表《资产清单》 · 第 1–9 行');
+  assert.equal(mediaLabel('application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'), 'XLSX');
+  assert.equal(warningLabel('xlsx_rows_truncated'), '表格行数超上限，仅索引前若干行');
+});

@@ -185,12 +185,11 @@ def test_blank_pdf_fails_with_empty_content(session, settings, deps):
 @pytest.mark.parametrize(
     "filename,data",
     [
-        ("名单.xlsx", b"PK\x03\x04" + b"\x00" * 64),
         ("名单.pptx", b"PK\x03\x04" + b"\x00" * 64),
         ("名单.csv", "部门,负责人\n网络部,陈建工".encode()),
         ("扫描件.jpg", b"\xff\xd8\xff\xe0" + b"\x00" * 32),
     ],
-    ids=["xlsx", "pptx", "csv", "jpg"],
+    ids=["pptx", "csv", "jpg"],
 )
 def test_non_whitelisted_formats_rejected(session, settings, deps, filename, data):
     actor = Actor(subject_id="fmt-user", tenant_id="default")
@@ -208,3 +207,39 @@ def test_non_whitelisted_formats_rejected(session, settings, deps, filename, dat
             embedder_model=deps.embedder.model,
             embedder_dim=deps.embedder.dimension,
         )
+
+
+def _xlsx_bytes() -> bytes:
+    from io import BytesIO
+
+    from openpyxl import Workbook
+
+    book = Workbook()
+    sheet = book.active
+    sheet.title = "人员名单"
+    sheet.append(["部门", "负责人", "工位"])
+    sheet.append(["网络部", "陈建工", "B-201"])
+    sheet.append(["行政部", "李静", "A-102"])
+    stream = BytesIO()
+    book.save(stream)
+    return stream.getvalue()
+
+
+def test_xlsx_is_indexed_with_sheet_and_row_locators(session, settings, deps):
+    actor = Actor(subject_id="fmt-user", tenant_id="default")
+    kb = knowledge_service.create(session, actor, "表格库")
+    result = _upload_processed(
+        session, actor, settings, deps, kb, "人员名单.xlsx", _xlsx_bytes()
+    )
+
+    job = job_repo.get_owned(session, actor, result.job_id)
+    assert job.state is JobState.SUCCEEDED, job.last_error
+
+    view = document_service.chunks(session, actor, result.document_id)
+    assert view["total"] == 1
+    item = view["items"][0]
+    assert item["locator"]["sheet"] == "人员名单"
+    assert (item["locator"]["row_start"], item["locator"]["row_end"]) == (1, 3)
+    assert item["locator"]["precision"] == "sheet"
+    # 单元格内容必须可检索，不能只留表名
+    assert "陈建工" in item["text"] and "B-201" in item["text"]

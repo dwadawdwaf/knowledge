@@ -9,6 +9,8 @@ from __future__ import annotations
 import pathlib
 
 from docx import Document
+from openpyxl import Workbook
+from openpyxl.styles import Font
 from docx.enum.text import WD_ALIGN_PARAGRAPH
 from docx.shared import Pt
 from fpdf import FPDF
@@ -202,7 +204,8 @@ def tiff_sample() -> pathlib.Path:
         ],
     )
     path = HERE / "扫描件-图书角借阅规则.tiff"
-    first.save(path, format="TIFF", save_all=True, append_images=[second])
+    # 不压缩会产出 20MB+ 的仓库文件；deflate 无损且体积小一个量级。
+    first.save(path, format="TIFF", save_all=True, append_images=[second], compression="tiff_deflate")
     return path
 
 
@@ -246,9 +249,48 @@ def docx_sample() -> pathlib.Path:
     return path
 
 
+def xlsx_sample() -> pathlib.Path:
+    """两页签的表格：资产清单（含表头、数字与日期）、费用台账（含空行）。"""
+    book = Workbook()
+    assets = book.active
+    assets.title = "资产清单"
+    assets.append(["编号", "名称", "类别", "数量", "单价", "入库日期", "保管人"])
+    for cell in assets[1]:
+        cell.font = Font(bold=True)
+    rows = [
+        ("ZC-001", "投影仪", "电子设备", 3, 4200.0, "2026-03-12", "行政部"),
+        ("ZC-002", "会议室白板", "办公家具", 2, 860.0, "2026-03-12", "行政部"),
+        ("ZC-003", "笔记本电脑", "电子设备", 12, 7800.0, "2026-04-01", "信息部"),
+        ("ZC-004", "空气净化器", "家电", 5, 1500.0, "2026-04-18", "行政部"),
+        ("ZC-005", "文件柜", "办公家具", 8, 640.0, "2026-05-06", "行政部"),
+        ("ZC-006", "投影幕布", "电子设备", 3, 320.0, "2026-06-02", "行政部"),
+    ]
+    for row in rows:
+        assets.append(row)
+    assets.append([])  # 空行应被跳过
+    assets.append(["ZC-007", "便携音箱", "电子设备", 2, 980.0, "2026-06-20", "行政部"])
+
+    ledger = book.create_sheet("费用台账")
+    ledger.append(["月份", "科目", "金额", "备注"])
+    for cell in ledger[1]:
+        cell.font = Font(bold=True)
+    for row in [
+        ("2026-01", "办公用品", 3200.0, "季度采购"),
+        ("2026-02", "设备维修", 1450.0, "投影仪更换灯泡"),
+        ("2026-03", "差旅", 8600.0, "华东区域走访"),
+        ("2026-04", "培训", 5200.0, "外部讲师"),
+    ]:
+        ledger.append(row)
+
+    path = HERE / "表格-资产与费用台账.xlsx"
+    book.save(path)
+    return path
+
+
 def main() -> int:
     HERE.mkdir(parents=True, exist_ok=True)
-    for builder in (text_pdf, scanned_pdf, png_sample, jpeg_sample, tiff_sample, docx_sample):
+    builders = (text_pdf, scanned_pdf, png_sample, jpeg_sample, tiff_sample, docx_sample, xlsx_sample)
+    for builder in builders:
         path = builder()
         print(f"{path.name}\t{path.stat().st_size} bytes")
     return 0

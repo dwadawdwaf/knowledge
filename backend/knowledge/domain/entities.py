@@ -62,6 +62,10 @@ class Locator:
     page: int | None = None
     block: int | None = None
     paragraph: int | None = None
+    # 表格类文件（xlsx）用工作表名与行区间定位，行号从 1 开始、含表头。
+    sheet: str | None = None
+    row_start: int | None = None
+    row_end: int | None = None
     # DeepDoc 原始块位置：[页码, 左, 右, 上, 下]；不代表子片段精确字框。
     positions: tuple[tuple[int, float, float, float, float], ...] = ()
 
@@ -78,6 +82,12 @@ class Locator:
             out["block"] = self.block
         if self.paragraph is not None:
             out["paragraph"] = self.paragraph
+        if self.sheet is not None:
+            out["sheet"] = self.sheet
+        if self.row_start is not None:
+            out["row_start"] = self.row_start
+        if self.row_end is not None:
+            out["row_end"] = self.row_end
         if self.positions:
             out["positions"] = [list(position) for position in self.positions]
         return out

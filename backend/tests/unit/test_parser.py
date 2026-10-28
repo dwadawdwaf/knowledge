@@ -42,3 +42,81 @@ def test_registry_rejects_unknown_format():
     except UnsupportedFormat:
         return
     raise AssertionError("应当拒绝未知格式")
+
+
+def _xlsx_bytes(rows, sheet_rows=None):
+    from io import BytesIO
+
+    from openpyxl import Workbook
+
+    book = Workbook()
+    active = book.active
+    active.title = "资产清单"
+    for row in rows:
+        active.append(row)
+    if sheet_rows is not None:
+        sheet = book.create_sheet("费用台账")
+        for row in sheet_rows:
+            sheet.append(row)
+    stream = BytesIO()
+    book.save(stream)
+    return stream.getvalue()
+
+
+def test_xlsx_is_detected_and_split_by_sheet_rows():
+    from knowledge.adapters.parser import XLSX, build_parser_registry, detect_media_type
+
+    data = _xlsx_bytes(
+        [["编号", "名称"], ["ZC-001", "投影仪"], [], ["ZC-002", "白板"]],
+        [["月份", "金额"], ["2026-01", 3200]],
+    )
+    media = detect_media_type(data, "资产.xlsx")
+    assert media == XLSX
+
+    blocks = build_parser_registry().for_file(media, "资产.xlsx").parse(data, media, "资产.xlsx")
+
+    assert [block.locator.sheet for block in blocks] == ["资产清单", "费用台账"]
+    first = blocks[0]
+    # 空行跳过，但行号仍按真实 Excel 行给出。
+    assert (first.locator.row_start, first.locator.row_end) == (1, 4)
+    assert first.locator.type == "xlsx"
+    assert first.locator.precision == "sheet"
+    assert "编号\t名称" in first.text
+    assert "ZC-002\t白板" in first.text
+    assert "工作表《资产清单》" in first.text
+    # 整数型浮点不写成 3200.0
+    assert "3200" in blocks[1].text and "3200.0" not in blocks[1].text
+
+
+def test_xlsx_blocks_respect_rows_per_block():
+    from knowledge.adapters.parser import XLSX, XlsxParser
+
+    rows = [["序号", "值"]] + [[str(index), str(index * 2)] for index in range(1, 96)]
+    parser = XlsxParser(max_rows=5000, rows_per_block=40)
+    blocks = parser.parse(_xlsx_bytes(rows), XLSX, "多行.xlsx")
+
+    # 96 行数据按每块 40 行 => 40 + 40 + 16
+    assert [len(block.text.splitlines()) - 1 for block in blocks] == [40, 40, 16]
+    assert blocks[0].locator.row_start == 1
+    assert blocks[-1].locator.row_end == 96
+
+
+def test_xlsx_reports_truncation_instead_of_silently_dropping():
+    from knowledge.adapters.parser import XLSX, XlsxParser
+
+    rows = [["序号"]] + [[str(index)] for index in range(1, 21)]
+    blocks = XlsxParser(max_rows=5, rows_per_block=5).parse(_xlsx_bytes(rows), XLSX, "长表.xlsx")
+
+    assert len(blocks) == 1
+    assert "xlsx_rows_truncated" in blocks[-1].warnings
+
+
+def test_xlsx_without_content_is_a_clear_failure():
+    from knowledge.adapters.parser import XLSX, XlsxParser
+    from knowledge.domain.errors import ParseFailed
+
+    try:
+        XlsxParser().parse(_xlsx_bytes([]), XLSX, "空表.xlsx")
+    except ParseFailed:
+        return
+    raise AssertionError("空表格应当给出明确失败，而不是产出空块")

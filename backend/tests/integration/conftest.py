@@ -54,6 +54,9 @@ def settings(tmp_path) -> Settings:
         # 默认封闭运行用哈希向量，阈值钉在哈希标定值（config 默认），
         # 避免 .env 里为真实向量模型标定的阈值把哈希命中全部滤掉
         overrides.update(similarity_floor=0.06, semantic_max_distance=0.85)
+    # 解析策略不跟随 .env：否则开发机开了 DeepDoc，集成测试就要依赖边车在跑。
+    # 需要 DeepDoc 的用例（test_deepdoc_pipeline）自行覆盖 profile 与端点。
+    overrides["document_parser_profile"] = "legacy-v1"
     return Settings(**overrides)
 
 

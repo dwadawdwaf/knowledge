@@ -232,6 +232,8 @@ backend/
 ```
 
 页码从 1 开始；字符偏移按 Unicode 码点计数、左闭右开。DOCX 用 `{"type":"docx","paragraph":37}`，`page` 为 `null`。
+XLSX 用 `{"type":"xlsx","sheet":"资产清单","row_start":1,"row_end":9,"precision":"sheet"}`：
+行号从 1 开始、含表头，跳过空行但仍按真实 Excel 行号给出区间；块内字符偏移不参与阅读定位。
 无法定位到字符时降级为 `block` 或 `page`。`chunks.warnings` 按块保存解析降级信号（OCR 需复核、表格已线性化、
 图片未描述、存在空白页），build 级 `warnings` 是全部块的并集；只看并集无法判断哪一块受影响，前端与检索
 据此只提示受影响的片段。

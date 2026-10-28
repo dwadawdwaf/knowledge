@@ -42,6 +42,9 @@ class Settings(BaseSettings):
     parse_output_bytes: int = 16 * 1024 * 1024
     docx_max_entries: int = 2048
     docx_max_uncompressed_bytes: int = 100 * 1024 * 1024
+    # 表格：单个文件最多读取的行数（超出显式告警，不静默截断），以及每块行数。
+    xlsx_max_rows: int = 5000
+    xlsx_rows_per_block: int = 40
     document_parser_profile: Literal["legacy-v1", "deepdoc-v0.22.0-v1"] = "legacy-v1"
     deepdoc_url: str = "http://127.0.0.1:9381"
     deepdoc_token: str | None = None

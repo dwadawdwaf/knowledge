@@ -65,6 +65,9 @@ def chunk_blocks(
                 page=base.page,
                 block=base.block,
                 paragraph=base.paragraph,
+                sheet=base.sheet,
+                row_start=base.row_start,
+                row_end=base.row_end,
                 positions=base.positions,
             )
             chunks.append(

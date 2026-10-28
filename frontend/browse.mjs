@@ -409,8 +409,11 @@ function block(app, item, keyword, shared = []) {
   });
   head.append(copy);
 
-  const text = el('p', 'browse-text');
-  splitHighlight(item.text || '', keyword).forEach(part => {
+  // 表格块：制表符在比例字体下无法对齐，显示时换成可见分隔；复制仍给原始制表符。
+  const sheetBlock = (item.locator || {}).precision === 'sheet';
+  const shown = sheetBlock ? (item.text || '').replace(/\t/g, ' │ ') : (item.text || '');
+  const text = el('p', sheetBlock ? 'browse-text sheet' : 'browse-text');
+  splitHighlight(shown, keyword).forEach(part => {
     if (part.hit) text.append(el('mark', '', part.text));
     else text.append(document.createTextNode(part.text));
   });

@@ -4,8 +4,6 @@ from __future__ import annotations
 
 import pathlib
 
-import pytest
-
 from knowledge.domain.entities import Actor, JobState
 from knowledge.domain.errors import NotFound
 from knowledge.repositories import jobs as job_repo
@@ -15,11 +13,6 @@ from knowledge.worker.loop import process_next
 
 BACKEND = pathlib.Path(__file__).resolve().parents[2]
 
-
-@pytest.fixture
-def settings(settings):
-    """强制旧解析器：本用例只验原件读取，不该依赖 DeepDoc 边车是否在跑。"""
-    return settings.model_copy(update={"document_parser_profile": "legacy-v1"})
 PDF = (BACKEND / "testdata" / "multiformat" / "制度-差旅费报销管理办法.pdf").read_bytes()
 DOCX = (BACKEND / "testdata" / "multiformat" / "制度-内部培训管理办法.docx").read_bytes()
 

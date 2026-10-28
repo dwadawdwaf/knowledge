@@ -85,7 +85,14 @@ export function locatorText(locator = {}) {
   const parts = [];
   if (locator.page != null) parts.push(`第 ${locator.page} 页`);
   if (locator.paragraph != null) parts.push(`段落索引 ${locator.paragraph}`);
-  if (locator.char_start != null) {
+  if (locator.sheet) {
+    const rows = locator.row_start != null && locator.row_end != null
+      ? ` · 第 ${locator.row_start}–${locator.row_end} 行`
+      : '';
+    parts.push(`工作表《${locator.sheet}》${rows}`);
+  }
+  // 表格按工作表与行定位，块内字符偏移没有阅读意义，不展示。
+  if (locator.char_start != null && locator.precision !== 'sheet') {
     const range = `[${locator.char_start}, ${locator.char_end})`;
     // DeepDoc 与 DOCX 只给块/段内偏移，标成“字符”会被误读成文档级位置。
     const scope = locator.precision !== 'block' ? '字符'
@@ -100,6 +107,7 @@ const WARNING_LABELS = {
   deepdoc_table_linearized: '表格已线性化',
   deepdoc_figures_not_described: '含未描述的图片',
   deepdoc_empty_page: '存在空白页',
+  xlsx_rows_truncated: '表格行数超上限，仅索引前若干行',
 };
 
 export function warningLabel(code) {
@@ -154,6 +162,7 @@ const MEDIA_LABELS = [
   ['image/jpeg', 'JPEG'],
   ['image/tiff', 'TIFF'],
   ['application/vnd.openxmlformats-officedocument.wordprocessingml', 'DOCX'],
+  ['application/vnd.openxmlformats-officedocument.spreadsheetml', 'XLSX'],
   ['text/markdown', 'Markdown'],
   ['text/plain', 'TXT'],
 ];
