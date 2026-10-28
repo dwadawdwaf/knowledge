@@ -51,3 +51,51 @@ def test_ensure_database_requires_tunnel_when_port_closed():
     settings = Settings(_env_file=None, database_url="postgresql+psycopg://u:p@127.0.0.1:1/knowledge")
     with pytest.raises(DependencyError):
         ensure_database(settings, progress=lambda message: None)
+
+
+def test_dead_local_proxy_is_detected(monkeypatch):
+    from knowledge.adapters import outbound
+
+    monkeypatch.setenv("https_proxy", "http://127.0.0.1:9")
+    monkeypatch.setattr(outbound, "proxy_port_closed", lambda proxy, timeout=0.3: True)
+    assert outbound.dead_local_proxy() == "http://127.0.0.1:9"
+
+
+def test_remote_proxy_is_never_treated_as_dead(monkeypatch):
+    from knowledge.adapters import outbound
+
+    monkeypatch.setenv("https_proxy", "http://203.0.113.10:8080")
+    assert outbound.dead_local_proxy() is None
+
+
+def test_remote_endpoint_falls_back_to_direct_when_proxy_closed(monkeypatch):
+    from knowledge.adapters import outbound
+
+    monkeypatch.setenv("https_proxy", "http://127.0.0.1:9")
+    monkeypatch.setattr(outbound, "proxy_port_closed", lambda proxy, timeout=0.3: True)
+    built: list[bool] = []
+    monkeypatch.setattr(outbound, "_build", lambda direct: built.append(direct) or object())
+    outbound.opener_for("https://api.example.com/v1")
+    assert built == [True]
+
+
+def test_remote_endpoint_keeps_proxy_when_it_is_alive(monkeypatch):
+    from knowledge.adapters import outbound
+
+    monkeypatch.setenv("https_proxy", "http://127.0.0.1:7890")
+    monkeypatch.setattr(outbound, "proxy_port_closed", lambda proxy, timeout=0.3: False)
+    built: list[bool] = []
+    monkeypatch.setattr(outbound, "_build", lambda direct: built.append(direct) or object())
+    outbound.opener_for("https://api.example.com/v1")
+    assert built == [False]
+
+
+def test_network_error_names_host_and_reason():
+    import urllib.error
+
+    from scripts.deps import _describe_network_error
+
+    exc = urllib.error.URLError(ConnectionRefusedError(10061, "refused"))
+    message = _describe_network_error(exc, "生成服务", "https://api.example.com/chat/completions")
+    assert "api.example.com" in message
+    assert "ConnectionRefusedError" in message

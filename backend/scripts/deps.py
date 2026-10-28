@@ -35,11 +35,14 @@ def _say(message: str) -> None:
     print(message, flush=True)
 
 
-def _opener_for(host: str) -> urllib.request.OpenerDirector:
-    """本机端点直连，避免被系统代理或沙箱出口代理截走。"""
-    if host in LOOPBACK_HOSTS:
-        return urllib.request.build_opener(urllib.request.ProxyHandler({}))
-    return urllib.request.build_opener()
+def _opener_for(url: str) -> urllib.request.OpenerDirector:
+    """与运行时同一套出口策略：本机直连，本机代理端口关闭时也直连。
+
+    自检与真正发请求必须用同一策略，否则会出现「自检过了、跑起来失败」。
+    """
+    from knowledge.adapters.outbound import opener_for
+
+    return opener_for(url)
 
 
 def _port_open(host: str, port: int, timeout: float = 0.4) -> bool:
@@ -51,17 +54,56 @@ def _port_open(host: str, port: int, timeout: float = 0.4) -> bool:
 
 
 def _post_json(
-    url: str, payload: dict[str, object], *, api_key: str | None, timeout: float
+    url: str,
+    payload: dict[str, object],
+    *,
+    api_key: str | None,
+    timeout: float,
+    progress: Callable[[str], None] | None = None,
 ) -> dict[str, object]:
+    """POST 一次 JSON；连接层失败时换另一条路由重试一次。
+
+    代理会瞬时断开（`RemoteDisconnected`），一次抖动不该让整个启动失败；
+    但 HTTP 状态码是确定结论，不重试。
+    """
     headers = {"Content-Type": "application/json"}
     if api_key:
         headers["Authorization"] = f"Bearer {api_key}"
-    request = urllib.request.Request(
-        url, data=json.dumps(payload).encode("utf-8"), headers=headers, method="POST"
-    )
-    opener = _opener_for(urlsplit(url).hostname or "")
-    with opener.open(request, timeout=timeout) as response:
-        return json.loads(response.read().decode("utf-8"))
+    body = json.dumps(payload).encode("utf-8")
+    remote = (urlsplit(url).hostname or "") not in LOOPBACK_HOSTS
+    routes = [(_opener_for(url), "环境代理"), (urllib.request.build_opener(urllib.request.ProxyHandler({})), "直连")]
+    attempts = [(routes[0][0], routes[0][1])] if not remote else routes
+    last: Exception | None = None
+    for index, (opener, label) in enumerate(attempts):
+        if index:
+            if progress:
+                progress(f"[依赖] {attempts[0][1]}失败，改{label}重试一次")
+            time.sleep(0.4)
+        request = urllib.request.Request(url, data=body, headers=headers, method="POST")
+        try:
+            with opener.open(request, timeout=timeout) as response:
+                return json.loads(response.read().decode("utf-8"))
+        except urllib.error.HTTPError:
+            raise
+        except (urllib.error.URLError, OSError) as exc:
+            last = exc
+    assert last is not None
+    raise last
+
+
+def _describe_network_error(exc: Exception, what: str, url: str) -> str:
+    """把「不可达」拆成能定位的说法：主机、原因类型、可操作提示。"""
+    host = urlsplit(url).hostname or url
+    reason = getattr(exc, "reason", exc)
+    kind = type(reason).__name__
+    hint = {
+        "gaierror": "域名解析失败，请检查网络或 DNS 设置",
+        "ConnectionRefusedError": "对端拒绝连接，服务可能未启动或端口不对",
+        "ConnectionResetError": "连接被重置，可能被网络策略拦截",
+        "TimeoutError": "连接超时",
+        "SSLCertVerificationError": "证书校验失败；若经代理请确认代理根证书",
+    }.get(kind, "请检查端点地址、代理与网络")
+    return f"{what}不可达：{host}（{hint}；{kind}）。"
 
 
 def _describe_http_error(exc: urllib.error.HTTPError, what: str) -> str:
@@ -104,7 +146,7 @@ def _local_service(base_url: str, default_port: int) -> tuple[str, int] | None:
 
 
 def _list_models(host: str, port: int) -> list[str]:
-    opener = _opener_for(host)
+    opener = _opener_for(f"http://{host}:{port}/api/tags")
     with opener.open(f"http://{host}:{port}/api/tags", timeout=5) as response:
         body = json.loads(response.read().decode("utf-8"))
     return [str(item.get("name", "")) for item in body.get("models", [])]
@@ -205,6 +247,7 @@ def verify_embedding(
     api_key: str | None = None,
     dimensions: int | None = None,
     timeout: float = 30.0,
+    progress: Callable[[str], None] | None = None,
 ) -> int:
     """真实调用一次 /embeddings，返回实际维度；维度不符直接报错。"""
     payload: dict[str, object] = {"model": model, "input": ["就绪检查"]}
@@ -212,12 +255,18 @@ def verify_embedding(
         payload["dimensions"] = dimensions
     try:
         body = _post_json(
-            f"{base_url.rstrip('/')}/embeddings", payload, api_key=api_key, timeout=timeout
+            f"{base_url.rstrip('/')}/embeddings",
+            payload,
+            api_key=api_key,
+            timeout=timeout,
+            progress=progress,
         )
     except urllib.error.HTTPError as exc:
         raise DependencyError(_describe_http_error(exc, "向量服务")) from exc
     except (urllib.error.URLError, OSError) as exc:
-        raise DependencyError("向量服务不可达，请确认端点地址与服务状态。") from exc
+        raise DependencyError(
+            _describe_network_error(exc, "向量服务", f"{base_url.rstrip('/')}/embeddings")
+        ) from exc
     except TimeoutError as exc:
         raise DependencyError(f"向量服务在 {timeout:.0f}s 内未返回。") from exc
     try:
@@ -239,6 +288,7 @@ def verify_generator(
     *,
     api_key: str | None = None,
     timeout: float = 30.0,
+    progress: Callable[[str], None] | None = None,
 ) -> None:
     """用 1 个 token 的请求确认模型名、密钥与余额都正常。"""
     payload = {
@@ -249,16 +299,168 @@ def verify_generator(
     }
     try:
         body = _post_json(
-            f"{base_url.rstrip('/')}/chat/completions", payload, api_key=api_key, timeout=timeout
+            f"{base_url.rstrip('/')}/chat/completions",
+            payload,
+            api_key=api_key,
+            timeout=timeout,
+            progress=progress,
         )
     except urllib.error.HTTPError as exc:
         raise DependencyError(_describe_http_error(exc, "生成服务")) from exc
     except (urllib.error.URLError, OSError) as exc:
-        raise DependencyError("生成服务不可达，请确认端点地址与网络。") from exc
+        raise DependencyError(
+            _describe_network_error(exc, "生成服务", f"{base_url.rstrip('/')}/chat/completions")
+        ) from exc
     except TimeoutError as exc:
         raise DependencyError(f"生成服务在 {timeout:.0f}s 内未返回。") from exc
     if not body.get("choices"):
         raise DependencyError("生成服务响应缺少 choices，模型可能不可用。")
+
+
+DEEPDOC_PROFILE = "deepdoc-v0.22.0-v1"
+COMPOSE_FILE = BACKEND.parent / "deploy" / "deepdoc" / "compose.yaml"
+DEEPDOC_READY_SECONDS = 180.0
+
+
+DOCKER_FALLBACK_DIRS = (
+    pathlib.Path("D:/Docker/Desktop/resources/bin"),
+    pathlib.Path(r"C:/Program Files/Docker/Docker/resources/bin"),
+)
+DOCKER_DESKTOP_EXES = (
+    pathlib.Path("D:/Docker/Desktop/Docker Desktop.exe"),
+    pathlib.Path(r"C:/Program Files/Docker/Docker/Docker Desktop.exe"),
+)
+DOCKER_START_SECONDS = 180.0
+
+
+def find_docker() -> str | None:
+    """docker 通常在 PATH；本机 Docker Desktop 装在 D 盘，需要补一个候选目录。"""
+    found = shutil.which("docker")
+    if found:
+        return found
+    for directory in DOCKER_FALLBACK_DIRS:
+        for name in ("docker.exe", "docker"):
+            candidate = directory / name
+            if candidate.is_file():
+                return str(candidate)
+    return None
+
+
+def _docker_engine_running(docker: str) -> bool:
+    try:
+        completed = subprocess.run(
+            [docker, "info", "--format", "{{.OSType}}"],
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            timeout=20,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return False
+    return completed.returncode == 0
+
+
+def start_docker_engine(
+    docker: str, *, progress: Callable[[str], None] = _say
+) -> bool:
+    """引擎未运行时尝试拉起 Docker Desktop；返回是否就绪。"""
+    exe = next((path for path in DOCKER_DESKTOP_EXES if path.is_file()), None)
+    if exe is None:
+        return False
+    progress(f"[依赖] 启动 Docker Desktop：{exe}")
+    creationflags = 0
+    if os.name == "nt":
+        creationflags = subprocess.CREATE_NEW_PROCESS_GROUP | subprocess.DETACHED_PROCESS
+    try:
+        subprocess.Popen(
+            [str(exe)],
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            creationflags=creationflags,
+        )
+    except OSError:
+        return False
+    deadline = time.monotonic() + DOCKER_START_SECONDS
+    while time.monotonic() < deadline:
+        if _docker_engine_running(docker):
+            progress("[依赖] Docker 引擎已就绪")
+            return True
+        time.sleep(3)
+    return False
+
+
+def _deepdoc_healthy(url: str) -> bool:
+    try:
+        request = urllib.request.Request(url.rstrip("/") + "/health")
+        with _opener_for(request.full_url).open(request, timeout=3) as response:
+            return json.loads(response.read().decode("utf-8")).get("status") == "alive"
+    except Exception:  # noqa: BLE001 - 探活失败一律按未就绪处理
+        return False
+
+
+def ensure_deepdoc(
+    settings, *, progress: Callable[[str], None] = _say
+) -> None:
+    """使用 DeepDoc 解析时，边车同样是前置依赖，未运行则拉起容器。"""
+    profile = getattr(settings, "document_parser_profile", "legacy-v1")
+    if profile != DEEPDOC_PROFILE:
+        return
+    url = getattr(settings, "deepdoc_url", "") or ""
+    if not url:
+        raise DependencyError("选择了 DeepDoc 解析但缺少 KS_DEEPDOC_URL。")
+    if not getattr(settings, "deepdoc_token", None):
+        raise DependencyError("选择了 DeepDoc 解析但缺少 KS_DEEPDOC_TOKEN。")
+    if _deepdoc_healthy(url):
+        progress(f"[依赖] DeepDoc 边车已就绪：{url}")
+        return
+
+    docker = find_docker()
+    if docker is None:
+        raise DependencyError(
+            "选择了 DeepDoc 解析，但边车未运行且未找到 docker。"
+            "请先运行 start-deepdoc.ps1，或把 backend/.env 的 KS_DOCUMENT_PARSER_PROFILE 改回 legacy-v1。"
+        )
+    if not _docker_engine_running(docker) and not start_docker_engine(
+        docker, progress=progress
+    ):
+        raise DependencyError(
+            "选择了 DeepDoc 解析，但 Docker 引擎未能启动。请手动启动 Docker Desktop 后重试；"
+            "不打算用 DeepDoc 时，把 backend/.env 的 KS_DOCUMENT_PARSER_PROFILE 改回 legacy-v1。"
+        )
+    if not COMPOSE_FILE.is_file():
+        raise DependencyError(f"缺少边车编排文件：{COMPOSE_FILE}")
+    progress(f"[依赖] 启动 DeepDoc 边车：{COMPOSE_FILE.name}（首次启动较慢）")
+    env = {**os.environ, "DEEPDOC_TOKEN": str(settings.deepdoc_token)}
+    try:
+        completed = subprocess.run(
+            [docker, "compose", "-p", "ks-deepdoc", "-f", str(COMPOSE_FILE), "up", "-d"],
+            cwd=str(BACKEND.parent),
+            env=env,
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            timeout=600,
+        )
+    except subprocess.TimeoutExpired as exc:
+        raise DependencyError("启动 DeepDoc 边车超时，请查看 docker compose 日志。") from exc
+    if completed.returncode != 0:
+        tail = (completed.stderr or completed.stdout or "").strip().splitlines()[-1:]
+        raise DependencyError(
+            "启动 DeepDoc 边车失败：" + (tail[0] if tail else "docker compose 返回非零")
+        )
+
+    deadline = time.monotonic() + DEEPDOC_READY_SECONDS
+    while time.monotonic() < deadline:
+        if _deepdoc_healthy(url):
+            progress(f"[依赖] DeepDoc 边车就绪：{url}")
+            return
+        time.sleep(2)
+    raise DependencyError(
+        f"DeepDoc 边车在 {DEEPDOC_READY_SECONDS:.0f}s 内未就绪，请查看容器日志。"
+    )
 
 
 def ensure_database(
@@ -320,6 +522,13 @@ def ensure_dependencies(
 ) -> None:
     """启动本机依赖并验证两个模型端点；失败抛 DependencyError。"""
     ensure_database(settings, progress=progress)
+    ensure_deepdoc(settings, progress=progress)
+    # 代理开着又退出是这台机器的常态；明确说出来，不靠看日志才发现走了直连。
+    from knowledge.adapters.outbound import dead_local_proxy
+
+    dead = dead_local_proxy()
+    if dead:
+        progress(f"[依赖] 环境代理 {dead} 未监听，远端请求改直连")
     base_url = settings.embedding_base_url or ""
     if not base_url:
         raise DependencyError("缺少向量端点 KS_EMBEDDING_BASE_URL。")
@@ -332,6 +541,7 @@ def ensure_dependencies(
         settings.embedding_dim,
         api_key=settings.embedding_api_key,
         dimensions=settings.embedding_dimensions,
+        progress=progress,
     )
     progress(f"[依赖] 向量自检通过：{settings.embedding_model}（{dimension} 维）")
 
@@ -345,6 +555,7 @@ def ensure_dependencies(
         settings.generator_model,
         api_key=settings.generator_api_key,
         timeout=settings.generator_timeout_seconds,
+        progress=progress,
     )
     progress(f"[依赖] 生成自检通过：{settings.generator_model}")
 

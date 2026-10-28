@@ -6,7 +6,9 @@ param(
     [string]$Mode = 'Real',
     [switch]$CheckOnly,
     [switch]$PullMissing,
-    [switch]$NoBrowser
+    [switch]$NoBrowser,
+    # 显式不用 DeepDoc：PDF/图片退回旧解析器。默认按 .env 的 profile 走，不静默回退。
+    [switch]$NoDeepDoc
 )
 
 # 真实问答或本地演示入口，复用已有启动器，不加载现有业务数据库。
@@ -61,6 +63,10 @@ print('Python ' + sys.version.split()[0] + '：开发依赖检查通过')
     }
     else {
         Write-Host '本地演示模式：不调用外部模型，也不读取真实模型密钥。'
+    }
+    if ($NoDeepDoc) {
+        $env:KS_DOCUMENT_PARSER_PROFILE = 'legacy-v1'
+        Write-Host '[注意] 指定了 -NoDeepDoc：本次运行 PDF/图片用旧解析器，扫描件与版面/表格能力不可用。' -ForegroundColor Yellow
     }
     Write-Host '[3/5] 启动依赖服务...' -ForegroundColor Cyan
     if ($Mode -eq 'Real') {

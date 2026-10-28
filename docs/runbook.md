@@ -205,9 +205,22 @@ Real 模式在启动服务前先处理依赖：端点为本机（`localhost` / `
 自动拉起 `ollama serve`（日志 `backend/.data/deps/ollama.log`），并确认配置的向量模型已安装；
 缺模型时默认提示 `ollama pull <model>`，加 `-PullMissing` 改为自动拉取。
 
+`KS_DOCUMENT_PARSER_PROFILE=deepdoc-v0.22.0-v1` 时，DeepDoc 边车也是前置依赖：
+探测 `KS_DEEPDOC_URL/health`，未就绪则尝试拉起 Docker Desktop（`docker info` 判定引擎），
+再 `docker compose -p ks-deepdoc up -d` 并等待健康检查，失败输出可操作原因。
+不想用 DeepDoc 时加 `-NoDeepDoc`（本次运行改用旧解析器，并显式提示扫描件/版面能力不可用），
+或把 `.env` 里的 profile 改回 `legacy-v1`。
+
 随后真实调用一次 `/embeddings` 校验实际维度与配置一致，再用 1 个 token 调用 `/chat/completions`
 校验生成端点、密钥与余额。任一环节失败即停止启动并输出具体原因（未启动 / 鉴权 / 余额 / 模型名 /
-维度不符），不回退桩模型。数据库、API 与 Worker 仍由运行环境按每次运行现起。
+维度不符 / 不可达的具体主机与原因类），不回退桩模型。连接层失败会换另一条路由重试一次：
+先按环境代理，失败再直连（反之亦然）；HTTP 状态码是确定结论，不重试。
+
+出口策略：本机端点始终直连；远端端点默认走环境代理，但**代理端口未监听时改直连**并打印一行提示
+（`环境代理 127.0.0.1:7890 未监听，远端请求改直连`）。代理开着又退出是常见状态，此时请求会以
+`ConnectionRefused` 失败，与「模型服务不可达」表现相同；代理不可用不等于目标不可达。
+
+数据库、API 与 Worker 仍由运行环境按每次运行现起。
 
 出口策略：本机端点直连，不经过系统代理；远程端点沿用环境代理配置。
 可选字段留空会忽略。首次仅导入仓库自制会议室资料，准备好后在当前终端输入问题，
