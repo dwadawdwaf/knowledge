@@ -1,11 +1,11 @@
 // 全部文件：把各知识库的文档汇总到一张表，只做只读视图 + 分块预览。
-import { el, icon, emptyState, loading, actionButton } from './dom.mjs';
+import { el, icon, emptyState, loading, actionButton, openMenu, menuItem } from './dom.mjs';
 import { jobLabel } from './core.mjs';
 
 const COLUMNS = ['文件', '所属知识库', '处理状态', '已发布版本', '操作'];
 
 export function renderFiles(app) {
-  const page = el('div', 'page');
+  const page = el('div', 'page files-page');
   const head = el('div', 'page-head');
   const text = el('div');
   text.append(el('h1', '', '全部文件'), el('p', '', '汇总各知识库的文档与处理状态；更新与删除在所属知识库内完成。'));
@@ -70,19 +70,7 @@ function shoulder(app) {
   input.value = app.state.fileFilter;
   field.append(icon('search'), input);
 
-  const select = el('select', 'input');
-  select.style.width = '160px';
-  select.style.height = '34px';
-  select.setAttribute('aria-label', '按知识库筛选');
-  const allOption = el('option', '', '全部知识库');
-  allOption.value = '';
-  select.append(allOption);
-  app.state.libraries.forEach(kb => {
-    const option = el('option', '', kb.name);
-    option.value = kb.id;
-    select.append(option);
-  });
-  select.value = app.state.fileKb;
+  const select = kbFilter(app);
 
   row.append(field, select, el('div', 'spacer'));
 
@@ -90,11 +78,53 @@ function shoulder(app) {
     app.state.fileFilter = input.value;
     paint(app, document.querySelector('#file-list'));
   });
-  select.addEventListener('change', () => {
-    app.state.fileKb = select.value;
-    paint(app, document.querySelector('#file-list'));
-  });
   return row;
+}
+
+/**
+ * 知识库筛选。原生 select 在不同浏览器里的点按热区与样式都不可控，
+ * 这里改成与「检索范围」一致的菜单按钮：点开即选，选中后立刻重画列表。
+ */
+function kbFilter(app) {
+  const btn = el('button', 'filter-btn');
+  btn.type = 'button';
+  btn.setAttribute('aria-haspopup', 'menu');
+  const current = () => app.state.libraries.find(kb => kb.id === app.state.fileKb);
+  const paintLabel = () => {
+    const kb = current();
+    btn.replaceChildren(icon(kb ? 'library' : 'folder'),
+      el('span', 'filter-label', kb ? kb.name : '全部知识库'), icon('chevron'));
+    btn.title = kb ? `只看《${kb.name}》的文件` : '当前显示全部知识库的文件';
+    btn.classList.toggle('active', Boolean(kb));
+  };
+  paintLabel();
+
+  btn.addEventListener('click', () => {
+    openMenu(btn, menu => {
+      menu.append(el('div', 'menu-title', '按知识库筛选'));
+      menu.append(menuItem('全部知识库', {
+        glyph: 'folder',
+        checked: !app.state.fileKb,
+        onClick: () => {
+          app.state.fileKb = '';
+          paintLabel();
+          paint(app, document.querySelector('#file-list'));
+        },
+      }));
+      app.state.libraries.forEach(kb => {
+        menu.append(menuItem(kb.name, {
+          glyph: 'library',
+          checked: app.state.fileKb === kb.id,
+          onClick: () => {
+            app.state.fileKb = kb.id;
+            paintLabel();
+            paint(app, document.querySelector('#file-list'));
+          },
+        }));
+      });
+    }, { align: 'start' });
+  });
+  return btn;
 }
 
 export function updateFilesView(app) {

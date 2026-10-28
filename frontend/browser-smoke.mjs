@@ -44,8 +44,10 @@ try {
   assert.equal(await js(`location.hash.includes('t=')`), false, '令牌必须从地址栏清除');
   assert.equal(await js(`localStorage.length + sessionStorage.length`), 0);
   assert.ok(await js(`document.querySelectorAll('.kb-card').length >= 3`));
+  // 库是持久化的：用相对数量断言，重复跑不会因为历史数据而失败
+  const kbBefore = await js(`document.querySelectorAll('.kb-card').length`);
   await clickText('新建知识库'); await js(`document.querySelector('#action-input').value='浏览器创建 · 自制样本'; document.querySelector('#action-form').requestSubmit()`);
-  await wait(`!document.querySelector('#action-dialog').open && document.querySelectorAll('.kb-card').length===4`);
+  await wait(`!document.querySelector('#action-dialog').open && document.querySelectorAll('.kb-card').length===${kbBefore + 1}`);
   await wait(`document.querySelector('#notice').hidden`); await shot('knowledge');
   console.log('[浏览器 2/9] 打开知识库，通过文件输入上传实际自制文档');
   await clickText('行政制度 · 自制样本'); await wait(`document.querySelector('.document-table')`);
@@ -128,7 +130,7 @@ try {
   console.log('[浏览器 8/9] 文件名/库名作为文本渲染，不执行 HTML');
   await js(`document.querySelector('[data-page=knowledge]').click()`); await clickText('新建知识库');
   await js(`document.querySelector('#action-input').value='<img src=x onerror="window.uiXss=true">'; document.querySelector('#action-form').requestSubmit()`);
-  await wait(`!document.querySelector('#action-dialog').open && document.querySelectorAll('.kb-card').length===5`);
+  await wait(`!document.querySelector('#action-dialog').open && document.querySelectorAll('.kb-card').length===${kbBefore + 2}`);
   assert.equal(await js(`Boolean(window.uiXss || document.querySelector('.kb-card img'))`), false);
   console.log('[浏览器 9/9] 刷新清空身份和内容，浏览器存储中没有令牌');
   assert.equal(await js(`localStorage.length + sessionStorage.length`), 0);

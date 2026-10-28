@@ -43,6 +43,9 @@ python -m knowledge.entrypoints.worker                        # 3) Worker（另�
 
 自检：`GET /api/v1/knowledge-bases` 能返回空列表，说明数据库连接、迁移与令牌校验都正常；跑 `python scripts/demo_flow.py` 可验证完整链路。
 
+> **对象目录与数据库必须一一对应。** 持久库要配持久目录（工作台启动器默认用 `backend/.data/objects`），临时库/测试库要配临时目录。两个库共用一个目录时，任一侧的孤儿回收会把另一侧仍在引用的原件删掉；回收器遇到「一次要删掉大半对象」会拒绝执行并记 `orphan_reclaim_skipped`，此时应先核对 `KS_DATABASE_URL` 与 `KS_STORAGE_ROOT` 是否配套。
+
+
 **顺序**：迁移先于 API 与 Worker；API 与 Worker 彼此无先后。Worker 未启动时上传停在 `queued`，这是正常状态而非故障。
 
 ## 3. 日常操作

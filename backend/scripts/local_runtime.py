@@ -25,6 +25,9 @@ from scripts.real_model import real_model_environment
 
 BACKEND = pathlib.Path(__file__).resolve().parents[1]
 
+# 持久库配套的对象卷：同一套库重复启动必须落在同一个目录，否则原文全部 404。
+WORKBENCH_OBJECTS = pathlib.Path(os.environ.get("KS_WORKBENCH_OBJECTS") or BACKEND / ".data" / "objects")
+
 
 @contextmanager
 def isolated_database(progress: Callable[[str], None]) -> Iterator[str]:
@@ -66,12 +69,16 @@ class LocalRuntime:
         model_settings: Settings | None = None,
         lease_seconds: int | None = None,
         heartbeat_seconds: int | None = None,
+        storage_root: str | None = None,
     ) -> None:
         self.database_url = database_url
         self.embedding_url = embedding_url
         self.generator_url = generator_url
         self.port = port
         self.model_settings = model_settings
+        # 外部库的资料卷必须跟着库走：数据库持久而对象留在临时目录，
+        # 下一次运行就只剩元数据，原文与下载一律 404。
+        self.storage_root = storage_root
         # 留空时按库的类型取值：临时库 8/5 秒，外部库 60/15 秒。
         self.lease_seconds = lease_seconds
         self.heartbeat_seconds = heartbeat_seconds
@@ -124,7 +131,7 @@ class LocalRuntime:
                     "PYTHONPATH": str(BACKEND),
                     "NO_PROXY": "127.0.0.1,localhost",
                     "KS_DATABASE_URL": self.database_url,
-                    "KS_STORAGE_ROOT": str(self.directory / "objects"),
+                    "KS_STORAGE_ROOT": str(self._objects_root(external_database)),
                     "KS_TOKEN_SECRET": self.token_secret,
                     "KS_EMBEDDING_MODEL": "hash-1024",
                     "KS_EMBEDDING_BASE_URL": self.embedding_url,
@@ -180,6 +187,20 @@ class LocalRuntime:
         except BaseException:
             self.stack.close()
             raise
+
+    def _objects_root(self, external_database: bool) -> pathlib.Path:
+        """对象存储目录：显式指定优先，否则用本次运行的临时卷。
+
+        对象卷必须和数据库一一对应：不同库共用一个卷时，任一侧的孤儿回收
+        都会把另一侧还在引用的对象删掉。所以只有明确知道「这一卷就是这个库的」
+        的入口（工作台启动器）才传 storage_root，其余场景一律用临时卷。
+        """
+        if self.storage_root:
+            root = pathlib.Path(self.storage_root).expanduser()
+        else:
+            root = self.directory / "objects"
+        root.mkdir(parents=True, exist_ok=True)
+        return root.resolve()
 
     def _spawn(self, name: str, arguments: list[str]) -> None:
         output = (self.log_dir / f"{name}.log").open("ab")

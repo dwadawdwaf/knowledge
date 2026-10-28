@@ -251,12 +251,16 @@ function paint(app, target) {
   if (!browse.items.length) {
     const job = browse.detail?.job || browse.doc?.job;
     const running = ['queued', 'running'].includes(job?.state);
+    // 引用抽屉进来时只带 id 与标题，没有归属知识库，不能给出一个点不动的入口。
+    const jump = browse.doc.kb_id
+      ? actionButton('去所属知识库', 'btn ghost', () => app.openLibraryById(browse.doc.kb_id), 'folder')
+      : null;
     body.append(emptyState(
       running ? '文件正在处理中' : '这个文件还没有可读内容',
       running
         ? '解析与向量化完成后即可阅读；处理进度可在知识库内查看。'
         : '还没有已发布的分块。到所属知识库执行「重建」后再查看。',
-      actionButton('去所属知识库', 'btn ghost', () => app.openLibraryById(browse.doc.kb_id), 'folder'),
+      jump,
     ));
     if (hitCount) hitCount.textContent = '';
     return;
@@ -322,6 +326,20 @@ function paintOriginal(app, body) {
 
   if (original.error) {
     body.append(app.errorBox(original.error));
+    // 404 多半是旧运行留下的文档：库里还有元数据，对象卷却换过了。
+    if (original.error.status === 404) {
+      const hint = el('div', 'notice-line');
+      hint.append(icon('info'), el('span', '',
+        '原始文件取不到时仍可阅读解析正文；如需原件，请在所属知识库重新上传同一文件。'));
+      body.append(hint);
+      const retry = el('button', 'btn ghost', '重试读取原文');
+      retry.type = 'button';
+      retry.addEventListener('click', () => {
+        browse.original.error = null;
+        paint(app);
+      });
+      body.append(retry);
+    }
     return;
   }
   if (!original.url) {
@@ -356,13 +374,36 @@ function paintOriginal(app, body) {
   }
 
   const card = el('div', 'browse-fallback');
-  card.append(el('h3', '', '该格式无法在浏览器内直接预览'));
-  card.append(el('p', '', `${mediaLabel(media)} 文件已取回，可下载后用本地软件打开；`
+  const mark = el('span', 'fallback-mark');
+  mark.append(icon('file'));
+  const info = el('div', 'fallback-info');
+  info.append(el('h3', '', '该格式无法在浏览器内直接预览'));
+  info.append(el('p', '', `${mediaLabel(media)} 原件已取回，可下载后用本地软件打开；`
     + '若要按分段阅读正文，切到「提取正文」。'));
+  const metas = [
+    mediaLabel(media),
+    browse.detail?.byte_size ? readableSize(browse.detail.byte_size) : null,
+    browse.detail?.version_no ? `V${browse.detail.version_no}` : null,
+    browse.total ? `${browse.total} 个分块` : null,
+  ].filter(Boolean);
+  const tags = el('div', 'fallback-meta');
+  metas.forEach(label => tags.append(el('span', 'tag gray', label)));
+  info.append(tags);
+  card.append(mark, info);
+
+  const actions = el('div', 'fallback-actions');
   const link = el('a', 'btn primary', '下载原文件');
   link.href = original.url;
   link.download = browse.doc.title || 'document';
-  card.append(link);
+  const text = el('button', 'btn ghost', '查看提取正文');
+  text.type = 'button';
+  text.addEventListener('click', () => {
+    browse.tab = 'text';
+    browse.tabChosen = true;
+    app.render();
+  });
+  actions.append(link, text);
+  card.append(actions);
   body.append(card);
 }
 
@@ -409,15 +450,61 @@ function block(app, item, keyword, shared = []) {
   });
   head.append(copy);
 
-  // 表格块：制表符在比例字体下无法对齐，显示时换成可见分隔；复制仍给原始制表符。
+  // 表格块：制表符在比例字体下无法对齐，改渲染成真正的表格；复制仍给原始制表符文本。
   const sheetBlock = (item.locator || {}).precision === 'sheet';
-  const shown = sheetBlock ? (item.text || '').replace(/\t/g, ' │ ') : (item.text || '');
-  const text = el('p', sheetBlock ? 'browse-text sheet' : 'browse-text');
-  splitHighlight(shown, keyword).forEach(part => {
+  const sheet = sheetBlock ? sheetTable(item.text || '', keyword) : null;
+  if (sheet) {
+    // 定位信息已经在块头里（工作表 + 行区间），表格上方不再重复一遍
+    card.append(head);
+    const scroll = el('div', 'browse-table-wrap');
+    scroll.append(sheet.table);
+    card.append(scroll);
+    return card;
+  }
+
+  const text = el('p', 'browse-text');
+  splitHighlight(item.text || '', keyword).forEach(part => {
     if (part.hit) text.append(el('mark', '', part.text));
     else text.append(document.createTextNode(part.text));
   });
 
   card.append(head, text);
   return card;
+}
+
+/**
+ * 把「工作表《X》第a-b行 + 制表符行」还原成表格。
+ * 首行没有制表符时当作说明，首行有制表符时当作表头；不足两行则退回文本渲染。
+ */
+export function sheetTable(source, keyword) {
+  const lines = source.split('\n').filter(line => line.trim());
+  if (lines.length < 2) return null;
+  if (!lines[0].includes('\t')) lines.shift();  // 首行是「工作表《X》第a-b行」说明，块头已展示
+  if (lines.length < 2) return null;
+  const rows = lines.map(line => line.split('\t'));
+  const width = Math.max(...rows.map(row => row.length));
+  const [header, ...body] = rows;
+
+  const table = el('table', 'browse-table');
+  const headRow = el('tr');
+  for (let index = 0; index < width; index += 1) headRow.append(el('th', '', header[index] || ''));
+  const thead = el('thead');
+  thead.append(headRow);
+  table.append(thead);
+
+  const tbody = el('tbody');
+  body.forEach(cells => {
+    const row = el('tr');
+    for (let index = 0; index < width; index += 1) {
+      const cell = el('td', index === 0 ? 'col-key' : '');
+      splitHighlight(cells[index] || '', keyword).forEach(part => {
+        if (part.hit) cell.append(el('mark', '', part.text));
+        else cell.append(document.createTextNode(part.text));
+      });
+      row.append(cell);
+    }
+    tbody.append(row);
+  });
+  table.append(tbody);
+  return { table };
 }

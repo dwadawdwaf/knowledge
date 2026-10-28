@@ -13,9 +13,13 @@ const api = new ApiClient();
 
 const state = {
   page: 'knowledge',
+  // 当前已渲染视图的标识（见 viewKey）：用于区分「同名页换了内容」和「重复点同一个入口」。
+  renderedKey: '',
+  browsePushed: false,
   libraries: [],
   library: null,
   documents: [],
+  docSignature: '',
   allFiles: [],
   browse: emptyBrowse(),
   fileLoading: false,
@@ -70,6 +74,19 @@ async function loadLibraries() {
   if (state.fileKb && !state.libraries.some(kb => kb.id === state.fileKb)) state.fileKb = '';
 }
 
+/**
+ * 列表内容指纹：轮询只在数据真的变了才重绘。
+ * 每 2.5 秒无差别重建表格，会把用户正要点的按钮换成新节点，表现就是「点了没反应」。
+ */
+function documentsSignature(items) {
+  return items
+    .map(doc => [
+      doc.id, doc.status, doc.generation, doc.version_no, doc.active_build_id,
+      doc.job?.state, doc.job?.stage, doc.job?.last_error?.code,
+    ].join(':'))
+    .join('|');
+}
+
 async function loadDocuments(quiet = false) {
   const library = state.library;
   if (!library || !state.connected) return;
@@ -77,9 +94,13 @@ async function loadDocuments(quiet = false) {
   try {
     const result = await api.request(`/knowledge-bases/${library.id}/documents`, { timeout: 15000 });
     if (state.library?.id !== library.id) return;
-    state.documents = (result.items || []).filter(doc => doc.status === 'active');
+    const items = (result.items || []).filter(doc => doc.status === 'active');
+    const signature = documentsSignature(items);
+    const unchanged = signature === state.docSignature;
+    state.documents = items;
+    state.docSignature = signature;
     state.pollError = false;
-    if (state.page === 'knowledge') {
+    if (state.page === 'knowledge' && !unchanged) {
       drawDocuments(app);
       const counter = document.querySelector('#doc-count');
       if (counter) counter.textContent = `${state.documents.length} 个文档`;
@@ -190,9 +211,26 @@ function renderSessions() {
 
 /* ---------------------------------------------------------------- 路由 */
 
+function keyFor(page) {
+  // 知识库列表与详情共用一个页名；对话页共用页名但会切换会话。两者都要进标识。
+  if (page === 'knowledge') return state.library ? `knowledge:${state.library.id}` : 'knowledge:list';
+  if (page === 'chat') return `chat:${state.sessionId || 'new'}`;
+  return page;
+}
+
+function viewKey() {
+  return keyFor(state.page);
+}
+
 function navigate(page) {
-  if (page === state.page) { closeMobileNav(); return; }  // 重复点同一入口不重绘
   if (page === 'chat' && !state.sessionId) ensureSession();
+  // 只有真正停在同一个视图上才跳过重绘；同名页换了内容（详情→列表、换会话）必须重画。
+  if (keyFor(page) === state.renderedKey) { closeMobileNav(); return; }
+  if (state.page === 'browse') {
+    disposeBrowse(app);
+    state.browse = emptyBrowse();
+    state.browsePushed = false;
+  }
   stopPolling();
   state.page = page;
   state.pollError = false;
@@ -212,13 +250,20 @@ function openBrowse(doc, focus = null) {
   };
   state.page = 'browse';
   stopPolling();
-  history.replaceState(null, '', '#browse');
+  // 压入历史而不是替换：浏览器返回键与页面内的「全部文件」都能回到列表。
+  history.pushState({ page: 'browse' }, '', '#browse');
+  state.browsePushed = true;
   render();
   loadBrowse(app);
   closeMobileNav();
 }
 
 function closeBrowse() {
+  if (state.browsePushed && location.hash === '#browse') {
+    state.browsePushed = false;
+    history.back();  // 由 hashchange 统一收口，避免两处各画一次
+    return;
+  }
   disposeBrowse(app);
   state.browse = emptyBrowse();
   state.page = 'files';
@@ -229,6 +274,7 @@ function closeBrowse() {
 function openLibrary(kb) {
   state.library = kb;
   state.documents = [];
+  state.docSignature = '';
   state.docFilter = '';
   state.page = 'knowledge';
   stopPolling();
@@ -261,6 +307,7 @@ function render() {
   else if (state.page === 'search') main.append(renderSearch(app));
   else if (state.library) main.append(renderKnowledgeDetail(app));
   else main.append(renderKnowledge(app));
+  state.renderedKey = viewKey();
   main.scrollTop = 0;
 }
 
@@ -353,6 +400,7 @@ function disconnect(silent = false) {
   state.libraries = [];
   state.library = null;
   state.documents = [];
+  state.docSignature = '';
   state.allFiles = [];
   state.searchResult = null;
   state.sessions = [];
@@ -400,6 +448,7 @@ const app = {
   loadAllFiles,
   openLibrary,
   openLibraryById,
+  openKnowledgeList: () => { state.library = null; navigate('knowledge'); },
   openBrowse: (doc, focus) => openBrowse(doc, focus),
   closeBrowse: () => closeBrowse(),
   openChunks: doc => openChunks(app, doc),

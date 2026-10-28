@@ -9,22 +9,49 @@ from sqlalchemy.orm import Session
 
 from knowledge.domain.entities import JobState, Lifecycle
 from knowledge.domain.ports import ObjectStorage
+from knowledge.logging import get_logger
 from knowledge.repositories import chunks as chunk_repo
 from knowledge.repositories import documents as doc_repo
 from knowledge.repositories import jobs as job_repo
 from knowledge.repositories.tables import Document, DocumentVersion, IndexBuild
 from knowledge.services import knowledge as knowledge_service
 
+log = get_logger("services.cleanup")
+
+# 超过这个数量的孤儿不再按「零星遗留」处理（见 reclaim_orphans 的说明）。
+ORPHAN_BATCH_LIMIT = 20
+
+
+def looks_like_foreign_volume(candidate_count: int, object_count: int) -> bool:
+    """一次要删的对象既多又占大头：更像卷接错了库，而不是零星的失败上传遗留。"""
+    return candidate_count > ORPHAN_BATCH_LIMIT and candidate_count * 2 > object_count
+
 
 def reclaim_orphans(session: Session, storage: ObjectStorage, max_age_seconds: float) -> int:
-    """回收超过 max_age 仍无版本引用的对象（上传后事务失败遗留），返回回收数。"""
+    """回收超过 max_age 仍无版本引用的对象（上传后事务失败遗留），返回回收数。
+
+    孤儿应当是零星的：一次要删掉大半对象，通常是「卷指向了另一个库的数据」
+    这类配置错误，而不是真的遗留物。这种情况下宁可跳过并留下日志，也不整卷清空。
+    """
     referenced = {row[0] for row in session.execute(select(DocumentVersion.object_key))}
-    removed = 0
-    for object_key, age in storage.iter_objects():
-        if age >= max_age_seconds and object_key not in referenced:
-            storage.delete(object_key)
-            removed += 1
-    return removed
+    objects = list(storage.iter_objects())
+    candidates = [
+        object_key for object_key, age in objects if age >= max_age_seconds
+        and object_key not in referenced
+    ]
+    if looks_like_foreign_volume(len(candidates), len(objects)):
+        log.warning(
+            "orphan_reclaim_skipped",
+            extra={
+                "candidates": len(candidates),
+                "objects": len(objects),
+                "reason": "对象卷与当前数据库不匹配，疑似配置错误",
+            },
+        )
+        return 0
+    for object_key in candidates:
+        storage.delete(object_key)
+    return len(candidates)
 
 
 def run(

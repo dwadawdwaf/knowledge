@@ -15,9 +15,26 @@ import httpx
 from scripts.ask_console import ask_once, run_console
 from scripts.deps import DependencyError, ensure_dependencies
 from scripts.http_scenario import expect, upload_sample, wait_job
-from scripts.local_runtime import LocalRuntime
+from scripts.local_runtime import WORKBENCH_OBJECTS, LocalRuntime
 from scripts.real_model import external_database_url, load_real_settings
 from scripts.workbench import open_workbench
+
+
+def ensure_experience_kb(client: httpx.Client) -> tuple[dict, bool]:
+    """复用同名体验库，返回 (知识库, 是否需要导入内置资料)。
+
+    持久库里每次启动都新建同名库，会让「知识库」列表堆满空副本；
+    已有同名库且其中已有文档时直接复用，不再写入。
+    """
+    name = "真实模型体验库（自制资料）"
+    items = expect(client.get("/api/v1/knowledge-bases"), 200).get("items", [])
+    existing = next(
+        (kb for kb in items if kb.get("name") == name and kb.get("status") == "active"), None
+    )
+    if existing is None:
+        return expect(client.post("/api/v1/knowledge-bases", json={"name": name}), 201), True
+    documents = expect(client.get(f"/api/v1/knowledge-bases/{existing['id']}/documents"), 200)
+    return existing, not documents.get("items")
 
 
 def main() -> int:
@@ -33,6 +50,7 @@ def main() -> int:
     args = parser.parse_args()
     try:
         settings = load_real_settings()
+        database_url = external_database_url(settings)
         print(f"向量模型：{settings.embedding_model}（{settings.embedding_dim} 维）", flush=True)
         print(f"生成模型：{settings.generator_model}", flush=True)
         print("模型配置检查通过；未输出 API 密钥。", flush=True)
@@ -48,17 +66,19 @@ def main() -> int:
             LocalRuntime(
                 port=args.port,
                 model_settings=settings,
-                database_url=external_database_url(settings),
+                database_url=database_url,
+                # 持久库要配持久卷：临时卷在下一次启动就没了，旧文档原文会全部 404。
+                storage_root=str(WORKBENCH_OBJECTS) if database_url else None,
             ) as runtime,
             runtime.client() as client,
         ):
-            runtime.say("[准备] 建立真实模型体验库，仅导入自制会议室资料")
-            kb = expect(
-                client.post("/api/v1/knowledge-bases", json={"name": "真实模型体验库（自制资料）"}),
-                201,
-            )
-            uploaded = upload_sample(client, kb["id"])
-            wait_job(client, uploaded["job_id"], progress=runtime.say, timeout=180)
+            runtime.say("[准备] 复用或建立真实模型体验库，内置资料只导一次")
+            kb, seeded = ensure_experience_kb(client)
+            if seeded:
+                uploaded = upload_sample(client, kb["id"])
+                wait_job(client, uploaded["job_id"], progress=runtime.say, timeout=180)
+            else:
+                runtime.say("[准备] 体验库已有资料，本次不重复导入")
             runtime.say(f"[就绪] {runtime.base_url}/docs；知识库 {kb['id']}")
             print(
                 "自制资料涵盖：会议室使用后事项、预约提前时间。其他问题可能没有证据。", flush=True

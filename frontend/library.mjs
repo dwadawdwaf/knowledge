@@ -144,7 +144,7 @@ export function renderKnowledgeDetail(app) {
   const back = el('button');
   back.type = 'button';
   back.append(icon('arrow-left'), el('span', '', '全部知识库'));
-  back.addEventListener('click', () => app.navigate('knowledge'));
+  back.addEventListener('click', () => app.openKnowledgeList());
   crumbs.append(back, el('span', 'sep', '/'), el('strong', '', kb.name));
   page.append(crumbs);
 

@@ -1,6 +1,7 @@
 // 引用原文与分块结果：两个抽屉共用一套读取与渲染逻辑。
 import { el, icon, emptyState, loading } from './dom.mjs';
 import { chunkMetrics, locatorText, warningLabel } from './core.mjs';
+import { sheetTable } from './browse.mjs';
 
 export async function openSource(app, chunkId) {
   const dialog = document.querySelector('#source-dialog');
@@ -122,7 +123,17 @@ function list(items) {
       toggle.setAttribute('aria-expanded', String(expanded));
     });
     head.append(toggle);
-    card.append(head, el('p', 'chunk-text', item.text || ''));
+    // 表格块与阅读页保持一致：渲染成真表格，而不是一堆制表符
+    const sheet = (item.locator || {}).precision === 'sheet'
+      ? sheetTable(item.text || '', '')
+      : null;
+    if (sheet) {
+      const scroll = el('div', 'browse-table-wrap');
+      scroll.append(sheet.table);
+      card.append(head, scroll);
+    } else {
+      card.append(head, el('p', 'chunk-text', item.text || ''));
+    }
     box.append(card);
   });
   return box;
