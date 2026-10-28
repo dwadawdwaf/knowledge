@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import urllib.parse
 import uuid
 
 from fastapi import APIRouter, Depends, File, Query, Request, Response, UploadFile
@@ -28,6 +29,33 @@ from knowledge.services import document as document_service
 
 router = APIRouter(tags=["documents"])
 log = get_logger("api.documents")
+
+
+@router.get("/documents/{document_id}/file")
+def file(
+    document_id: uuid.UUID,
+    session: Session = Depends(get_session),
+    actor: Actor = Depends(get_actor),
+    storage: ObjectStorage = Depends(get_storage),
+) -> Response:
+    """原始文件字节，供浏览器直接预览或下载。
+
+    只服务当前版本；他人文档与已删除文档由服务层统一 404。
+    非 PDF/图片一律按附件下载（`attachment`），避免把上传内容当成同源页面渲染。
+    """
+    source = document_service.source(session, actor, document_id, storage)
+    disposition = "inline" if source["inline"] else "attachment"
+    quoted = urllib.parse.quote(source["filename"], safe="")
+    return Response(
+        content=source["data"],
+        media_type=source["media_type"],
+        headers={
+            "Content-Disposition": f"{disposition}; filename*=UTF-8''{quoted}",
+            "Content-Length": str(len(source["data"])),
+            "X-Content-Type-Options": "nosniff",
+            "Cache-Control": "private, no-store",
+        },
+    )
 
 
 @router.post("/documents/{document_id}/reindex", status_code=202, response_model=Envelope)

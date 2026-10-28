@@ -16,6 +16,15 @@ export async function openSource(app, chunkId) {
     meta.append(el('span', 'tag gray', locatorText(chunk.locator)));
     content.append(meta);
     content.append(el('div', 'source-text', chunk.text || '该片段没有可展示的正文。'));
+    // 从引用直接跳到该文件正文并定位到这一段，省去在长文档里翻找。
+    const openFile = el('button', 'btn ghost source-open-file');
+    openFile.type = 'button';
+    openFile.append(icon('folder'), document.createTextNode('在文件中查看'));
+    openFile.addEventListener('click', () => {
+      dialog.close();
+      app.openBrowse({ id: chunk.document_id, title: chunk.title }, { locator: chunk.locator });
+    });
+    content.append(openFile);
     (chunk.warnings || []).forEach(warning => {
       const line = el('div', 'notice-line warn');
       line.style.marginTop = '12px';

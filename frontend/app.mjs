@@ -4,6 +4,7 @@ import { el, icon, hydrateIcons, toast, openMenu, menuItem } from './dom.mjs';
 import { renderChat } from './chat.mjs';
 import { renderKnowledge, renderKnowledgeDetail, drawDocuments } from './library.mjs';
 import { renderFiles, updateFilesView } from './files.mjs';
+import { renderBrowse, loadBrowse, emptyBrowse, disposeBrowse } from './browse.mjs';
 import { renderSearch } from './search.mjs';
 import { openChunks, openSource } from './reader.mjs';
 
@@ -16,6 +17,7 @@ const state = {
   library: null,
   documents: [],
   allFiles: [],
+  browse: emptyBrowse(),
   fileLoading: false,
   fileFilter: '',
   fileKb: '',
@@ -200,6 +202,30 @@ function navigate(page) {
   closeMobileNav();
 }
 
+function openBrowse(doc, focus = null) {
+  disposeBrowse(app);  // 换文件时释放上一份的 blob URL
+  state.browse = {
+    ...emptyBrowse(),
+    doc,
+    focusOrdinal: focus?.ordinal ?? null,
+    focusLocator: focus?.locator ?? null,
+  };
+  state.page = 'browse';
+  stopPolling();
+  history.replaceState(null, '', '#browse');
+  render();
+  loadBrowse(app);
+  closeMobileNav();
+}
+
+function closeBrowse() {
+  disposeBrowse(app);
+  state.browse = emptyBrowse();
+  state.page = 'files';
+  history.replaceState(null, '', '#files');
+  render();
+}
+
 function openLibrary(kb) {
   state.library = kb;
   state.documents = [];
@@ -219,8 +245,10 @@ function openLibraryById(kbId) {
 }
 
 function render() {
+  // 浏览页属于「全部文件」这条线，导航仍高亮该入口。
+  const activePage = state.page === 'browse' ? 'files' : state.page;
   document.querySelectorAll('[data-page]').forEach(node => {
-    const active = node.dataset.page === state.page;
+    const active = node.dataset.page === activePage;
     node.classList.toggle('active', active);
     if (active) node.setAttribute('aria-current', 'page');
     else node.removeAttribute('aria-current');
@@ -228,6 +256,7 @@ function render() {
 
   main.replaceChildren();
   if (state.page === 'chat') main.append(renderChat(app));
+  else if (state.page === 'browse' && state.browse.doc) main.append(renderBrowse(app));
   else if (state.page === 'files') main.append(renderFiles(app));
   else if (state.page === 'search') main.append(renderSearch(app));
   else if (state.library) main.append(renderKnowledgeDetail(app));
@@ -371,6 +400,8 @@ const app = {
   loadAllFiles,
   openLibrary,
   openLibraryById,
+  openBrowse: (doc, focus) => openBrowse(doc, focus),
+  closeBrowse: () => closeBrowse(),
   openChunks: doc => openChunks(app, doc),
   openSource: id => openSource(app, id),
 };

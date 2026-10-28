@@ -1,6 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { ApiClient, ApiError, reindexTarget, jobLabel, locatorText, chunkMetrics, warningLabel } from './core.mjs';
+import { ApiClient, ApiError, reindexTarget, jobLabel, locatorText, chunkMetrics, warningLabel,
+  readableSize, mediaLabel, parserLabel, groupByPage, splitHighlight, sharedWarnings } from './core.mjs';
 
 test('无令牌也发起请求，由服务端决定是否放行', async () => {
   let sent;
@@ -102,4 +103,64 @@ test('块内偏移不按文档比例排列，避免给出错误的覆盖关系',
   assert.equal(metrics.blockPrecision, true);
   assert.equal(metrics.segments[0].width, 49.5);
   assert.equal(metrics.segments[1].left, 50);
+});
+
+test('体积与格式标签按人读的单位呈现', () => {
+  assert.equal(readableSize(0), '—');
+  assert.equal(readableSize(900), '900 B');
+  assert.equal(readableSize(113126), '110 KB');
+  assert.equal(readableSize(2.4 * 1024 * 1024), '2.4 MB');
+  assert.equal(mediaLabel('application/pdf'), 'PDF');
+  assert.equal(mediaLabel('application/vnd.openxmlformats-officedocument.wordprocessingml.document'), 'DOCX');
+  assert.equal(mediaLabel(null), '未知格式');
+  assert.equal(parserLabel('deepdoc-v0.22.0-v1', 'application/pdf'), 'DeepDoc 版面解析');
+  assert.equal(parserLabel('deepdoc-v0.22.0-v1', 'application/vnd.openxmlformats-officedocument.wordprocessingml.document'),
+    '旧解析器（该格式不走 DeepDoc）');
+  assert.equal(parserLabel(null), '未记录');
+});
+test('按页分组保持顺序，无页码单独成组', () => {
+  const groups = groupByPage([
+    { ordinal: 0, locator: { page: 1 } },
+    { ordinal: 1, locator: { page: 1 } },
+    { ordinal: 2, locator: { page: 2 } },
+  ]);
+  assert.equal(groups.length, 2);
+  assert.deepEqual(groups.map(group => group.page), [1, 2]);
+  assert.equal(groups[0].items.length, 2);
+  const plain = groupByPage([{ ordinal: 0, locator: {} }, { ordinal: 1, locator: {} }]);
+  assert.equal(plain.length, 1);
+  assert.equal(plain[0].page, null);
+  assert.deepEqual(groupByPage([]), []);
+});
+test('关键词切片不返回 HTML，且大小写不敏感', () => {
+  const parts = splitHighlight('UPS 电量偏低', 'ups');
+  assert.deepEqual(parts, [{ text: 'UPS', hit: true }, { text: ' 电量偏低', hit: false }]);
+  const none = splitHighlight('正文', '');
+  assert.deepEqual(none, [{ text: '正文', hit: false }]);
+  const tags = splitHighlight('<img src=x onerror=alert(1)>', 'img');
+  assert.ok(tags.every(part => typeof part.text === 'string' && !('html' in part)));
+  assert.equal(tags.filter(part => part.hit).length, 1);
+});
+
+test('共有警告只上提一次，块内保留特有条目', () => {
+  const shared = sharedWarnings([
+    { warnings: ['deepdoc_ocr_requires_review', 'deepdoc_table_linearized'] },
+    { warnings: ['deepdoc_ocr_requires_review'] },
+    { warnings: ['deepdoc_ocr_requires_review'] },
+  ]);
+  assert.deepEqual(shared, ['deepdoc_ocr_requires_review']);
+  assert.deepEqual(sharedWarnings([{ warnings: [] }, { warnings: ['x'] }]), []);
+  assert.deepEqual(sharedWarnings([]), []);
+});
+
+test('取文件字节时 404 仍抛统一错误，不把 JSON 当文件', async () => {
+  const api = new ApiClient(async () => Response.json(
+    { error: { code: 'RESOURCE_NOT_FOUND' }, meta: { request_id: 'r' } }, { status: 404 }));
+  await assert.rejects(api.raw('/documents/x/file'), error => error.status === 404 && error.code === 'RESOURCE_NOT_FOUND');
+});
+test('取文件字节成功时返回原始响应', async () => {
+  const api = new ApiClient(async () => new Response(new Blob(['%PDF-1.4']), { status: 200 }));
+  const response = await api.raw('/documents/x/file');
+  assert.equal(response.status, 200);
+  assert.equal((await response.blob()).size, 8);
 });

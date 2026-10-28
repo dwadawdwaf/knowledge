@@ -266,6 +266,9 @@ def detail(session: Session, actor: Actor, document_id: uuid.UUID) -> dict:
         session.get(IndexBuild, document.pending_build_id) if document.pending_build_id else None
     )
     latest = job_repo.latest_for_document(session, document.id)
+    active = (
+        session.get(IndexBuild, document.active_build_id) if document.active_build_id else None
+    )
 
     return {
         "id": str(document.id),
@@ -280,7 +283,38 @@ def detail(session: Session, actor: Actor, document_id: uuid.UUID) -> dict:
         "pending_build_id": str(document.pending_build_id) if document.pending_build_id else None,
         "version_no": version.version_no if version else None,
         "pending_build_state": pending.state.value if pending else None,
+        # 阅读视图需要原始文件的类型与体积；解析策略按已发布构建记录，未发布时为空。
+        "media_type": version.media_type if version else None,
+        "byte_size": version.byte_size if version else None,
+        "parser_profile": (active.chunk_config or {}).get("parser_profile") if active else None,
         "job": _job_dict(latest) if latest else None,
+    }
+
+
+INLINE_MEDIA_PREFIXES = ("application/pdf", "image/")
+
+
+def source(
+    session: Session, actor: Actor, document_id: uuid.UUID, storage: ObjectStorage
+) -> dict:
+    """取回当前版本的原始文件，供浏览器直接预览。
+
+    只读已发布版本的字节；所有权与状态由 `get_owned` 保证（他人与已删除一律 404）。
+    是否内联展示交给调用方按媒体类型决定，这里只给出建议值。
+    """
+    document = doc_repo.get_owned(session, actor, document_id)
+    if not document.current_version_id:
+        raise NotFound("文件不存在")
+    version = doc_repo.get_version(session, document.current_version_id)
+    if version is None:
+        raise NotFound("文件不存在")
+    data = storage.get(version.object_key)
+    return {
+        "data": data,
+        "media_type": version.media_type,
+        "filename": document.title,
+        "version_no": version.version_no,
+        "inline": version.media_type.startswith(INLINE_MEDIA_PREFIXES),
     }
 
 

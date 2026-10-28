@@ -1744,3 +1744,259 @@ html[data-theme="dark"] .modal-mark { color: #06202a; }
   padding: 2px 7px;
   white-space: nowrap;
 }
+
+/* ------------------------------------------------------- 文件浏览（正文视图） */
+/* 阅读优先：正文按块展示，块头只放定位与警告，不喧宾夺主 */
+.browse-page {
+  max-width: 900px
+}
+.browse-head {
+  align-items: flex-start
+}
+.browse-heading {
+  min-width: 0;
+  flex: 1
+}
+.back-link {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 0;
+  margin-bottom: 8px;
+  font-size: 12.5px;
+  color: var(--text-3)
+}
+.back-link:hover {
+  color: var(--accent)
+}
+.back-link svg {
+  width: 14px;
+  height: 14px
+}
+.browse-heading h1 {
+  margin: 0 0 8px;
+  font-size: 21px;
+  line-height: 1.35;
+  overflow-wrap: anywhere
+}
+.browse-meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px
+}
+.browse-toolbar {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin: 4px 0 18px;
+  padding: 10px 12px;
+  border: 1px solid var(--border-soft);
+  border-radius: var(--r-lg);
+  background: var(--surface-subtle)
+}
+.browse-search {
+  flex: 0 1 320px;
+  min-width: 180px
+}
+.browse-hit-count {
+  font-size: 12px;
+  color: var(--text-3);
+  white-space: nowrap
+}
+.browse-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12.5px;
+  color: var(--text-2);
+  cursor: pointer;
+  user-select: none
+}
+.browse-toggle input {
+  accent-color: var(--accent)
+}
+.browse-body {
+  display: flex;
+  flex-direction: column;
+  gap: 18px;
+  padding-bottom: 40px
+}
+.browse-page-group {
+  display: flex;
+  flex-direction: column;
+  gap: 10px
+}
+.browse-page-head {
+  position: sticky;
+  top: 0;
+  z-index: 2;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 7px 2px;
+  background: linear-gradient(var(--bg) 72%, transparent);
+  border-bottom: 1px solid var(--border-soft)
+}
+.browse-page-no {
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--accent-ink);
+  background: var(--accent-soft);
+  border-radius: var(--r-pill);
+  padding: 2px 10px
+}
+.browse-page-count {
+  font-size: 11.5px;
+  color: var(--text-4)
+}
+.browse-block {
+  border: 1px solid var(--border-soft);
+  border-radius: var(--r-lg);
+  padding: 14px 16px;
+  background: var(--surface);
+  transition: border-color .15s ease, box-shadow .15s ease
+}
+.browse-block:hover {
+  border-color: var(--border)
+}
+.browse-block.focus {
+  border-color: var(--accent-line);
+  box-shadow: 0 0 0 3px var(--accent-soft)
+}
+.browse-block-head {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+  margin-bottom: 8px
+}
+.browse-block-no {
+  font-family: var(--mono);
+  font-size: 11.5px;
+  color: var(--accent);
+  background: var(--accent-soft);
+  border-radius: var(--r-xs);
+  padding: 1px 6px
+}
+.browse-block-loc {
+  font-size: 11.5px;
+  color: var(--text-3);
+  flex: 1;
+  min-width: 0;
+  overflow-wrap: anywhere
+}
+.browse-block-chars {
+  font-size: 11px;
+  color: var(--text-4)
+}
+.browse-copy {
+  font-size: 11.5px;
+  color: var(--text-3);
+  padding: 0
+}
+.browse-text {
+  margin: 0;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  font-size: 13.5px;
+  line-height: 1.95;
+  color: var(--text-2)
+}
+.browse-text mark {
+  background: #fff1a8;
+  color: inherit;
+  border-radius: 2px;
+  padding: 0 1px
+}
+.source-open-file {
+  margin-top: 14px
+}
+@media (max-width: 720px) {
+  .browse-toolbar { flex-wrap: wrap }
+  .browse-search { flex: 1 1 100% }
+}
+
+/* 原文视图：PDF 内嵌、图片直显，其余格式给下载与说明 */
+.browse-tabs {
+  display: inline-flex;
+  gap: 2px;
+  padding: 2px;
+  border-radius: var(--r-pill);
+  background: var(--surface-active)
+}
+.browse-tab {
+  border: 0;
+  background: transparent;
+  padding: 5px 13px;
+  border-radius: var(--r-pill);
+  font-size: 12.5px;
+  color: var(--text-3);
+  cursor: pointer;
+  transition: background .15s ease, color .15s ease
+}
+.browse-tab:hover {
+  color: var(--text)
+}
+.browse-tab.active {
+  background: var(--surface);
+  color: var(--accent-ink);
+  font-weight: 600;
+  box-shadow: var(--sh-1)
+}
+.browse-frame {
+  width: 100%;
+  height: min(78vh, 880px);
+  border: 1px solid var(--border-soft);
+  border-radius: var(--r-lg);
+  background: var(--surface)
+}
+.browse-image {
+  display: flex;
+  justify-content: center;
+  padding: 14px;
+  border: 1px solid var(--border-soft);
+  border-radius: var(--r-lg);
+  background: var(--surface-subtle)
+}
+.browse-image img {
+  max-width: 100%;
+  height: auto;
+  border-radius: var(--r-md);
+  box-shadow: var(--sh-2)
+}
+.browse-fallback {
+  padding: 30px 24px;
+  text-align: center;
+  border: 1px dashed var(--border);
+  border-radius: var(--r-lg);
+  background: var(--surface-subtle)
+}
+.browse-fallback h3 {
+  margin: 0 0 8px;
+  font-size: 15px;
+  color: var(--text)
+}
+.browse-fallback p {
+  margin: 0 auto 18px;
+  max-width: 46ch;
+  font-size: 12.5px;
+  line-height: 1.85;
+  color: var(--text-3)
+}
+.browse-download {
+  text-decoration: none
+}
+
+.browse-frame-hint {
+  margin-top: 8px;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 11.5px;
+  color: var(--text-4)
+}
+.browse-frame-hint .link-btn {
+  font-size: 11.5px;
+  color: var(--accent);
+  padding: 0
+}

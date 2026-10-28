@@ -565,7 +565,27 @@ docker compose -p ks-deepdoc -f deploy/deepdoc/compose.yaml exec deepdoc /opt/ks
 本机开发时边车代码改动可直接 `docker cp` 进容器后 `docker restart`，但容器重建后会丢失，
 以源码为准。
 
-## 15. 外部数据库（可选）
+## 15. 文件浏览（原文与正文）
+
+「全部文件」每行的文件名或「浏览」进入阅读页，两个视图：
+
+- **原文**：`GET /documents/{id}/file` 取当前版本字节，前端转成 blob 内嵌。
+  PDF 用 `<iframe>` 交给浏览器内置阅读器，图片直接 `<img>`；DOCX / Markdown 不能内嵌，
+  给出下载与切到正文的提示。页头的「下载原文件」与视图无关，始终可用。
+- **提取正文**：按已发布分块还原，PDF / 图片按页分组（`第 N 页` 吸顶），
+  DOCX / Markdown 不伪造页码；支持页内查找（本地高亮）与复制单块。
+
+实现要点：
+
+- 页面 CSP 需放行 `blob:`（`img-src` / `frame-src` / `connect-src`），否则 blob 预览会被
+  静默拦截，表现为图片 `naturalWidth=0`、`fetch(blob:)` 报 `Failed to fetch`。
+  已核对 `frontend/index.html` 的 CSP 含 `blob:`；改动时不要去掉。
+- blob 地址在切换文件与离开页面时释放（`disposeBrowse`），避免长时间浏览后内存累积。
+- 非 PDF/图片一律 `Content-Disposition: attachment`，不把上传内容当同源页面渲染。
+- 阅读页只用块级定位：DeepDoc 的偏移是块内偏移，正文视图标注「块内 [a, b)」，
+  不冒充文档级字符位置。
+
+## 16. 外部数据库（可选）
 
 默认每次运行都创建临时库。要让服务与验证改用已有 PostgreSQL（例如远端服务器），在 `backend/.env`
 写一行 `KS_DATABASE_URL=postgresql+psycopg://<user>:<password>@127.0.0.1:5433/<db>`：

@@ -387,6 +387,7 @@ semantic/hybrid 调用模型前检查授权范围内已发布构建的模型标�
 | 13 | POST `/conversations` | 创建会话，用于问答存档 | 201 |
 | 14 | POST `/documents/{document_id}/reindex` | 最新上传版本的同模型重建/失败恢复，见 §7.1 | 202 |
 | 15 | GET `/documents/{document_id}/chunks` | 分块结果视图：当前已发布 build 的片段、定位与总数，`limit` 默认 200 | 200 |
+| 16 | GET `/documents/{document_id}/file` | 原始文件字节：当前版本原件，PDF/图片 `inline`，其余 `attachment`；带 `nosniff` 与 `private, no-store`，他人与已删除 404 | 200 |
 
 **成功**：`{"data": {…}, "meta": {"request_id": "…"}}`
 **错误**：`{"error": {"code": "…", "message": "…", "retryable": bool}, "meta": {"request_id": "…"}}`

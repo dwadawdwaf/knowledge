@@ -42,6 +42,32 @@ export class ApiClient {
       throw new ApiError('NETWORK_ERROR');
     } finally { clearTimeout(timer); }
   }
+
+  /**
+   * 取原始响应（文件字节用）。错误仍然按统一错误信封解析，
+   * 避免把 404 的 JSON 当成文件内容。
+   */
+  async raw(path, { method = 'GET', timeout = 120000 } = {}) {
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), timeout);
+    const token = this.token;
+    try {
+      const headers = token ? { Authorization: `Bearer ${token}` } : {};
+      const response = await this.fetcher(`/api/v1${path}`, {
+        method, headers, signal: controller.signal, credentials: 'omit', cache: 'no-store',
+      });
+      if (this.token !== token) throw new ApiError('STALE_SESSION');
+      if (!response.ok) {
+        let payload = null;
+        try { payload = await response.json(); } catch { payload = null; }
+        throw new ApiError(payload?.error?.code, response.status, payload?.meta?.request_id || '');
+      }
+      return response;
+    } catch (error) {
+      if (error instanceof ApiError) throw error;
+      throw new ApiError('NETWORK_ERROR');
+    } finally { clearTimeout(timer); }
+  }
 }
 export function reindexTarget(document, receipts) {
   if (receipts.has(document.id)) return receipts.get(document.id);
@@ -111,4 +137,92 @@ export function chunkMetrics(items = []) {
     && items.every(item => (item.locator || {}).precision === 'block');
   return { count: spans.length, chars, avg: spans.length ? Math.round(chars / spans.length) : 0,
     usable, blockPrecision, maxEnd, overlaps, pages, segments };
+}
+
+/* ------------------------------------------------------------ 文件浏览 */
+
+export function readableSize(bytes) {
+  if (!Number.isFinite(bytes) || bytes <= 0) return '—';
+  if (bytes < 1024) return `${bytes} B`;
+  if (bytes < 1024 * 1024) return `${Math.round(bytes / 1024)} KB`;
+  return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
+}
+
+const MEDIA_LABELS = [
+  ['application/pdf', 'PDF'],
+  ['image/png', 'PNG'],
+  ['image/jpeg', 'JPEG'],
+  ['image/tiff', 'TIFF'],
+  ['application/vnd.openxmlformats-officedocument.wordprocessingml', 'DOCX'],
+  ['text/markdown', 'Markdown'],
+  ['text/plain', 'TXT'],
+];
+
+export function mediaLabel(mediaType) {
+  if (!mediaType) return '未知格式';
+  const found = MEDIA_LABELS.find(([prefix]) => mediaType.startsWith(prefix));
+  if (found) return found[1];
+  return mediaType.split('/').pop().toUpperCase();
+}
+
+const DEEPDOC_MEDIA = ['application/pdf', 'image/png', 'image/jpeg', 'image/tiff'];
+
+/**
+ * 解析器标签。DeepDoc 只处理 PDF 与图片，DOCX / Markdown 会回落到旧解析器；
+ * 构建记录里存的是「配置的策略」，直接照搬会把 DOCX 说成 DeepDoc 解析。
+ */
+export function parserLabel(profile, mediaType) {
+  if (!profile) return '未记录';
+  if (profile.startsWith('deepdoc')) {
+    if (!mediaType || DEEPDOC_MEDIA.some(prefix => mediaType.startsWith(prefix))) {
+      return 'DeepDoc 版面解析';
+    }
+    return '旧解析器（该格式不走 DeepDoc）';
+  }
+  return '旧解析器';
+}
+
+/** 所有块共有的警告，用于提到文档级只提示一次。 */
+export function sharedWarnings(items = []) {
+  if (!items.length) return [];
+  const [first, ...rest] = items.map(item => new Set(item.warnings || []));
+  return [...first].filter(code => rest.every(set => set.has(code))).sort();
+}
+
+/**
+ * 按页分组，保持原顺序。无页码的分块（DOCX、Markdown）单独成组，
+ * 不伪造成第 1 页。
+ */
+export function groupByPage(items = []) {
+  const groups = [];
+  items.forEach(item => {
+    const page = (item.locator || {}).page ?? null;
+    const last = groups[groups.length - 1];
+    if (last && last.page === page) last.items.push(item);
+    else groups.push({ page, items: [item] });
+  });
+  return groups;
+}
+
+/**
+ * 把正文按关键词切成「命中/普通」片段，供界面用 DOM 高亮。
+ * 不返回 HTML，避免把文档内容当标签解析。
+ */
+export function splitHighlight(text, query) {
+  const source = text || '';
+  const keyword = (query || '').trim();
+  if (!keyword) return [{ text: source, hit: false }];
+  const parts = [];
+  const lower = source.toLowerCase();
+  const needle = keyword.toLowerCase();
+  let cursor = 0;
+  let index = lower.indexOf(needle);
+  while (index !== -1) {
+    if (index > cursor) parts.push({ text: source.slice(cursor, index), hit: false });
+    parts.push({ text: source.slice(index, index + keyword.length), hit: true });
+    cursor = index + keyword.length;
+    index = lower.indexOf(needle, cursor);
+  }
+  if (cursor < source.length) parts.push({ text: source.slice(cursor), hit: false });
+  return parts.length ? parts : [{ text: source, hit: false }];
 }
