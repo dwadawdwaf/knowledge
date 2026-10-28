@@ -7,6 +7,8 @@ import {
 } from './core.mjs';
 
 const LIMIT = 500;
+// 原文视图里能直接解码显示的文本上限；超过就只给下载。
+const PLAIN_TEXT_LIMIT = 512 * 1024;
 
 export function emptyBrowse() {
   return {
@@ -14,7 +16,8 @@ export function emptyBrowse() {
     loading: false, error: null, query: '', grouped: true,
     focusOrdinal: null, focusLocator: null,
     // 原文视图：PDF 与图片默认直接看原件；其余格式默认看解析正文。
-    tab: 'text', tabChosen: false, original: { url: null, loading: false, error: null, mediaType: null },
+    tab: 'text', tabChosen: false,
+    original: { url: null, loading: false, error: null, mediaType: null, text: null },
   };
 }
 
@@ -81,6 +84,10 @@ export async function loadOriginal(app) {
     if (browse.original.url) URL.revokeObjectURL(browse.original.url);
     browse.original.url = URL.createObjectURL(blob);
     browse.original.mediaType = response.headers.get('content-type') || browse.detail?.media_type || '';
+    // 纯文本与 Markdown 浏览器能直接显示，取一次解码结果，避免「原文」标签下只有一句看得见却打不开的解释。
+    browse.original.text = browse.original.mediaType.startsWith('text/') && blob.size <= PLAIN_TEXT_LIMIT
+      ? await blob.text()
+      : null;
     browse.original.error = null;
   } catch (error) {
     browse.original.error = error;
@@ -200,11 +207,14 @@ function toolbar(app) {
   return bar;
 }
 
+// 记下当前页的元信息节点：首次渲染时它还没挂进文档，按 id 查不到，只能直接持有引用。
+let metaNode = null;
+
 function metaLine(app) {
-  const meta = el('div', 'browse-meta');
-  meta.id = 'browse-meta';
-  fillMeta(app, meta);
-  return meta;
+  metaNode = el('div', 'browse-meta');
+  metaNode.id = 'browse-meta';
+  fillMeta(app, metaNode);
+  return metaNode;
 }
 
 /** 元信息依赖详情接口，加载完成后要重新填一次，否则停留在「未知格式」。 */
@@ -230,7 +240,8 @@ function paint(app, target) {
   const body = target || document.querySelector('#browse-body');
   const hitCount = document.querySelector('#browse-hit-count');
   if (!body || !browse) return;
-  fillMeta(app, document.querySelector('#browse-meta'));
+  // 详情是异步回来的，每次重绘都要重新填一遍；用持有的节点，避免页面尚未挂载时查不到而漏更新。
+  fillMeta(app, metaNode || document.querySelector('#browse-meta'));
   body.replaceChildren();
 
   if (browse.tab === 'original') {
@@ -373,13 +384,27 @@ function paintOriginal(app, body) {
     return;
   }
 
+  // 纯文本与 Markdown：浏览器本来就能显示，按原样给出，不做 Markdown 渲染。
+  if (media.startsWith('text/') && original.text != null) {
+    const note = el('div', 'plain-note');
+    note.append(icon('info'),
+      el('span', '', `按文件原始内容显示，未渲染 ${mediaLabel(media)} 样式；排版以「提取正文」为准。`));
+    const pre = el('pre', 'plain-body');
+    pre.textContent = original.text;
+    const wrap = el('div', 'browse-plain');
+    wrap.append(note, pre);
+    body.append(wrap);
+    return;
+  }
+
   const card = el('div', 'browse-fallback');
   const mark = el('span', 'fallback-mark');
   mark.append(icon('file'));
   const info = el('div', 'fallback-info');
-  info.append(el('h3', '', '该格式无法在浏览器内直接预览'));
-  info.append(el('p', '', `${mediaLabel(media)} 原件已取回，可下载后用本地软件打开；`
-    + '若要按分段阅读正文，切到「提取正文」。'));
+  info.append(el('h3', '', media.startsWith('text/') ? '文件过大，未在页面内展开' : '该格式无法在浏览器内直接预览'));
+  info.append(el('p', '', media.startsWith('text/')
+    ? `${mediaLabel(media)} 超过 ${Math.round(PLAIN_TEXT_LIMIT / 1024)} KB，页面里直接展开会拖慢滚动；可下载后查看，或切到「提取正文」按分段阅读。`
+    : `${mediaLabel(media)} 不是浏览器能渲染的格式，下载后用本地软件打开；若要按分段阅读正文，切到「提取正文」。`));
   const metas = [
     mediaLabel(media),
     browse.detail?.byte_size ? readableSize(browse.detail.byte_size) : null,
