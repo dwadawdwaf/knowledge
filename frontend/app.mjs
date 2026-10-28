@@ -137,13 +137,18 @@ async function fetchKbDocuments(kb) {
   return { kb, items: [], error: lastError };
 }
 
+let filesRequest = 0;
+
 async function loadAllFiles(quiet = false) {
   if (!state.connected || !state.libraries.length) return;
+  // 连点刷新会并发两轮：只让最后发起的那一轮写结果，避免旧结果覆盖新结果。
+  const seq = ++filesRequest;
   state.fileLoading = true;
   state.fileErrors = [];
   updateFilesView(app);
   try {
     const results = await Promise.all(state.libraries.map(fetchKbDocuments));
+    if (seq !== filesRequest) return;
     state.fileErrors = results
       .filter(result => result.error)
       .map(result => ({ name: result.kb.name, message: errorText(result.error) }));
@@ -154,8 +159,10 @@ async function loadAllFiles(quiet = false) {
       notify(`有 ${state.fileErrors.length} 个知识库未能读取，列表只是部分结果。`);
     }
   } finally {
-    state.fileLoading = false;
-    updateFilesView(app);
+    if (seq === filesRequest) {
+      state.fileLoading = false;
+      updateFilesView(app);
+    }
   }
 }
 

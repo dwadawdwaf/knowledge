@@ -146,7 +146,11 @@ function paint(app, panel) {
   if (stats) stats.replaceChildren(statsRow(app));
   paintErrors(app);
   panel.replaceChildren();
-  if (app.state.fileLoading) { panel.append(loading('正在汇总各知识库的文档…')); return; }
+  // 已有数据时刷新不清空列表：先显示旧行，避免页面闪成空白再填回来。
+  if (app.state.fileLoading && !app.state.allFiles.length) {
+    panel.append(loading('正在汇总各知识库的文档…'));
+    return;
+  }
 
   const keyword = app.state.fileFilter.trim().toLowerCase();
   const items = app.state.allFiles
