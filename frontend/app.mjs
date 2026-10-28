@@ -1,5 +1,5 @@
 // 应用装配：状态、路由、数据加载、连接与轮询。视图逻辑在各自模块中。
-import { ApiClient, ApiError } from './core.mjs';
+import { ApiClient, ApiError, turnsFromMessages } from './core.mjs';
 import { el, icon, hydrateIcons, toast, openMenu, menuItem } from './dom.mjs';
 import { renderChat } from './chat.mjs';
 import { renderKnowledge, renderKnowledgeDetail, drawDocuments } from './library.mjs';
@@ -27,6 +27,7 @@ const state = {
   fileErrors: [],
   browse: emptyBrowse(),
   fileLoading: false,
+  fileLoaded: false,
   fileFilter: '',
   fileKb: '',
   kbFilter: '',
@@ -37,6 +38,7 @@ const state = {
   searchResult: null,
   sessions: [],
   sessionId: '',
+  conversationsError: null,
   receipts: new Map(),
   connected: false,
   busy: false,
@@ -76,6 +78,8 @@ async function loadLibraries() {
   if (state.scope && !state.libraries.some(kb => kb.id === state.scope)) state.scope = '';
   if (state.library && !state.libraries.some(kb => kb.id === state.library.id)) state.library = null;
   if (state.fileKb && !state.libraries.some(kb => kb.id === state.fileKb)) state.fileKb = '';
+  // 知识库集合变化后，全部文件的汇总结果也要重新读取。
+  state.fileLoaded = false;
 }
 
 /**
@@ -168,6 +172,7 @@ async function loadAllFiles(quiet = false) {
   } finally {
     if (seq === filesRequest) {
       state.fileLoading = false;
+      state.fileLoaded = true;
       updateFilesView(app);
     }
   }
@@ -203,10 +208,16 @@ function currentSession() {
 function ensureSession() {
   let session = currentSession();
   if (session) return session;
-  session = { id: uid(), title: '', turns: [], createdAt: new Date() };
+  session = draftSession();
   state.sessions.unshift(session);
   state.sessionId = session.id;
   return session;
+}
+
+function draftSession() {
+  return {
+    id: uid(), title: '', turns: [], createdAt: new Date(), serverId: false, loaded: true,
+  };
 }
 
 function newSession() {
@@ -214,10 +225,77 @@ function newSession() {
     navigate('chat');
     return;
   }
-  const session = { id: uid(), title: '', turns: [], createdAt: new Date() };
+  const session = draftSession();
   state.sessions.unshift(session);
   state.sessionId = session.id;
   navigate('chat');
+}
+
+/** 连接后从后端恢复会话列表；选中最近一条并加载消息。 */
+async function loadConversations() {
+  const result = await api.request('/conversations');
+  const items = result.items || [];
+  state.sessions = items.map(item => ({
+    id: item.id,
+    title: item.title || '',
+    createdAt: item.created_at ? new Date(item.created_at) : new Date(),
+    turns: [],
+    serverId: true,
+    loaded: false,
+  }));
+  if (!state.sessions.length) {
+    const draft = draftSession();
+    state.sessions = [draft];
+    state.sessionId = draft.id;
+    return;
+  }
+  state.sessionId = state.sessions[0].id;
+  await loadSession(state.sessions[0]);
+}
+
+async function loadSession(session) {
+  if (!session?.serverId || session.loaded) return;
+  session.loading = true;
+  try {
+    const data = await api.request(`/conversations/${session.id}`);
+    session.title = data.title || session.title;
+    session.turns = turnsFromMessages(data.messages || []);
+    session.loaded = true;
+  } finally {
+    session.loading = false;
+  }
+}
+
+/** 首次提问时创建会话，之后的问题都带 conversation_id 写入历史。 */
+async function ensureConversation(session, title) {
+  if (session.serverId) return session;
+  const created = await api.request('/conversations', {
+    method: 'POST',
+    body: { title: String(title || '').slice(0, 200) },
+  });
+  session.id = created.id;
+  session.serverId = true;
+  session.loaded = true;
+  if (!session.title) session.title = created.title || String(title || '').slice(0, 40);
+  state.sessionId = session.id;
+  return session;
+}
+
+async function selectSession(session) {
+  state.sessionId = session.id;
+  if (!session.loaded) session.loading = true;
+  renderSessions();
+  navigate('chat');
+  closeMobileNav();
+  if (session.loaded) return;
+  try {
+    await loadSession(session);
+  } catch (error) {
+    notify(`对话历史读取失败：${errorText(error)}`);
+  } finally {
+    session.loading = false;
+  }
+  if (state.sessionId === session.id) render();
 }
 
 function renderSessions() {
@@ -234,12 +312,7 @@ function renderSessions() {
     item.type = 'button';
     item.title = session.title || '新对话';
     item.append(icon('chat'), el('span', '', session.title || '新对话'));
-    item.addEventListener('click', () => {
-      state.sessionId = session.id;
-      renderSessions();
-      navigate('chat');
-      closeMobileNav();
-    });
+    item.addEventListener('click', () => selectSession(session));
     list.append(item);
   });
 }
@@ -446,9 +519,11 @@ function disconnect(silent = false) {
   state.documents = [];
   state.docSignature = '';
   state.allFiles = [];
+  state.fileLoaded = false;
   state.searchResult = null;
   state.sessions = [];
   state.sessionId = '';
+  state.conversationsError = null;
   state.receipts.clear();
   connectionLabel.textContent = '未连接';
   if (!silent) renderSessions();
@@ -479,6 +554,10 @@ const app = {
   renderSessions,
   currentSession,
   ensureSession,
+  ensureConversation,
+  loadConversations,
+  loadSession,
+  selectSession,
   newSession,
   notify,
   errorBox,
@@ -569,6 +648,16 @@ async function connect(value) {
   try {
     await loadLibraries();
     state.connected = true;
+    try {
+      await loadConversations();
+      state.conversationsError = null;
+    } catch (error) {
+      // 历史读取失败不应阻断连接；页面会保留新对话入口。
+      state.conversationsError = error;
+    }
+    // 标签最后再改：冒烟与用户都以「已连接」作为可交互信号，此时列表必须已画好。
+    render();
+    renderSessions();
     connectionLabel.textContent = '已连接 · 开发身份';
     return true;
   } catch (error) {

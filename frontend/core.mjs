@@ -83,7 +83,11 @@ export function jobLabel(document) {
 }
 export function locatorText(locator = {}) {
   const parts = [];
-  if (locator.page != null) parts.push(`第 ${locator.page} 页`);
+  if (locator.type === 'pptx' && locator.page != null) {
+    parts.push(`第 ${locator.page} 张幻灯片`);
+  } else if (locator.page != null) {
+    parts.push(`第 ${locator.page} 页`);
+  }
   if (locator.paragraph != null) parts.push(`段落索引 ${locator.paragraph}`);
   if (locator.sheet) {
     const rows = locator.row_start != null && locator.row_end != null
@@ -108,6 +112,7 @@ const WARNING_LABELS = {
   deepdoc_figures_not_described: '含未描述的图片',
   deepdoc_empty_page: '存在空白页',
   xlsx_rows_truncated: '表格行数超上限，仅索引前若干行',
+  csv_rows_truncated: '表格行数超上限，仅索引前若干行',
 };
 
 export function warningLabel(code) {
@@ -163,6 +168,8 @@ const MEDIA_LABELS = [
   ['image/tiff', 'TIFF'],
   ['application/vnd.openxmlformats-officedocument.wordprocessingml', 'DOCX'],
   ['application/vnd.openxmlformats-officedocument.spreadsheetml', 'XLSX'],
+  ['application/vnd.openxmlformats-officedocument.presentationml', 'PPTX'],
+  ['text/csv', 'CSV'],
   ['text/markdown', 'Markdown'],
   ['text/plain', 'TXT'],
 ];
@@ -177,18 +184,15 @@ export function mediaLabel(mediaType) {
 const DEEPDOC_MEDIA = ['application/pdf', 'image/png', 'image/jpeg', 'image/tiff'];
 
 /**
- * 解析器标签。DeepDoc 只处理 PDF 与图片，DOCX / Markdown 会回落到旧解析器；
- * 构建记录里存的是「配置的策略」，直接照搬会把 DOCX 说成 DeepDoc 解析。
+ * 解析器标签。只有真正走 DeepDoc 的 PDF/图片才显示；DOCX、表格与 PPTX 走
+ * 各自的常规解析器，不贴「旧解析器」这类会让人误以为质量降级的标签。
  */
 export function parserLabel(profile, mediaType) {
-  if (!profile) return '未记录';
-  if (profile.startsWith('deepdoc')) {
-    if (!mediaType || DEEPDOC_MEDIA.some(prefix => mediaType.startsWith(prefix))) {
-      return 'DeepDoc 版面解析';
-    }
-    return '旧解析器（该格式不走 DeepDoc）';
+  if (!profile || !profile.startsWith('deepdoc')) return '';
+  if (!mediaType || DEEPDOC_MEDIA.some(prefix => mediaType.startsWith(prefix))) {
+    return 'DeepDoc 版面解析';
   }
-  return '旧解析器';
+  return '';
 }
 
 /** 所有块共有的警告，用于提到文档级只提示一次。 */
@@ -208,9 +212,37 @@ export function groupByPage(items = []) {
     const page = (item.locator || {}).page ?? null;
     const last = groups[groups.length - 1];
     if (last && last.page === page) last.items.push(item);
-    else groups.push({ page, items: [item] });
+    else groups.push({ page, type: (item.locator || {}).type || null, items: [item] });
   });
   return groups;
+}
+
+/** 把服务端消息还原成对话轮次；assistant 消息挂到上一条 user 消息上。 */
+export function turnsFromMessages(messages = []) {
+  const turns = [];
+  let pending = null;
+  messages.forEach(message => {
+    const at = message.created_at ? new Date(message.created_at) : new Date();
+    if (message.role === 'user') {
+      pending = { id: message.id, question: message.body || '', at, status: 'done', answer: null };
+      turns.push(pending);
+    } else if (message.role === 'assistant' && pending) {
+      pending.answer = {
+        answer_status: message.answer_status || '',
+        answer: message.body || '',
+        citations: message.citations || [],
+        retrieval: {},
+        warnings: [],
+      };
+    }
+  });
+  turns.forEach(turn => {
+    if (!turn.answer) {
+      turn.status = 'error';
+      turn.error = new Error('这条提问没有找到保存的回答。');
+    }
+  });
+  return turns;
 }
 
 /**

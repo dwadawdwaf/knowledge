@@ -40,13 +40,13 @@
       </nav>
 
       <div class="side-fill">
-        <section class="side-section" aria-label="本次对话">
+        <section class="side-section" aria-label="对话历史">
           <div class="side-section-head">
-            <span>本次对话</span>
+            <span>对话历史</span>
             <span class="side-count" id="session-count"></span>
           </div>
           <div class="session-list" id="session-list"></div>
-          <p class="side-empty" id="session-empty">还没有对话<br><span>提问后自动记录在本次浏览中</span></p>
+          <p class="side-empty" id="session-empty">还没有对话<br><span>提问后自动保存，重新连接后仍可查看</span></p>
         </section>
       </div>
 
@@ -79,7 +79,7 @@
       <p class="modal-desc">沿用后端开发令牌，不创建账号或新的身份。</p>
       <label class="field-label" for="token">开发访问令牌</label>
       <input id="token" class="input" type="password" autocomplete="off" placeholder="粘贴访问令牌，不含 Bearer 前缀" required>
-      <p class="field-hint">在启动终端输入 <code>/token</code> 获取本次开发令牌。令牌只存在页面内存中，刷新后需要重新连接。</p>
+      <p class="field-hint">在启动终端输入 <code>/token</code> 获取本次开发令牌。令牌只存在页面内存中，刷新后需要重新连接；对话历史保存在后端，重连后自动加载。</p>
       <p id="connect-error" class="error-text" role="alert"></p>
       <button class="btn primary full" id="connect-submit" type="submit">连接工作台</button>
       <p class="modal-note"><span data-icon="shield"></span>仅连接同源 API，不向其他网站传递令牌。</p>

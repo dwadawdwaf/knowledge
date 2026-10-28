@@ -47,8 +47,11 @@ export function renderFiles(app) {
   const panel = el('div', 'table-wrap');
   panel.id = 'file-list';
   page.append(panel);
+  // 先置加载态再画，避免首帧闪成「没有匹配的文件」；加载完成后置 fileLoaded。
+  const needsLoad = !app.state.fileLoaded && !app.state.fileLoading;
+  if (needsLoad) app.state.fileLoading = true;
   paint(app, panel);
-  if (!app.state.allFiles.length && !app.state.fileLoading) app.loadAllFiles();
+  if (needsLoad) app.loadAllFiles();
   return page;
 }
 

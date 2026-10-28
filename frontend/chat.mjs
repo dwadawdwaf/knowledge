@@ -1,5 +1,5 @@
 // 对话页：800px 居中列、时间分隔、用户气泡右对齐、助手答案无气泡 + 引用芯片。
-import { el, icon, toast, autoGrow, clockLabel, dayLabel } from './dom.mjs';
+import { el, icon, toast, autoGrow, clockLabel, dayLabel, loading } from './dom.mjs';
 import { warningLabel } from './core.mjs';
 import { scopeControl, scopeIds } from './scope.mjs';
 
@@ -21,7 +21,8 @@ export function renderChat(app) {
   const column = el('div', 'chat-column');
 
   const turns = session?.turns || [];
-  if (!turns.length) column.append(hero(app));
+  if (session?.loading) column.append(loading('正在读取对话历史…'));
+  else if (!turns.length) column.append(hero(app));
 
   const thread = el('div', 'thread');
   thread.id = 'thread';
@@ -179,12 +180,19 @@ async function ask(app, question) {
   app.state.busy = true;
 
   try {
+    await app.ensureConversation(session, question);
+    app.renderSessions();
     const answer = await app.api.request('/qa', {
       method: 'POST',
-      body: { question, knowledge_base_ids: scopeIds(app) },
+      body: {
+        question,
+        knowledge_base_ids: scopeIds(app),
+        conversation_id: session.id,
+      },
     });
     turn.status = 'done';
     turn.answer = answer;
+    session.loaded = true;
   } catch (error) {
     turn.status = 'error';
     turn.error = error;

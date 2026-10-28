@@ -1,7 +1,8 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { ApiClient, ApiError, reindexTarget, jobLabel, locatorText, chunkMetrics, warningLabel,
-  readableSize, mediaLabel, parserLabel, groupByPage, splitHighlight, sharedWarnings } from './core.mjs';
+  readableSize, mediaLabel, parserLabel, groupByPage, splitHighlight, sharedWarnings,
+  turnsFromMessages } from './core.mjs';
 
 test('无令牌也发起请求，由服务端决定是否放行', async () => {
   let sent;
@@ -112,11 +113,13 @@ test('体积与格式标签按人读的单位呈现', () => {
   assert.equal(readableSize(2.4 * 1024 * 1024), '2.4 MB');
   assert.equal(mediaLabel('application/pdf'), 'PDF');
   assert.equal(mediaLabel('application/vnd.openxmlformats-officedocument.wordprocessingml.document'), 'DOCX');
+  assert.equal(mediaLabel('application/vnd.openxmlformats-officedocument.presentationml.presentation'), 'PPTX');
+  assert.equal(mediaLabel('text/csv'), 'CSV');
   assert.equal(mediaLabel(null), '未知格式');
   assert.equal(parserLabel('deepdoc-v0.22.0-v1', 'application/pdf'), 'DeepDoc 版面解析');
-  assert.equal(parserLabel('deepdoc-v0.22.0-v1', 'application/vnd.openxmlformats-officedocument.wordprocessingml.document'),
-    '旧解析器（该格式不走 DeepDoc）');
-  assert.equal(parserLabel(null), '未记录');
+  assert.equal(parserLabel('deepdoc-v0.22.0-v1', 'application/vnd.openxmlformats-officedocument.wordprocessingml.document'), '');
+  assert.equal(parserLabel('legacy-v1', 'application/pdf'), '');
+  assert.equal(parserLabel(null), '');
 });
 test('按页分组保持顺序，无页码单独成组', () => {
   const groups = groupByPage([
@@ -173,4 +176,23 @@ test('表格按工作表与行定位，不冒充字符区间', () => {
   assert.equal(text, '工作表《资产清单》 · 第 1–9 行');
   assert.equal(mediaLabel('application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'), 'XLSX');
   assert.equal(warningLabel('xlsx_rows_truncated'), '表格行数超上限，仅索引前若干行');
+  assert.equal(warningLabel('csv_rows_truncated'), '表格行数超上限，仅索引前若干行');
+  assert.equal(locatorText({ type: 'pptx', page: 2 }), '第 2 张幻灯片');
+});
+
+test('服务端消息还原为对话轮次，未配对的回答不冒充成功', () => {
+  const turns = turnsFromMessages([
+    { id: 'u1', role: 'user', body: '问题一', created_at: '2026-10-28T10:00:00+08:00' },
+    {
+      id: 'a1', role: 'assistant', body: '回答一', answer_status: 'answered',
+      citations: [{ index: 1, chunk_id: 'c1', title: '资料' }],
+      created_at: '2026-10-28T10:00:01+08:00',
+    },
+    { id: 'u2', role: 'user', body: '问题二', created_at: '2026-10-28T10:01:00+08:00' },
+  ]);
+  assert.equal(turns.length, 2);
+  assert.equal(turns[0].question, '问题一');
+  assert.equal(turns[0].answer.answer, '回答一');
+  assert.equal(turns[0].answer.citations[0].chunk_id, 'c1');
+  assert.equal(turns[1].status, 'error');
 });

@@ -64,7 +64,8 @@ export function previewable(mediaType) {
 }
 
 export function isSheet(mediaType) {
-  return Boolean(mediaType) && mediaType.startsWith(SHEET_MEDIA);
+  return Boolean(mediaType)
+    && (mediaType.startsWith(SHEET_MEDIA) || mediaType === 'text/csv');
 }
 
 function isTiff(mediaType) {
@@ -334,7 +335,10 @@ function paint(app, target) {
     groupByPage(visible).forEach(group => {
       const section = el('section', 'browse-page-group');
       const head = el('div', 'browse-page-head');
-      head.append(el('span', 'browse-page-no', group.page == null ? '未标注页码' : `第 ${group.page} 页`));
+      const label = group.page == null
+        ? '未标注页码'
+        : group.type === 'pptx' ? `第 ${group.page} 张幻灯片` : `第 ${group.page} 页`;
+      head.append(el('span', 'browse-page-no', label));
       head.append(el('span', 'browse-page-count', `${group.items.length} 块`));
       section.append(head);
       group.items.forEach(item => section.append(block(app, item, keyword, shared)));

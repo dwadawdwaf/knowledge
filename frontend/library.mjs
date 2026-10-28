@@ -5,8 +5,8 @@ import {
 } from './dom.mjs';
 import { jobLabel, reindexTarget } from './core.mjs';
 
-const ACCEPT = '.txt,.md,.pdf,.docx,.png,.jpg,.jpeg,.tif,.tiff';
-const PATTERN = /\.(txt|md|pdf|docx|png|jpe?g|tiff?)$/i;
+const ACCEPT = '.txt,.md,.csv,.pdf,.docx,.xlsx,.pptx,.png,.jpg,.jpeg,.tif,.tiff';
+const PATTERN = /\.(txt|md|csv|pdf|docx|xlsx|pptx|png|jpe?g|tiff?)$/i;
 const MAX_BYTES = 50 * 1024 * 1024;
 
 /* ---------------------------------------------------------------- 列表页 */
@@ -217,7 +217,7 @@ function uploadZone(app, kb) {
   const mark = el('span', 'upload-mark');
   mark.append(icon('upload'));
   const text = el('div');
-  text.append(el('strong', '', '添加知识资料'), el('p', '', 'TXT / MD / PDF / DOCX；扫描件需后端启用 DeepDoc · 单文件不超过 50 MB'));
+  text.append(el('strong', '', '添加知识资料'), el('p', '', 'TXT / MD / CSV / PDF / DOCX / XLSX / PPTX；扫描件需后端启用 DeepDoc · 单文件不超过 50 MB'));
   copy.append(mark, text);
 
   const input = el('input');
