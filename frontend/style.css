@@ -753,6 +753,8 @@ html[data-theme="dark"] .brand-mark { color: #06202a; }
   line-height: 1.65;
 }
 .notice-line.warn { background: var(--warn-soft); border-color: transparent; color: var(--warn); }
+.file-error-line { align-items: center; margin-bottom: 14px; }
+.file-error-line .link-btn { margin-left: auto; flex: 0 0 auto; color: var(--warn); }
 
 /* ==========================================================================
    知识库卡片

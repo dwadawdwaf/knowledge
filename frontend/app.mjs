@@ -21,6 +21,7 @@ const state = {
   documents: [],
   docSignature: '',
   allFiles: [],
+  fileErrors: [],
   browse: emptyBrowse(),
   fileLoading: false,
   fileFilter: '',
@@ -115,23 +116,43 @@ async function loadDocuments(quiet = false) {
   }
 }
 
+const sleep = ms => new Promise(resolve => setTimeout(resolve, ms));
+
+/**
+ * 汇总一个知识库的文档；超时/抖动重试一次再判失败。
+ * 远端库经隧道访问时会偶发慢查询，单次失败不足以说明这个库是空的。
+ */
+async function fetchKbDocuments(kb) {
+  let lastError = null;
+  for (let attempt = 0; attempt < 2; attempt += 1) {
+    try {
+      const data = await api.request(`/knowledge-bases/${kb.id}/documents`, { timeout: 20000 });
+      return { kb, items: data.items || [], error: null };
+    } catch (error) {
+      lastError = error;
+      if (error.status === 401) break;
+      if (attempt === 0) await sleep(400);
+    }
+  }
+  return { kb, items: [], error: lastError };
+}
+
 async function loadAllFiles(quiet = false) {
   if (!state.connected || !state.libraries.length) return;
   state.fileLoading = true;
+  state.fileErrors = [];
   updateFilesView(app);
   try {
-    const results = await Promise.all(state.libraries.map(async kb => {
-      try {
-        const data = await api.request(`/knowledge-bases/${kb.id}/documents`, { timeout: 15000 });
-        return { kb, items: data.items || [] };
-      } catch (error) {
-        if (!quiet) notify(`${kb.name}：${errorText(error)}`);
-        return { kb, items: [] };
-      }
-    }));
+    const results = await Promise.all(state.libraries.map(fetchKbDocuments));
+    state.fileErrors = results
+      .filter(result => result.error)
+      .map(result => ({ name: result.kb.name, message: errorText(result.error) }));
     state.allFiles = results.flatMap(({ kb, items }) => items
       .filter(doc => doc.status === 'active')
       .map(doc => ({ ...doc, kb_name: kb.name })));
+    if (!quiet && state.fileErrors.length) {
+      notify(`有 ${state.fileErrors.length} 个知识库未能读取，列表只是部分结果。`);
+    }
   } finally {
     state.fileLoading = false;
     updateFilesView(app);

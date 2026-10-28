@@ -32,6 +32,12 @@ export function renderFiles(app) {
   stats.id = 'file-stats';
   stats.append(statsRow(app));
   page.append(stats);
+  // 读取失败的知识库要留在页面上，而不是一个转瞬即逝的提示：
+  // 否则「只读到 1 个库」会被误读成「一共只有 1 个文件」。
+  const errors = el('div');
+  errors.id = 'file-errors';
+  page.append(errors);
+  paintErrors(app, errors);
   page.append(shoulder(app));
   const panel = el('div', 'table-wrap');
   panel.id = 'file-list';
@@ -47,8 +53,11 @@ function statsRow(app) {
   const running = all.filter(item => ['running', 'queued'].includes(item.job?.state)).length;
   const failed = all.filter(item => item.job?.state === 'failed').length;
   const row = el('div', 'stat-row');
+  const partial = (app.state.fileErrors || []).length;
   [
-    ['文档总数', all.length, `${app.state.libraries.length} 个知识库`],
+    ['文档总数', all.length, partial
+      ? `${app.state.libraries.length} 个知识库 · ${partial} 个未读取`
+      : `${app.state.libraries.length} 个知识库`],
     ['可检索', ready, '已发布构建'],
     ['处理中', running, '解析 / 分段 / 向量化'],
     ['失败', failed, '可在知识库内重建'],
@@ -135,6 +144,7 @@ function paint(app, panel) {
   if (!panel) return;
   const stats = document.querySelector('#file-stats');
   if (stats) stats.replaceChildren(statsRow(app));
+  paintErrors(app);
   panel.replaceChildren();
   if (app.state.fileLoading) { panel.append(loading('正在汇总各知识库的文档…')); return; }
 
@@ -160,6 +170,29 @@ function paint(app, panel) {
   const scroll = el('div', 'table-scroll');
   scroll.append(table);
   panel.replaceChildren(scroll);
+}
+
+/** 部分知识库读取失败时的常驻提示，带手动重试。 */
+function paintErrors(app, target) {
+  const box = target || document.querySelector('#file-errors');
+  if (!box) return;
+  box.replaceChildren();
+  const errors = app.state.fileErrors || [];
+  if (!errors.length) {
+    box.hidden = true;
+    return;
+  }
+  box.hidden = false;
+  const names = errors.slice(0, 3).map(item => item.name).join('、');
+  const more = errors.length > 3 ? ` 等 ${errors.length} 个知识库` : '';
+  const line = el('div', 'notice-line warn file-error-line');
+  line.append(icon('alert'), el('span', '',
+    `部分知识库读取失败：${names}${more}。下面的统计与列表只包含已读取的部分，不代表全部文件。`));
+  const retry = el('button', 'link-btn', '重新读取');
+  retry.type = 'button';
+  retry.addEventListener('click', () => app.loadAllFiles());
+  line.append(retry);
+  box.append(line);
 }
 
 function fileRow(app, item) {
