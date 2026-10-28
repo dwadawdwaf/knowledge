@@ -252,7 +252,7 @@ class XlsxParser:
                 row_number = 0
                 for row in sheet.iter_rows(values_only=True):
                     row_number += 1
-                    cells = [_cell_text(value) for value in row]
+                    cells = [cell_text(value) for value in row]
                     if not any(cells):
                         continue
                     if read_rows >= self.max_rows:
@@ -284,7 +284,7 @@ class XlsxParser:
         return blocks
 
 
-def _cell_text(value: object) -> str:
+def cell_text(value: object) -> str:
     if value is None:
         return ""
     if isinstance(value, datetime):

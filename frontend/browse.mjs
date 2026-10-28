@@ -7,6 +7,8 @@ import {
 } from './core.mjs';
 
 const LIMIT = 500;
+const SHEET_MEDIA = 'application/vnd.openxmlformats-officedocument.spreadsheetml';
+const TIFF_MEDIA = 'image/tiff';
 // 原文视图里能直接解码显示的文本上限；超过就只给下载。
 const PLAIN_TEXT_LIMIT = 512 * 1024;
 
@@ -17,6 +19,8 @@ export function emptyBrowse() {
     focusOrdinal: null, focusLocator: null,
     // 原文视图：PDF 与图片默认直接看原件；其余格式默认看解析正文。
     tab: 'text', tabChosen: false,
+    // 表格预览：浏览器渲染不了 xlsx，改由服务端转成二维数据
+    sheets: null, sheetsLoading: false, sheetsError: null, sheetIndex: 0,
     // 从哪个页面打开：决定左上角返回按钮的文字与去向
     returnPage: 'files', returnLabel: '全部文件',
     original: { url: null, loading: false, error: null, mediaType: null, text: null },
@@ -47,13 +51,24 @@ export async function loadBrowse(app) {
     browse.loading = false;
     // 默认视图可能从「正文」改为「原文」，工具条上的选中态要一起重建。
     app.render();
-    if (browse.tab === 'original') loadOriginal(app);
+    if (browse.tab === 'original' && !isSheet(browse.detail?.media_type)) loadOriginal(app);
   }
 }
 
-/** 能内嵌预览的格式；其余（DOCX / Markdown）默认落到正文视图。 */
+/** 能在「原文」里直接看到的格式：PDF、图片、表格；其余（DOCX 等）默认落到正文视图。 */
 export function previewable(mediaType) {
-  return Boolean(mediaType) && (mediaType.startsWith('image/') || mediaType.startsWith('application/pdf'));
+  if (!mediaType) return false;
+  return mediaType.startsWith('image/')
+    || mediaType.startsWith('application/pdf')
+    || isSheet(mediaType);
+}
+
+export function isSheet(mediaType) {
+  return Boolean(mediaType) && mediaType.startsWith(SHEET_MEDIA);
+}
+
+function isTiff(mediaType) {
+  return Boolean(mediaType) && mediaType.startsWith(TIFF_MEDIA);
 }
 
 export async function downloadOriginal(app) {
@@ -81,7 +96,9 @@ export async function loadOriginal(app) {
   browse.original.loading = true;
   paint(app);
   try {
-    const response = await app.api.raw(`/documents/${browse.doc.id}/file`);
+    // TIFF 等浏览器不支持的位图：让服务端转码后再内联展示，原件仍可单独下载
+    const convert = isTiff(browse.detail?.media_type || browse.original.mediaType);
+    const response = await app.api.raw(`/documents/${browse.doc.id}/file${convert ? '?as=png' : ''}`);
     const blob = await response.blob();
     if (browse.original.url) URL.revokeObjectURL(browse.original.url);
     browse.original.url = URL.createObjectURL(blob);
@@ -339,9 +356,107 @@ function paint(app, target) {
   browse.focusLocator = null;
 }
 
+export async function loadSheets(app) {
+  const browse = app.state.browse;
+  if (!browse?.doc || browse.sheets || browse.sheetsLoading) return;
+  browse.sheetsLoading = true;
+  browse.sheetsError = null;
+  paint(app);
+  try {
+    browse.sheets = await app.api.request(`/documents/${browse.doc.id}/sheets`);
+  } catch (error) {
+    browse.sheetsError = error;
+  } finally {
+    browse.sheetsLoading = false;
+    paint(app);
+  }
+}
+
+/** 表格预览：按工作表分页，首个非空行作表头。 */
+function paintSheets(app, body) {
+  const browse = app.state.browse;
+  if (browse.sheetsError) {
+    body.append(app.errorBox(browse.sheetsError));
+    return;
+  }
+  if (!browse.sheets) {
+    body.append(loading('正在读取表格内容…'));
+    loadSheets(app);
+    return;
+  }
+
+  const sheets = browse.sheets.sheets || [];
+  if (!sheets.length) {
+    body.append(emptyState('这个表格里没有工作表', '可以下载原件用本地软件打开。'));
+    return;
+  }
+  const index = Math.min(browse.sheetIndex, sheets.length - 1);
+  const sheet = sheets[index];
+
+  if (sheets.length > 1) {
+    const tabs = el('div', 'sheet-tabs');
+    tabs.setAttribute('role', 'tablist');
+    sheets.forEach((item, position) => {
+      const tab = el('button', position === index ? 'sheet-tab active' : 'sheet-tab', item.name);
+      tab.type = 'button';
+      tab.setAttribute('role', 'tab');
+      tab.setAttribute('aria-selected', String(position === index));
+      tab.append(el('span', 'sheet-tab-count', String(item.rows.length)));
+      tab.addEventListener('click', () => {
+        if (browse.sheetIndex === position) return;
+        browse.sheetIndex = position;
+        paint(app);
+      });
+      tabs.append(tab);
+    });
+    body.append(tabs);
+  } else {
+    body.append(el('div', 'sheet-single', sheets[0].name));
+  }
+
+  const note = el('div', 'plain-note');
+  const limits = browse.sheets.limits || {};
+  const truncated = sheet.truncated || browse.sheets.truncated;
+  note.append(icon('info'), el('span', '',
+    `只读预览：共 ${sheet.rows.length} 行` + (truncated
+      ? `，已按上限截断（最多 ${limits.rows} 行 / ${limits.cols} 列），完整内容请下载原文件`
+      : '，完整内容请以原件为准')));
+  body.append(note);
+
+  if (!sheet.rows.length) {
+    body.append(emptyState('这个工作表是空的', '换一个工作表，或下载原件查看。'));
+    return;
+  }
+
+  const [header, ...rest] = sheet.rows;
+  const table = el('table', 'browse-table sheet-table');
+  const headRow = el('tr');
+  header.forEach((cell, column) => headRow.append(el('th', '', cell || `列 ${column + 1}`)));
+  const thead = el('thead');
+  thead.append(headRow);
+  table.append(thead);
+  const tbody = el('tbody');
+  rest.forEach(row => {
+    const tr = el('tr');
+    header.forEach((_, column) => tr.append(el('td', '', row[column] ?? '')));
+    tbody.append(tr);
+  });
+  table.append(tbody);
+
+  const scroll = el('div', 'browse-table-wrap');
+  scroll.append(table);
+  body.append(scroll);
+}
+
 function paintOriginal(app, body) {
   const browse = app.state.browse;
   const original = browse.original;
+
+  // 表格不取原件字节：直接走 /sheets 的二维数据，先于「读原件」的分支判断
+  if (isSheet(browse.detail?.media_type)) {
+    paintSheets(app, body);
+    return;
+  }
 
   if (original.error) {
     body.append(app.errorBox(original.error));

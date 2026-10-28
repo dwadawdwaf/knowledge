@@ -8,6 +8,7 @@ from dataclasses import dataclass
 
 from sqlalchemy.orm import Session
 
+from knowledge.adapters.preview import sheet_preview, to_png
 from knowledge.adapters.storage import new_object_key
 from knowledge.config import Settings
 from knowledge.domain.entities import Actor, BuildState, JobKind, Lifecycle
@@ -316,6 +317,43 @@ def source(
         "version_no": version.version_no,
         "inline": version.media_type.startswith(INLINE_MEDIA_PREFIXES),
     }
+
+
+def preview_sheets(
+    session: Session, actor: Actor, document_id: uuid.UUID, storage: ObjectStorage
+) -> dict:
+    """表格文件的只读预览数据：按工作表返回前若干行，供前端画成表格。
+
+    这是「看原件」的替代路径——浏览器无法渲染 xlsx，转成二维数据比让用户下载更直接。
+    截断信息随结果返回，前端据此提示「只显示前 N 行」。
+    """
+    version = _current_version(session, actor, document_id)
+    return sheet_preview(storage.get(version.object_key), version.media_type)
+
+
+def preview_image(
+    session: Session, actor: Actor, document_id: uuid.UUID, storage: ObjectStorage
+) -> dict:
+    """把浏览器不支持的位图转成 PNG（目前用于 TIFF）。"""
+    document = doc_repo.get_owned(session, actor, document_id)
+    if not document.current_version_id:
+        raise NotFound("文件不存在")
+    version = doc_repo.get_version(session, document.current_version_id)
+    if not version.media_type.startswith("image/"):
+        raise UnsupportedFormat("只有图片文件支持图片预览")
+    stem = document.title.rsplit(".", 1)[0] or "preview"
+    return {
+        "data": to_png(storage.get(version.object_key)),
+        "media_type": "image/png",
+        "filename": f"{stem}.png",
+    }
+
+
+def _current_version(session: Session, actor: Actor, document_id: uuid.UUID):
+    document = doc_repo.get_owned(session, actor, document_id)
+    if not document.current_version_id:
+        raise NotFound("文件不存在")
+    return doc_repo.get_version(session, document.current_version_id)
 
 
 def chunks(

@@ -22,7 +22,7 @@ from knowledge.api.v1.schemas.requests import ReindexRequest
 from knowledge.api.v1.schemas.responses import ReindexAck, UploadAck
 from knowledge.config import Settings
 from knowledge.domain.entities import Actor
-from knowledge.domain.errors import FileTooLarge
+from knowledge.domain.errors import FileTooLarge, ValidationFailed
 from knowledge.domain.ports import Embedder, ObjectStorage
 from knowledge.logging import get_logger
 from knowledge.services import document as document_service
@@ -34,6 +34,7 @@ log = get_logger("api.documents")
 @router.get("/documents/{document_id}/file")
 def file(
     document_id: uuid.UUID,
+    as_: str | None = Query(default=None, alias="as", description="转换格式，目前支持 png"),
     session: Session = Depends(get_session),
     actor: Actor = Depends(get_actor),
     storage: ObjectStorage = Depends(get_storage),
@@ -42,7 +43,24 @@ def file(
 
     只服务当前版本；他人文档与已删除文档由服务层统一 404。
     非 PDF/图片一律按附件下载（`attachment`），避免把上传内容当成同源页面渲染。
+    `?as=png` 用于 TIFF 这类浏览器不支持的位图：服务端转码后内联返回，原件不变。
     """
+    if as_ is not None:
+        if as_ != "png":
+            raise ValidationFailed("目前只支持 as=png")
+        rendered = document_service.preview_image(session, actor, document_id, storage)
+        quoted = urllib.parse.quote(rendered["filename"], safe="")
+        return Response(
+            content=rendered["data"],
+            media_type=rendered["media_type"],
+            headers={
+                "Content-Disposition": f"inline; filename*=UTF-8''{quoted}",
+                "Content-Length": str(len(rendered["data"])),
+                "X-Content-Type-Options": "nosniff",
+                "Cache-Control": "private, no-store",
+            },
+        )
+
     source = document_service.source(session, actor, document_id, storage)
     disposition = "inline" if source["inline"] else "attachment"
     quoted = urllib.parse.quote(source["filename"], safe="")
@@ -165,6 +183,22 @@ def detail(
     actor: Actor = Depends(get_actor),
 ) -> dict:
     return envelope(document_service.detail(session, actor, document_id), request_id(request))
+
+
+@router.get("/documents/{document_id}/sheets", response_model=Envelope)
+def sheets(
+    document_id: uuid.UUID,
+    request: Request,
+    session: Session = Depends(get_session),
+    actor: Actor = Depends(get_actor),
+    storage: ObjectStorage = Depends(get_storage),
+) -> dict:
+    """表格文件的只读预览：按工作表返回前若干行。
+
+    浏览器无法渲染 xlsx，这里转成二维数据供前端画表格；截断信息随结果返回。
+    """
+    data = document_service.preview_sheets(session, actor, document_id, storage)
+    return envelope(data, request_id(request))
 
 
 @router.get("/documents/{document_id}/chunks", response_model=Envelope)
