@@ -297,11 +297,28 @@ async function uploadFiles(app, kb, files) {
 export function drawDocuments(app) {
   const panel = document.querySelector('#document-list');
   if (!panel) return;
+  // 计数在读取期间不能报 0，否则和「还没有文档」是同一类误报
+  const counter = document.querySelector('#doc-count');
+  if (counter) {
+    const loading = app.state.docLoading && !app.state.documents.length;
+    counter.textContent = loading ? '读取中…' : `${app.state.documents.length} 个文档`;
+  }
 
   const keyword = app.state.docFilter.trim().toLowerCase();
   const items = app.state.documents
     .filter(doc => doc.status === 'active')
     .filter(doc => !keyword || (doc.title || '').toLowerCase().includes(keyword));
+
+  // 首次进入时列表还是空的：先显示「正在读取」，别把「还没读到」说成「还没有文档」
+  if (!items.length && app.state.docLoading) {
+    panel.replaceChildren(loading('正在读取文档…'));
+    return;
+  }
+
+  if (!items.length && app.state.docError) {
+    panel.replaceChildren(app.errorBox(app.state.docError));
+    return;
+  }
 
   if (!items.length) {
     panel.replaceChildren(app.state.documents.length

@@ -20,6 +20,9 @@ const state = {
   library: null,
   documents: [],
   docSignature: '',
+  // 首次/手动读取文档列表：为真时列表区显示「正在读取」，而不是空态
+  docLoading: false,
+  docError: null,
   allFiles: [],
   fileErrors: [],
   browse: emptyBrowse(),
@@ -91,6 +94,8 @@ function documentsSignature(items) {
 async function loadDocuments(quiet = false) {
   const library = state.library;
   if (!library || !state.connected) return;
+  // 只有显式加载才占用「空列表」的占位；轮询静默进行，避免空库每 2.5 秒闪一次读取中
+  if (!quiet) state.docLoading = true;
   pollBusy = true;
   try {
     const result = await api.request(`/knowledge-bases/${library.id}/documents`, { timeout: 15000 });
@@ -100,6 +105,7 @@ async function loadDocuments(quiet = false) {
     const unchanged = signature === state.docSignature;
     state.documents = items;
     state.docSignature = signature;
+    state.docError = null;
     state.pollError = false;
     if (state.page === 'knowledge' && !unchanged) {
       drawDocuments(app);
@@ -110,6 +116,7 @@ async function loadDocuments(quiet = false) {
     }
   } catch (error) {
     if (error.status !== 401 && (!quiet || !state.pollError)) notify(errorText(error));
+    state.docError = error;
     state.pollError = true;
   } finally {
     pollBusy = false;
@@ -309,6 +316,7 @@ function openLibrary(kb) {
   state.library = kb;
   state.documents = [];
   state.docSignature = '';
+  state.docError = null;
   state.docFilter = '';
   state.page = 'knowledge';
   stopPolling();
