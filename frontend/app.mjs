@@ -275,6 +275,7 @@ function openBrowse(doc, focus = null) {
   state.browse = {
     ...emptyBrowse(),
     doc,
+    loading: true,  // 首帧就显示「正在读取」，不要先闪一下空态
     focusOrdinal: focus?.ordinal ?? null,
     focusLocator: focus?.locator ?? null,
     returnPage: fromLibrary ? 'knowledge' : 'files',
@@ -324,8 +325,10 @@ function openLibraryById(kbId) {
 }
 
 function render() {
-  // 浏览页属于「全部文件」这条线，导航仍高亮该入口。
-  const activePage = state.page === 'browse' ? 'files' : state.page;
+  // 浏览页高亮来源入口：从知识库进来就高亮「知识库」，从全部文件进来就高亮「全部文件」。
+  const activePage = state.page === 'browse'
+    ? (state.browse.returnPage === 'knowledge' ? 'knowledge' : 'files')
+    : state.page;
   document.querySelectorAll('[data-page]').forEach(node => {
     const active = node.dataset.page === activePage;
     node.classList.toggle('active', active);

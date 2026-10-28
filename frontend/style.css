@@ -754,6 +754,14 @@ html[data-theme="dark"] .brand-mark { color: #06202a; }
 }
 .notice-line.warn { background: var(--warn-soft); border-color: transparent; color: var(--warn); }
 .file-error-line { align-items: center; margin-bottom: 14px; }
+.file-status {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin: -4px 0 12px;
+  font-size: 12px;
+  color: var(--text-4);
+}
 .file-error-line .link-btn { margin-left: auto; flex: 0 0 auto; color: var(--warn); }
 
 /* ==========================================================================

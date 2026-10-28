@@ -224,6 +224,11 @@ function metaLine(app) {
 function fillMeta(app, node) {
   if (!node) return;
   const browse = app.state.browse;
+  if (!browse.detail) {
+    // 详情还没回来：给「读取中」而不是「未发布」，后者会被当成结论。
+    node.replaceChildren(el('span', 'tag gray', browse.error ? '读取失败' : '读取中…'));
+    return;
+  }
   const detail = browse.detail || {};
   const pages = new Set(browse.items.map(item => (item.locator || {}).page).filter(Boolean));
   const chips = [

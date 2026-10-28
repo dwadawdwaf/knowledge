@@ -39,6 +39,11 @@ export function renderFiles(app) {
   page.append(errors);
   paintErrors(app, errors);
   page.append(shoulder(app));
+  // 刷新时列表保留旧数据，必须另给一条状态提示，否则看不出正在更新
+  const status = el('div', 'file-status');
+  status.id = 'file-status';
+  status.setAttribute('aria-live', 'polite');
+  page.append(status);
   const panel = el('div', 'table-wrap');
   panel.id = 'file-list';
   page.append(panel);
@@ -145,6 +150,7 @@ function paint(app, panel) {
   const stats = document.querySelector('#file-stats');
   if (stats) stats.replaceChildren(statsRow(app));
   paintErrors(app);
+  paintStatus(app);
   panel.replaceChildren();
   // 已有数据时刷新不清空列表：先显示旧行，避免页面闪成空白再填回来。
   if (app.state.fileLoading && !app.state.allFiles.length) {
@@ -174,6 +180,18 @@ function paint(app, panel) {
   const scroll = el('div', 'table-scroll');
   scroll.append(table);
   panel.replaceChildren(scroll);
+}
+
+/** 正在刷新时的状态行：列表此时显示的是上一次的结果。 */
+function paintStatus(app) {
+  const box = document.querySelector('#file-status');
+  if (!box) return;
+  box.replaceChildren();
+  const refreshing = app.state.fileLoading && app.state.allFiles.length > 0;
+  box.hidden = !refreshing;
+  if (!refreshing) return;
+  box.append(el('span', 'spinner'),
+    el('span', '', `正在刷新 ${app.state.libraries.length} 个知识库的文档…（下方仍是上一次结果）`));
 }
 
 /** 部分知识库读取失败时的常驻提示，带手动重试。 */
