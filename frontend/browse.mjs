@@ -17,6 +17,8 @@ export function emptyBrowse() {
     focusOrdinal: null, focusLocator: null,
     // 原文视图：PDF 与图片默认直接看原件；其余格式默认看解析正文。
     tab: 'text', tabChosen: false,
+    // 从哪个页面打开：决定左上角返回按钮的文字与去向
+    returnPage: 'files', returnLabel: '全部文件',
     original: { url: null, loading: false, error: null, mediaType: null, text: null },
   };
 }
@@ -111,7 +113,8 @@ export function renderBrowse(app) {
   const text = el('div', 'browse-heading');
   const back = el('button', 'link-btn back-link');
   back.type = 'button';
-  back.append(icon('arrow-left'), document.createTextNode('全部文件'));
+  back.append(icon('arrow-left'), document.createTextNode(browse.returnLabel || '全部文件'));
+  back.title = browse.returnLabel || '返回';
   back.addEventListener('click', () => app.closeBrowse());
   text.append(back);
   const title = el('h1', '', browse.doc.title || '未命名文件');

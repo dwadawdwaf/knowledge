@@ -270,11 +270,15 @@ function navigate(page) {
 
 function openBrowse(doc, focus = null) {
   disposeBrowse(app);  // 换文件时释放上一份的 blob URL
+  // 从知识库详情进来时，返回应该回到那个知识库，而不是「全部文件」。
+  const fromLibrary = state.page === 'knowledge' && state.library ? state.library : null;
   state.browse = {
     ...emptyBrowse(),
     doc,
     focusOrdinal: focus?.ordinal ?? null,
     focusLocator: focus?.locator ?? null,
+    returnPage: fromLibrary ? 'knowledge' : 'files',
+    returnLabel: fromLibrary ? `返回「${fromLibrary.name}」` : '全部文件',
   };
   state.page = 'browse';
   stopPolling();
@@ -292,10 +296,11 @@ function closeBrowse() {
     history.back();  // 由 hashchange 统一收口，避免两处各画一次
     return;
   }
+  const back = state.browse?.returnPage === 'knowledge' && state.library ? 'knowledge' : 'files';
   disposeBrowse(app);
   state.browse = emptyBrowse();
-  state.page = 'files';
-  history.replaceState(null, '', '#files');
+  state.page = back;
+  history.replaceState(null, '', `#${back}`);
   render();
 }
 

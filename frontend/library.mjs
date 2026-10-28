@@ -333,7 +333,12 @@ function documentRow(app, doc) {
   const mark = el('span', 'file-ico');
   mark.append(icon('file'));
   const meta = el('div', 'file-meta');
-  meta.append(el('strong', 'file-name', doc.title));
+  // 文件名即入口：和「全部文件」一致，点开就是原文 / 提取正文
+  const name = el('button', 'link-btn file-name', doc.title);
+  name.type = 'button';
+  name.title = '打开文件，查看原文与提取正文';
+  name.addEventListener('click', () => app.openBrowse(doc));
+  meta.append(name);
   meta.append(el('small', 'file-sub', `代次 ${doc.generation}${doc.active_build_id ? ' · 已有可用内容' : ' · 暂无发布内容'}`));
   cell.append(mark, meta);
   nameCell.append(cell);
@@ -421,7 +426,12 @@ function actionBar(app, doc) {
     });
   });
 
-  bar.append(update, fileInput, rebuild, chunks, remove);
+  const browse = el('button', 'link-btn', '浏览');
+  browse.type = 'button';
+  browse.title = '查看原文与提取正文';
+  browse.addEventListener('click', () => app.openBrowse(doc));
+
+  bar.append(browse, update, fileInput, rebuild, chunks, remove);
   return bar;
 }
 
