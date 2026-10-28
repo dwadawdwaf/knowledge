@@ -20,6 +20,10 @@ def runtime():
             database_url=os.getenv("KS_E2E_DATABASE_URL"),
             embedding_url=model.url,
             generator_url=model.url,
+            # 隔离入口创建的 e2e_test 是本机临时库，不是 runbook §17 的外部库；
+            # 外部库的 60/15 秒租约会让崩溃恢复用例等满 60 秒才回收，40 秒等待必然超时。
+            lease_seconds=8,
+            heartbeat_seconds=5,
         ) as active,
     ):
         active.model_fixture = model
