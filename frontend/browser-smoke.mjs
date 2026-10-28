@@ -80,6 +80,9 @@ try {
   // 从「在此知识库提问」进入，检索范围才锁定到当前库；点侧栏「对话」会退化为全部知识库。
   await clickText('在此知识库提问');
   await wait(`document.querySelector('.chat-compose textarea')`);
+  // 每轮验收用新会话，避免把本轮问题追加到历史会话里。
+  await js(`document.querySelector('#new-chat').click()`);
+  await wait(`document.querySelector('.chat-compose textarea')`);
   await shot('chat');
   await js(`document.querySelector('.chat-compose textarea').value='会议室使用后需要做什么？'; document.querySelector('.chat-compose').requestSubmit()`);
   await wait(`[...document.querySelectorAll('.answer-body')].at(-1)?.textContent.includes('关闭照明')`);
@@ -140,6 +143,18 @@ try {
   assert.equal(await js(`localStorage.length + sessionStorage.length`), 0);
   await send('Page.reload'); await wait(`document.querySelector('#connection-label')?.textContent==='未连接'`);
   assert.equal(await js(`document.querySelectorAll('.kb-card').length`), 0);
+  console.log('[浏览器 补充] 重连后从后端恢复对话历史');
+  // 仅改 hash 不会重新执行 bootstrap；加一个 query 强制整页加载，令牌仍在片段里。
+  await send('Page.navigate', {
+    url: process.env.KS_UI_URL.replace('/workbench/', '/workbench/?reconnect=1'),
+  });
+  await wait(`document.querySelector('#connection-label')?.textContent.startsWith('已连接')`);
+  await js(`document.querySelector('[data-page=chat]').click()`);
+  await wait(`document.querySelectorAll('#thread .turn').length >= 3`);
+  assert.ok(await js(`[...document.querySelectorAll('.answer-body')].at(-1)?.textContent.includes('关闭空调')`),
+    '重连后最后一条回答应仍是 v2 内容');
+  assert.ok(await js(`document.querySelectorAll('#session-list .session-item').length >= 1`));
+  await shot('history');
   console.log(`PASS: 浏览器全链路验证；截图目录 ${output}`);
 } finally {
   socket?.close(); browser.kill();
