@@ -5,13 +5,14 @@
 
 from __future__ import annotations
 
+import csv
 import io
 from typing import Any
 
 from openpyxl import load_workbook
 from PIL import Image, UnidentifiedImageError
 
-from knowledge.adapters.parser import XLSX, cell_text
+from knowledge.adapters.parser import TEXT_CSV, XLSX, cell_text, decode_table_text
 from knowledge.domain.errors import ParseFailed, UnsupportedFormat
 
 # 预览图最长边；超过就让浏览器缩放，避免把几十兆的扫描件塞给前端
@@ -45,6 +46,27 @@ def sheet_preview(
     max_cols: int = SHEET_MAX_COLS,
 ) -> dict[str, Any]:
     """把工作簿读成「表名 + 二维单元格」，供前端画成只读表格。"""
+    if media_type == TEXT_CSV:
+        text = decode_table_text(data)
+        if text is None:
+            raise ParseFailed("表格文本编码无法识别")
+        csv_rows: list[list[str]] = []
+        truncated = False
+        for index, row in enumerate(csv.reader(io.StringIO(text))):
+            if index >= max_rows:
+                truncated = True
+                break
+            cells = [str(cell).strip() for cell in row[:max_cols]]
+            while cells and not cells[-1]:
+                cells.pop()
+            if cells:
+                csv_rows.append(cells)
+        return {
+            "kind": "sheet",
+            "sheets": [{"name": "CSV", "rows": csv_rows, "truncated": truncated}],
+            "truncated": truncated,
+            "limits": {"rows": max_rows, "cols": max_cols},
+        }
     if media_type != XLSX:
         raise UnsupportedFormat("只有表格文件支持表格预览")
 

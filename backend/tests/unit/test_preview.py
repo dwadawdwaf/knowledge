@@ -6,7 +6,7 @@ import pathlib
 
 import pytest
 
-from knowledge.adapters.parser import XLSX
+from knowledge.adapters.parser import TEXT_CSV, XLSX
 from knowledge.adapters.preview import sheet_preview, to_png
 from knowledge.domain.errors import ParseFailed, UnsupportedFormat
 
@@ -34,6 +34,13 @@ def test_sheet_preview_truncates_by_row_limit() -> None:
 def test_sheet_preview_rejects_other_media_types() -> None:
     with pytest.raises(UnsupportedFormat):
         sheet_preview(b"not a sheet", "text/markdown")
+
+
+def test_csv_preview_returns_rows() -> None:
+    result = sheet_preview("部门,负责人\n网络部,陈建工\n".encode(), TEXT_CSV)
+    assert result["kind"] == "sheet"
+    assert result["sheets"][0]["name"] == "CSV"
+    assert result["sheets"][0]["rows"] == [["部门", "负责人"], ["网络部", "陈建工"]]
 
 
 def test_to_png_converts_tiff_to_png_header() -> None:

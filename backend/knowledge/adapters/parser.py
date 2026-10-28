@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import csv
 import io
+import re
 import zipfile
 from datetime import datetime, time
 
@@ -13,19 +15,34 @@ from knowledge.domain.ports import Parser
 
 TEXT_PLAIN = "text/plain"
 TEXT_MARKDOWN = "text/markdown"
+TEXT_CSV = "text/csv"
 APPLICATION_PDF = "application/pdf"
 DOCX = "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
 XLSX = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+PPTX = "application/vnd.openxmlformats-officedocument.presentationml.presentation"
 OCTET_STREAM = "application/octet-stream"
 
 _EXT_MAP = {
     ".txt": TEXT_PLAIN,
     ".md": TEXT_MARKDOWN,
     ".markdown": TEXT_MARKDOWN,
+    ".csv": TEXT_CSV,
     ".pdf": APPLICATION_PDF,
     ".docx": DOCX,
     ".xlsx": XLSX,
+    ".pptx": PPTX,
 }
+
+
+def decode_table_text(data: bytes) -> str | None:
+    """表格文本优先按 UTF-8（含 BOM），失败再按 GB18030；都不行则视为二进制。"""
+    for encoding in ("utf-8-sig", "gb18030"):
+        try:
+            return data.decode(encoding)
+        except UnicodeDecodeError:
+            continue
+    return None
+
 
 
 def detect_media_type(data: bytes, filename: str) -> str:
@@ -45,6 +62,8 @@ def detect_media_type(data: bytes, filename: str) -> str:
             return DOCX
         if lowered.endswith(".xlsx"):
             return XLSX
+        if lowered.endswith(".pptx"):
+            return PPTX
 
     suffix = ""
     if "." in filename:
@@ -56,6 +75,9 @@ def detect_media_type(data: bytes, filename: str) -> str:
             return declared or TEXT_PLAIN
         except UnicodeDecodeError:
             return OCTET_STREAM
+    # CSV 常见 GBK/GB18030 编码，不能只按 UTF-8 判死；仍要求能解码成文本。
+    if declared == TEXT_CSV:
+        return TEXT_CSV if decode_table_text(data) is not None else OCTET_STREAM
     return OCTET_STREAM
 
 
@@ -294,6 +316,141 @@ def cell_text(value: object) -> str:
     return str(value).replace("\n", " ").strip()
 
 
+CSV_TRUNCATED = "csv_rows_truncated"
+
+
+class CsvParser:
+    """逗号分隔文本按行展开，与 XLSX 一样用工作表/行区间定位。"""
+
+    name = "csv"
+
+    def __init__(self, max_rows: int = 5000, rows_per_block: int = 40) -> None:
+        self.max_rows = max_rows
+        self.rows_per_block = max(1, rows_per_block)
+
+    def supports(self, media_type: str, filename: str) -> bool:
+        return media_type == TEXT_CSV
+
+    def parse(self, data: bytes, media_type: str, filename: str) -> list[ParsedBlock]:
+        text = decode_table_text(data)
+        if text is None:
+            raise ParseFailed("表格文本编码无法识别")
+        blocks: list[ParsedBlock] = []
+        batch: list[str] = []
+        batch_start = 0
+        row_number = 0
+        read_rows = 0
+        truncated = False
+        for row in csv.reader(io.StringIO(text)):
+            row_number += 1
+            cells = [cell.strip() for cell in row]
+            if not any(cells):
+                continue
+            if read_rows >= self.max_rows:
+                truncated = True
+                break
+            read_rows += 1
+            if not batch:
+                batch_start = row_number
+            batch.append("\t".join(cells).rstrip())
+            if len(batch) >= self.rows_per_block:
+                blocks.append(_csv_block(batch_start, row_number, batch))
+                batch = []
+        if batch:
+            blocks.append(_csv_block(batch_start, row_number, batch))
+        if not blocks:
+            raise ParseFailed("表格中没有可提取的内容")
+        if truncated:
+            last = blocks[-1]
+            blocks[-1] = ParsedBlock(
+                last.text, last.locator, tuple(sorted({*last.warnings, CSV_TRUNCATED}))
+            )
+        return blocks
+
+
+def _csv_block(start: int, end: int, rows: list[str]) -> ParsedBlock:
+    text = f"CSV 第{start}-{end}行\n" + "\n".join(rows)
+    return ParsedBlock(
+        text=text,
+        locator=Locator(
+            type="csv",
+            sheet="CSV",
+            row_start=start,
+            row_end=end,
+            char_start=0,
+            char_end=len(text),
+            precision="sheet",
+        ),
+    )
+
+
+class PptxParser:
+    """只读 OOXML 幻灯片文本；不渲染版式，也不引入 Office 二进制依赖。"""
+
+    name = "pptx"
+    _SLIDE = re.compile(r"ppt/slides/slide(\d+)\.xml$")
+    _A = "{http://schemas.openxmlformats.org/drawingml/2006/main}"
+
+    def __init__(
+        self, max_entries: int = 2048, max_uncompressed_bytes: int = 100 * 1024 * 1024
+    ) -> None:
+        self.max_entries = max_entries
+        self.max_uncompressed_bytes = max_uncompressed_bytes
+
+    def supports(self, media_type: str, filename: str) -> bool:
+        return media_type == PPTX
+
+    def parse(self, data: bytes, media_type: str, filename: str) -> list[ParsedBlock]:
+        from defusedxml import ElementTree
+
+        with zipfile.ZipFile(io.BytesIO(data)) as archive:
+            entries = archive.infolist()
+            if (
+                len(entries) > self.max_entries
+                or sum(entry.file_size for entry in entries) > self.max_uncompressed_bytes
+            ):
+                raise ParseFailed("PPTX 解压资源超限")
+            slides = sorted(
+                (
+                    (int(match.group(1)), entry.filename)
+                    for entry in entries
+                    if (match := self._SLIDE.match(entry.filename))
+                ),
+                key=lambda item: item[0],
+            )
+            if not slides:
+                raise ParseFailed("演示文稿中没有可提取的幻灯片")
+            blocks: list[ParsedBlock] = []
+            for page, name in slides:
+                root = ElementTree.fromstring(archive.read(name))
+                paragraphs: list[str] = []
+                for paragraph in root.iter(self._A + "p"):
+                    text = "".join(
+                        node.text or "" for node in paragraph.iter(self._A + "t")
+                    ).strip()
+                    if text:
+                        paragraphs.append(text)
+                if not paragraphs:
+                    continue
+                text = "\n".join(paragraphs)
+                blocks.append(
+                    ParsedBlock(
+                        text=text,
+                        locator=Locator(
+                            type="pptx",
+                            page=page,
+                            char_start=0,
+                            char_end=len(text),
+                            precision="block",
+                        ),
+                    )
+                )
+        if not blocks:
+            raise ParseFailed("演示文稿中没有可提取的文本")
+        return blocks
+
+
+
 def _sheet_block(sheet: str, start: int, end: int, rows: list[str]) -> ParsedBlock:
     header = f"工作表《{sheet}》第{start}-{end}行"
     text = header + "\n" + "\n".join(rows)
@@ -338,8 +495,10 @@ def build_parser_registry(settings: Settings | None = None) -> ParserRegistry:
     resolved = settings or Settings.model_construct()
     parsers: list[Parser] = [
         TextParser(),
+        CsvParser(resolved.xlsx_max_rows, resolved.xlsx_rows_per_block),
         PdfParser(),
         DocxParser(resolved.docx_max_entries, resolved.docx_max_uncompressed_bytes),
+        PptxParser(resolved.docx_max_entries, resolved.docx_max_uncompressed_bytes),
         XlsxParser(resolved.xlsx_max_rows, resolved.xlsx_rows_per_block),
     ]
     # 远端调用自身有超时；服务端负责可终止的重型解析，不受本地 512MiB 上限误杀。

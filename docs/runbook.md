@@ -594,19 +594,25 @@ docker compose -p ks-deepdoc -f deploy/deepdoc/compose.yaml exec deepdoc /opt/ks
 - 阅读页只用块级定位：DeepDoc 的偏移是块内偏移，正文视图标注「块内 [a, b)」，
   不冒充文档级字符位置。
 
-## 16. 表格文件（XLSX）
+## 16. 表格与演示文稿（XLSX / CSV / PPTX）
 
-`.xlsx` 走旧解析器（DeepDoc 只处理 PDF 与图片），按工作表与行区间出块：
+`.xlsx`、`.csv` 走常规解析器（DeepDoc 只处理 PDF 与图片），按工作表与行区间出块：
 
-- 一行一条记录，单元格用制表符分隔；块头带 `工作表《名称》第a-b行`，便于检索命中后回到具体行。
-- 空行跳过，但行区间仍按真实 Excel 行号给出（用户看到的行号一致）。
+- XLSX 一行一条记录，单元格用制表符分隔；块头带 `工作表《名称》第a-b行`，便于检索命中后回到具体行。
+- CSV 表名固定为 `CSV`，编码按 UTF-8（含 BOM）优先、失败再按 GB18030；行号规则与 XLSX 一致。
+- 空行跳过，但行区间仍按真实 Excel / CSV 行号给出（用户看到的行号一致）。
 - 单个文件最多读取 `KS_XLSX_MAX_ROWS`（默认 5000）行；超出时在最后一块加
-  `xlsx_rows_truncated` 警告，界面提示「表格行数超上限」，不静默截断。
+  `xlsx_rows_truncated`（CSV 为 `csv_rows_truncated`）警告，界面提示「表格行数超上限」，不静默截断。
 - 每块行数由 `KS_XLSX_ROWS_PER_BLOCK`（默认 40）控制；块过大会让行号失去定位意义。
 - 合并单元格只保留左上角的值（openpyxl 行为），其余为空。
 - 旧格式 `.xls` 与加密表格不支持：分别返回 `UNSUPPORTED_FORMAT` / `PARSE_FAILED`，不猜测解析。
-- 阅读页：表格无法在浏览器内嵌，原文视图给下载；正文视图用等宽字体并按 `│` 分隔列，
+- 阅读页：表格无法在浏览器内嵌，原文视图由 `/sheets` 画成只读表格；正文视图用等宽字体并按 `│` 分隔列，
   复制仍给原始制表符（可直接粘回 Excel）。
+
+`.pptx` 只提取幻灯片文本（标准库读 OOXML，不引入 Office 依赖）：
+
+- 每张幻灯片一块，`locator.page` 为幻灯片序号（从 1 开始），正文按幻灯片分组显示。
+- 不还原版式、母版、动画或图片；原件仍可下载。旧格式 `.ppt` 返回 `UNSUPPORTED_FORMAT`。
 
 ## 17. 外部数据库（可选）
 

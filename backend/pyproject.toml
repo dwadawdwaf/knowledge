@@ -20,6 +20,8 @@ dependencies = [
     "pypdf>=5.0",
     "python-docx>=1.1",
     "openpyxl>=3.1",
+    # PPTX 只读幻灯片 XML，用防实体膨胀的解析器
+    "defusedxml>=0.7",
     # TIFF 等浏览器不支持的位图，预览时在服务端转成 PNG
     "pillow>=10.0",
     "psutil>=7.0",

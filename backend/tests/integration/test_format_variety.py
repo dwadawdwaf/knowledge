@@ -185,11 +185,11 @@ def test_blank_pdf_fails_with_empty_content(session, settings, deps):
 @pytest.mark.parametrize(
     "filename,data",
     [
-        ("名单.pptx", b"PK\x03\x04" + b"\x00" * 64),
-        ("名单.csv", "部门,负责人\n网络部,陈建工".encode()),
+        ("旧表.xls", b"\xd0\xcf\x11\xe0\xa1\xb1\x1a\xe1" + b"\x00" * 32),
+        ("旧文档.doc", b"\xd0\xcf\x11\xe0\xa1\xb1\x1a\xe1" + b"\x00" * 32),
         ("扫描件.jpg", b"\xff\xd8\xff\xe0" + b"\x00" * 32),
     ],
-    ids=["pptx", "csv", "jpg"],
+    ids=["xls", "doc", "jpg"],
 )
 def test_non_whitelisted_formats_rejected(session, settings, deps, filename, data):
     actor = Actor(subject_id="fmt-user", tenant_id="default")
@@ -243,3 +243,52 @@ def test_xlsx_is_indexed_with_sheet_and_row_locators(session, settings, deps):
     assert item["locator"]["precision"] == "sheet"
     # 单元格内容必须可检索，不能只留表名
     assert "陈建工" in item["text"] and "B-201" in item["text"]
+
+
+def _pptx_bytes() -> bytes:
+    import zipfile
+
+    buffer = io.BytesIO()
+    with zipfile.ZipFile(buffer, "w") as archive:
+        xml = (
+            '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
+            '<p:sld xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main" '
+            'xmlns:p="http://schemas.openxmlformats.org/presentationml/2006/main">'
+            "<p:cSld><p:spTree>"
+            "<a:p><a:r><a:t>季度汇报（测试资料）</a:t></a:r></a:p>"
+            "<a:p><a:r><a:t>第一条 本季度完成事项。</a:t></a:r></a:p>"
+            "</p:spTree></p:cSld></p:sld>"
+        )
+        archive.writestr("ppt/slides/slide1.xml", xml)
+    return buffer.getvalue()
+
+
+def test_csv_and_pptx_are_indexed_with_their_locators(session, settings, deps):
+    actor = Actor(subject_id="fmt-user", tenant_id="default")
+    kb = knowledge_service.create(session, actor, "办公格式库")
+    csv_result = _upload_processed(
+        session,
+        actor,
+        settings,
+        deps,
+        kb,
+        "人员名单.csv",
+        "部门,负责人,工位\n网络部,陈建工,B-201\n行政部,李静,A-102\n".encode(),
+    )
+    pptx_result = _upload_processed(
+        session, actor, settings, deps, kb, "季度汇报.pptx", _pptx_bytes()
+    )
+
+    csv_view = document_service.chunks(session, actor, csv_result.document_id)
+    assert csv_view["total"] == 1
+    csv_item = csv_view["items"][0]
+    assert csv_item["locator"]["type"] == "csv"
+    assert (csv_item["locator"]["row_start"], csv_item["locator"]["row_end"]) == (1, 3)
+    assert "陈建工" in csv_item["text"]
+
+    pptx_view = document_service.chunks(session, actor, pptx_result.document_id)
+    assert pptx_view["total"] == 1
+    pptx_item = pptx_view["items"][0]
+    assert pptx_item["locator"]["type"] == "pptx"
+    assert pptx_item["locator"]["page"] == 1
+    assert "季度汇报" in pptx_item["text"]

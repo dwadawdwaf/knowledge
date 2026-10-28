@@ -18,6 +18,9 @@ def new_object_key(media_type: str) -> str:
     suffix = {
         "application/pdf": "pdf",
         "application/vnd.openxmlformats-officedocument.wordprocessingml.document": "docx",
+        "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet": "xlsx",
+        "application/vnd.openxmlformats-officedocument.presentationml.presentation": "pptx",
+        "text/csv": "csv",
         "text/markdown": "md",
         "text/plain": "txt",
         "image/png": "png",

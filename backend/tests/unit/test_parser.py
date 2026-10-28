@@ -3,6 +3,7 @@ from __future__ import annotations
 from knowledge.adapters.parser import (
     APPLICATION_PDF,
     DOCX,
+    TEXT_CSV,
     TEXT_MARKDOWN,
     TEXT_PLAIN,
     build_parser_registry,
@@ -120,3 +121,73 @@ def test_xlsx_without_content_is_a_clear_failure():
     except ParseFailed:
         return
     raise AssertionError("空表格应当给出明确失败，而不是产出空块")
+
+
+def test_csv_is_detected_and_keeps_real_row_numbers():
+    content = "部门,负责人\n网络部,陈建工\n\n行政部,李静\n".encode("gb18030")
+    assert detect_media_type(content, "名单.csv") == TEXT_CSV
+
+    blocks = build_parser_registry().for_file(TEXT_CSV, "名单.csv").parse(
+        content, TEXT_CSV, "名单.csv"
+    )
+
+    assert len(blocks) == 1
+    locator = blocks[0].locator
+    assert locator.type == "csv"
+    assert locator.sheet == "CSV"
+    assert (locator.row_start, locator.row_end) == (1, 4)
+    assert locator.precision == "sheet"
+    assert "部门\t负责人" in blocks[0].text
+    assert "行政部\t李静" in blocks[0].text
+
+
+def _pptx_bytes(slides: list[list[str]]) -> bytes:
+    import zipfile
+    from io import BytesIO
+
+    buffer = BytesIO()
+    with zipfile.ZipFile(buffer, "w") as archive:
+        for index, paragraphs in enumerate(slides, start=1):
+            body = "".join(
+                f"<a:p><a:r><a:t>{text}</a:t></a:r></a:p>" for text in paragraphs
+            )
+            xml = (
+                '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
+                '<p:sld xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main" '
+                'xmlns:p="http://schemas.openxmlformats.org/presentationml/2006/main">'
+                f"<p:cSld><p:spTree>{body}</p:spTree></p:cSld></p:sld>"
+            )
+            archive.writestr(f"ppt/slides/slide{index}.xml", xml)
+    return buffer.getvalue()
+
+
+def test_pptx_extracts_slide_text_with_page_locators():
+    from knowledge.adapters.parser import PPTX
+
+    data = _pptx_bytes([["第一张幻灯片标题", "第一条内容"], ["第二张幻灯片"]])
+    assert detect_media_type(data, "汇报.pptx") == PPTX
+
+    blocks = build_parser_registry().for_file(PPTX, "汇报.pptx").parse(data, PPTX, "汇报.pptx")
+
+    assert [block.locator.page for block in blocks] == [1, 2]
+    assert blocks[0].locator.type == "pptx"
+    assert "第一张幻灯片标题" in blocks[0].text
+    assert "第一条内容" in blocks[0].text
+    assert blocks[1].text == "第二张幻灯片"
+
+
+def test_pptx_without_slides_is_a_clear_failure():
+    import zipfile
+    from io import BytesIO
+
+    from knowledge.adapters.parser import PPTX, PptxParser
+    from knowledge.domain.errors import ParseFailed
+
+    buffer = BytesIO()
+    with zipfile.ZipFile(buffer, "w") as archive:
+        archive.writestr("ppt/presentation.xml", "<presentation/>")
+    try:
+        PptxParser().parse(buffer.getvalue(), PPTX, "空.pptx")
+    except ParseFailed:
+        return
+    raise AssertionError("没有幻灯片时应当给出明确失败")
