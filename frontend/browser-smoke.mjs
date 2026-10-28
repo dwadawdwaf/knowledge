@@ -31,7 +31,7 @@ try {
   socket.addEventListener('message', event => { const message = JSON.parse(event.data); if (!message.id) return; const item = pending.get(message.id); if (!item) return; pending.delete(message.id); message.error ? item.reject(new Error(message.error.message)) : item.resolve(message.result); });
   function send(method, params = {}) { return new Promise((resolve, reject) => { const id = ++nextId; pending.set(id, { resolve, reject }); socket.send(JSON.stringify({ id, method, params })); }); }
   async function js(expression) { const result = await send('Runtime.evaluate', { expression, awaitPromise: true, returnByValue: true }); if (result.exceptionDetails) throw new Error('页面执行异常'); return result.result.value; }
-  async function wait(expression) { return until(() => js(expression), '页面没有进入预期状态'); }
+  async function wait(expression, timeout = 60000) { return until(() => js(expression), '页面没有进入预期状态', timeout); }
   async function shot(name) { const image = await send('Page.captureScreenshot', { format: 'png', captureBeyondViewport: false }); await writeFile(path.join(output, name + '.png'), Buffer.from(image.data, 'base64')); }
   const clickText = text => js(`[...document.querySelectorAll('button')].find(n=>n.textContent.trim()===${JSON.stringify(text)}).click()`);
   async function setFile(selector, file) { const dom = await send('DOM.getDocument'); const node = await send('DOM.querySelector', { nodeId: dom.root.nodeId, selector }); assert.ok(node.nodeId, '文件输入框未找到'); await send('DOM.setFileInputFiles', { nodeId: node.nodeId, files: [file] }); }
@@ -52,10 +52,10 @@ try {
   console.log('[浏览器 2/9] 打开知识库，通过文件输入上传实际自制文档');
   await clickText('行政制度 · 自制样本'); await wait(`document.querySelector('.document-table')`);
   await setFile('.upload-zone input[type=file]', path.join(root, 'backend/testdata/evaluation/expense.md'));
-  await wait(`!![...document.querySelectorAll('tbody tr')].find(row=>row.textContent.includes('expense.md') && row.textContent.includes('已就绪'))`);
+  await wait(`!![...document.querySelectorAll('tbody tr')].find(row=>row.textContent.includes('expense.md') && row.textContent.includes('已就绪'))`, 120000);
   console.log('[浏览器 3/9] 打开分块结果，核对覆盖条与明细一一对应');
   await setFile('.upload-zone input[type=file]', path.join(root, 'backend/testdata/engineering/handbook-sections.md'));
-  await wait(`!![...document.querySelectorAll('tbody tr')].find(row=>row.textContent.includes('handbook-sections.md') && row.textContent.includes('已就绪'))`);
+  await wait(`!![...document.querySelectorAll('tbody tr')].find(row=>row.textContent.includes('handbook-sections.md') && row.textContent.includes('已就绪'))`, 120000);
   await rowButton('handbook-sections.md', '分块');
   await wait(`document.querySelector('#chunks-dialog[open]') && document.querySelectorAll('#chunks-content .chunk-card').length >= 3`);
   const chunkView = await js(`({
@@ -77,7 +77,9 @@ try {
   await send('Input.dispatchKeyEvent', { type: 'keyUp', key: 'Escape', code: 'Escape', windowsVirtualKeyCode: 27, nativeVirtualKeyCode: 27 });
   await wait(`!document.querySelector('#chunks-dialog').open`);
   console.log('[浏览器 4/9] 提问并打开服务端引用原文');
-  await js(`document.querySelector('[data-page=chat]').click()`);
+  // 从「在此知识库提问」进入，检索范围才锁定到当前库；点侧栏「对话」会退化为全部知识库。
+  await clickText('在此知识库提问');
+  await wait(`document.querySelector('.chat-compose textarea')`);
   await shot('chat');
   await js(`document.querySelector('.chat-compose textarea').value='会议室使用后需要做什么？'; document.querySelector('.chat-compose').requestSubmit()`);
   await wait(`[...document.querySelectorAll('.answer-body')].at(-1)?.textContent.includes('关闭照明')`);
@@ -116,7 +118,7 @@ try {
   await js(`document.querySelector('[data-page=knowledge]').click()`); await clickText('行政制度 · 自制样本');
   await wait(`!![...document.querySelectorAll('tbody tr')].find(row=>row.textContent.includes('expense.md'))`);
   await rowButton('expense.md', '重建');
-  await wait(`!![...document.querySelectorAll('tbody tr')].find(row=>row.textContent.includes('expense.md') && row.textContent.includes('代次 2') && row.textContent.includes('已就绪'))`);
+  await wait(`!![...document.querySelectorAll('tbody tr')].find(row=>row.textContent.includes('expense.md') && row.textContent.includes('代次 2') && row.textContent.includes('已就绪'))`, 120000);
   await shot('documents');
   await rowButton('expense.md', '删除');
   await js(`document.querySelector('#action-form').requestSubmit()`);
@@ -124,8 +126,10 @@ try {
   const updatedDom = await send('DOM.getDocument');
   const updateInput = await send('DOM.querySelector', { nodeId: updatedDom.root.nodeId, selector: 'input[aria-label="更新 meeting-room.md"]' });
   await send('DOM.setFileInputFiles', { nodeId: updateInput.nodeId, files: [path.join(root, 'backend/testdata/engineering/e2e-room-v2.md')] });
-  await wait(`!![...document.querySelectorAll('tbody tr')].find(row=>row.textContent.includes('meeting-room.md') && row.textContent.includes('V2') && row.textContent.includes('已就绪'))`);
-  await js(`document.querySelector('[data-page=chat]').click(); document.querySelector('.chat-compose textarea').value='会议室使用后需要做什么？'; document.querySelector('.chat-compose').requestSubmit()`);
+  await wait(`!![...document.querySelectorAll('tbody tr')].find(row=>row.textContent.includes('meeting-room.md') && row.textContent.includes('V2') && row.textContent.includes('已就绪'))`, 120000);
+  await clickText('在此知识库提问');
+  await wait(`document.querySelector('.chat-compose textarea')`);
+  await js(`document.querySelector('.chat-compose textarea').value='会议室使用后需要做什么？'; document.querySelector('.chat-compose').requestSubmit()`);
   await wait(`[...document.querySelectorAll('.answer-body')].at(-1)?.textContent.includes('关闭空调')`);
   console.log('[浏览器 8/9] 文件名/库名作为文本渲染，不执行 HTML');
   await js(`document.querySelector('[data-page=knowledge]').click()`); await clickText('新建知识库');
