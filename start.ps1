@@ -22,6 +22,40 @@ $previousConsoleEncoding = [Console]::OutputEncoding
 $previousOutputEncoding = $OutputEncoding
 $exitCode = 1
 
+# Chromium 内核会直接拒绝连接这些端口（ERR_UNSAFE_PORT），
+# 页面表现为“无法访问此网站 / 可能已永久移动到新网址”，而服务本身是正常的。
+$unsafePorts = @(2049, 3659, 4045, 5060, 5061, 6000, 6566, 6665, 6666, 6667, 6668, 6669, 6697, 10080)
+
+function Test-LoopbackPortFree([int]$Candidate) {
+    $probe = New-Object System.Net.Sockets.TcpListener([System.Net.IPAddress]::Loopback, $Candidate)
+    try {
+        $probe.Start()
+        return $true
+    }
+    catch {
+        return $false
+    }
+    finally {
+        try { $probe.Stop() } catch { }
+    }
+}
+
+function Select-SafePort {
+    # 优先固定小段范围，便于记忆，也避开系统把动态端口分到浏览器保留端口。
+    foreach ($candidate in 8010..8099) {
+        if ($unsafePorts -contains $candidate) { continue }
+        if (Test-LoopbackPortFree $candidate) { return $candidate }
+    }
+    for ($attempt = 0; $attempt -lt 32; $attempt++) {
+        $probe = New-Object System.Net.Sockets.TcpListener([System.Net.IPAddress]::Loopback, 0)
+        $probe.Start()
+        $candidate = $probe.LocalEndpoint.Port
+        $probe.Stop()
+        if ($candidate -gt 1023 -and $unsafePorts -notcontains $candidate) { return $candidate }
+    }
+    throw '找不到浏览器可用的空闲端口，请用 -Port 8011 显式指定。'
+}
+
 Push-Location -LiteralPath $PSScriptRoot
 try {
     [Console]::OutputEncoding = New-Object System.Text.UTF8Encoding($false)
@@ -82,22 +116,24 @@ print('Python ' + sys.version.split()[0] + '：开发依赖检查通过')
         Write-Host '演示模式使用内置向量桩，无需启动外部服务。'
     }
     Write-Host '[4/5] 检查端口...' -ForegroundColor Cyan
-    if ($Port -ne 0) {
-        $listener = New-Object System.Net.Sockets.TcpListener([System.Net.IPAddress]::Loopback, $Port)
-        try {
-            $listener.Start()
-        }
-        catch {
-            throw "端口 $Port 已被占用或无法绑定。请使用 .\start.cmd -Port 8011，或 -Port 0 自动选择空闲端口；不会停止已有服务。"
-        }
-        finally {
-            $listener.Stop()
-        }
-        Write-Host "本机地址：http://127.0.0.1:$Port/docs"
+    if ($Port -eq 0) {
+        $Port = Select-SafePort
+        Write-Host "自动选择端口：$Port"
     }
-    else {
-        Write-Host '将自动选择空闲端口，启动后输出实际访问地址。'
+    if ($unsafePorts -contains $Port) {
+        throw "端口 $Port 是浏览器保留端口（如 5060 = SIP），Chrome/Edge 会直接报 ERR_UNSAFE_PORT，服务虽已启动但页面打不开。请改用 .\start.cmd -Port 8011。"
     }
+    $listener = New-Object System.Net.Sockets.TcpListener([System.Net.IPAddress]::Loopback, $Port)
+    try {
+        $listener.Start()
+    }
+    catch {
+        throw "端口 $Port 已被占用或无法绑定。请使用 .\start.cmd -Port 8011，或 -Port 0 自动选择空闲端口；不会停止已有服务。"
+    }
+    finally {
+        $listener.Stop()
+    }
+    Write-Host "本机地址：http://127.0.0.1:$Port/docs"
 
     if ($CheckOnly) {
         Write-Host '[5/5] 检查通过，依赖服务已就绪，未启动问答服务。' -ForegroundColor Green
