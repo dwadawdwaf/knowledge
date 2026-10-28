@@ -258,6 +258,9 @@ XLSX 用 `{"type":"xlsx","sheet":"资产清单","row_start":1,"row_end":9,"preci
 `messages`：`id` · `conversation_id` · `role` · `body` · `answer_status` · `citations` jsonb · `model_revision`
 
 `citations` 每项：`{index, document_id, version_id, build_id, chunk_id, title, excerpt, locator}`。`excerpt` 由服务端从分块原文截取。
+`/qa` 带 `conversation_id` 时把本轮问题与答案写入消息；`GET /conversations` 与
+`GET /conversations/{id}` 按 owner 读取历史，供页面重连后恢复。历史只用于展示，
+不参与检索或生成上下文。
 
 ### 4.9 不变量
 
@@ -391,7 +394,9 @@ semantic/hybrid 调用模型前检查授权范围内已发布构建的模型标�
 | 15 | GET `/documents/{document_id}/chunks` | 分块结果视图：当前已发布 build 的片段、定位与总数，`limit` 默认 200 | 200 |
 | 16 | GET `/documents/{document_id}/file` | 原始文件字节：当前版本原件，PDF/图片 `inline`，其余 `attachment`；带 `nosniff` 与 `private, no-store`，他人与已删除 404 | 200 |
 | 17 | GET `/documents/{document_id}/file?as=png` | 位图转码预览：TIFF 等浏览器不支持的格式转 PNG 后 `inline` 返回（多页只取首页、最长边 2400）；原件不变，非图片 415 | 200 |
-| 18 | GET `/documents/{document_id}/sheets` | 表格只读预览：按工作表返回前 200 行 / 60 列与截断标记，供前端画表格；非表格 415 | 200 |
+| 18 | GET `/documents/{document_id}/sheets` | 表格只读预览：按工作表返回前 200 行 / 60 列与截断标记，供前端画表格；支持 XLSX 与 CSV，其他 415 | 200 |
+| 19 | GET `/conversations` | 列出本人会话（按创建时间倒序） | 200 |
+| 20 | GET `/conversations/{conversation_id}` | 会话与消息历史；他人与会话不存在统一 404 | 200 |
 
 **成功**：`{"data": {…}, "meta": {"request_id": "…"}}`
 **错误**：`{"error": {"code": "…", "message": "…", "retryable": bool}, "meta": {"request_id": "…"}}`

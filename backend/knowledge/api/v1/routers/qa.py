@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import uuid
+
 from fastapi import APIRouter, Depends, Request
 from sqlalchemy.orm import Session
 
@@ -20,7 +22,7 @@ from knowledge.config import Settings
 from knowledge.domain.entities import Actor
 from knowledge.domain.errors import NotImplementedYet
 from knowledge.domain.ports import Embedder, Generator
-from knowledge.repositories import conversations as conversation_repo
+from knowledge.services import conversations as conversation_service
 from knowledge.services import qa
 
 router = APIRouter(tags=["qa"])
@@ -68,8 +70,53 @@ def create_conversation(
     session: Session = Depends(get_session),
     actor: Actor = Depends(get_actor),
 ) -> dict:
-    conversation = conversation_repo.create(session, actor, payload.title)
-    session.commit()
+    conversation = conversation_service.create(session, actor, payload.title)
     return envelope(
         {"id": str(conversation.id), "title": conversation.title}, request_id(request)
+    )
+
+
+@router.get("/conversations", response_model=Envelope)
+def list_conversations(
+    request: Request,
+    session: Session = Depends(get_session),
+    actor: Actor = Depends(get_actor),
+) -> dict:
+    items = [
+        {
+            "id": str(conversation.id),
+            "title": conversation.title,
+            "created_at": conversation.created_at.isoformat(),
+        }
+        for conversation in conversation_service.list_owned(session, actor)
+    ]
+    return envelope({"items": items}, request_id(request))
+
+
+@router.get("/conversations/{conversation_id}", response_model=Envelope)
+def get_conversation(
+    conversation_id: uuid.UUID,
+    request: Request,
+    session: Session = Depends(get_session),
+    actor: Actor = Depends(get_actor),
+) -> dict:
+    conversation, messages = conversation_service.detail(session, actor, conversation_id)
+    return envelope(
+        {
+            "id": str(conversation.id),
+            "title": conversation.title,
+            "created_at": conversation.created_at.isoformat(),
+            "messages": [
+                {
+                    "id": str(message.id),
+                    "role": message.role,
+                    "body": message.body,
+                    "answer_status": message.answer_status,
+                    "citations": message.citations or [],
+                    "created_at": message.created_at.isoformat(),
+                }
+                for message in messages
+            ],
+        },
+        request_id(request),
     )

@@ -68,3 +68,10 @@ def test_invalid_body_returns_validation_error():
     )
     assert response.status_code == 422
     assert response.json()["error"]["code"] == "VALIDATION_ERROR"
+
+
+def test_conversation_history_routes_are_published():
+    paths = _client().get("/openapi.json").json()["paths"]
+    assert "get" in paths["/api/v1/conversations"]
+    assert "post" in paths["/api/v1/conversations"]
+    assert "get" in paths["/api/v1/conversations/{conversation_id}"]
