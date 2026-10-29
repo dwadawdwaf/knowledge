@@ -41,6 +41,8 @@ def search(
         hits=[
             SearchHitOut(
                 document_id=hit.document_id,
+                kb_id=hit.kb_id,
+                kb_name=hit.kb_name,
                 version_id=hit.version_id,
                 build_id=hit.build_id,
                 chunk_id=hit.chunk_id,

@@ -155,6 +155,8 @@ class Citation:
 @dataclass(frozen=True)
 class SearchHit:
     document_id: str
+    kb_id: str
+    kb_name: str
     version_id: str
     build_id: str
     chunk_id: str

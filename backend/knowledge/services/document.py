@@ -8,7 +8,7 @@ from dataclasses import dataclass
 
 from sqlalchemy.orm import Session
 
-from knowledge.adapters.preview import sheet_preview, to_png
+from knowledge.adapters.preview import docx_preview, sheet_preview, to_png
 from knowledge.adapters.storage import new_object_key
 from knowledge.config import Settings
 from knowledge.domain.entities import Actor, BuildState, JobKind, Lifecycle
@@ -329,6 +329,18 @@ def preview_sheets(
     """
     version = _current_version(session, actor, document_id)
     return sheet_preview(storage.get(version.object_key), version.media_type)
+
+
+def preview_docx(
+    session: Session, actor: Actor, document_id: uuid.UUID, storage: ObjectStorage
+) -> dict:
+    """DOCX 的只读结构化预览：段落与表格按正文顺序返回。"""
+    from knowledge.adapters.parser import DOCX
+
+    version = _current_version(session, actor, document_id)
+    if version.media_type != DOCX:
+        raise UnsupportedFormat("只有 DOCX 支持文档预览")
+    return docx_preview(storage.get(version.object_key))
 
 
 def preview_image(

@@ -101,6 +101,15 @@ def test_docx_table_cells_are_indexed(session, settings, deps):
     assert hits[0].locator["type"] == "docx"
     assert hits[0].locator.get("block") == 1
 
+    # 原文视图的结构化预览：段落与表格都返回，不依赖分块
+    preview = document_service.preview_docx(
+        session, actor, result.document_id, deps.storage
+    )
+    assert preview["kind"] == "docx"
+    assert any(block["type"] == "table" for block in preview["blocks"])
+    assert any("凭证打印机" in cell for block in preview["blocks"]
+               if block["type"] == "table" for row in block["rows"] for cell in row)
+
 
 def _make_pdf_with_table() -> bytes:
     from fpdf import FPDF

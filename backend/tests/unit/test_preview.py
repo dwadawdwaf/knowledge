@@ -7,7 +7,7 @@ import pathlib
 import pytest
 
 from knowledge.adapters.parser import TEXT_CSV, XLSX
-from knowledge.adapters.preview import sheet_preview, to_png
+from knowledge.adapters.preview import docx_preview, sheet_preview, to_png
 from knowledge.domain.errors import ParseFailed, UnsupportedFormat
 
 TESTDATA = pathlib.Path(__file__).resolve().parents[2] / "testdata" / "multiformat"
@@ -41,6 +41,33 @@ def test_csv_preview_returns_rows() -> None:
     assert result["kind"] == "sheet"
     assert result["sheets"][0]["name"] == "CSV"
     assert result["sheets"][0]["rows"] == [["部门", "负责人"], ["网络部", "陈建工"]]
+
+
+def test_docx_preview_keeps_paragraph_and_table_order() -> None:
+    import io
+
+    import docx
+
+    document = docx.Document()
+    document.add_heading("内部培训管理办法", level=1)
+    document.add_paragraph("第一条 培训由综合处组织。")
+    table = document.add_table(rows=2, cols=2)
+    table.rows[0].cells[0].text = "部门"
+    table.rows[0].cells[1].text = "负责人"
+    table.rows[1].cells[0].text = "网络部"
+    table.rows[1].cells[1].text = "陈建工"
+    buffer = io.BytesIO()
+    document.save(buffer)
+
+    result = docx_preview(buffer.getvalue())
+
+    assert result["kind"] == "docx"
+    assert result["blocks"][0]["type"] == "paragraph"
+    assert result["blocks"][0]["text"] == "内部培训管理办法"
+    assert result["blocks"][0]["heading"] is True
+    assert result["blocks"][1]["text"] == "第一条 培训由综合处组织。"
+    assert result["blocks"][2]["type"] == "table"
+    assert result["blocks"][2]["rows"][1] == ["网络部", "陈建工"]
 
 
 def test_to_png_converts_tiff_to_png_header() -> None:

@@ -15,7 +15,7 @@ export function renderKnowledge(app) {
   const page = el('div', 'page');
   const head = el('div', 'page-head');
   const text = el('div');
-  text.append(el('h1', '', '知识库'), el('p', '', '把分散的资料，整理成随时可检索、可引用的知识空间。'));
+  text.append(el('h1', '', '知识库'));
   const actions = el('div', 'head-actions');
   const create = actionButton('新建知识库', 'btn primary', () => app.createLibrary(), 'plus');
   actions.append(create);

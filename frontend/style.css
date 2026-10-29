@@ -1285,25 +1285,28 @@ html[data-theme="dark"] .send-btn { color: #06202a; }
 
 /* ==========================================================================
    检索测试
-   两栏：左侧条件面板（吸顶），右侧结果流。宽度与其他页一致，由 .page 控制。
+   上下分布：条件区独占一行，结果区在下方；宽度与其他页一致，由 .page 控制。
    ========================================================================== */
 .search-layout {
-  display: grid;
-  grid-template-columns: minmax(292px, 352px) minmax(0, 1fr);
-  gap: 20px;
-  align-items: start;
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
   margin-top: 18px;
 }
 .search-panel {
-  position: sticky;
-  top: 18px;
   display: flex;
   flex-direction: column;
-  padding: 16px;
+  padding: 16px 18px;
   border: 1px solid var(--border);
   border-radius: var(--r-lg);
   background: var(--surface);
   box-shadow: var(--sh-1);
+}
+.search-options {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 0 20px;
+  align-items: start;
 }
 .search-panel-head {
   display: flex;
@@ -1480,6 +1483,25 @@ html[data-theme="dark"] .seg.active { color: var(--accent-strong); }
   font-family: var(--mono);
   font-size: 11px;
 }
+.result-kb {
+  flex: 0 0 auto;
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  max-width: 26ch;
+  padding: 2px 8px;
+  border: 1px solid var(--border-soft);
+  border-radius: var(--r-pill);
+  background: var(--surface-subtle);
+  color: var(--text-3);
+  font-size: 11.5px;
+}
+.result-kb:hover {
+  border-color: var(--accent-line);
+  background: var(--accent-soft);
+  color: var(--accent-strong);
+}
+.result-kb span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .result-excerpt {
   margin-top: 9px;
   font-size: 13px;
@@ -1623,8 +1645,8 @@ html[data-theme="dark"] .seg.active { color: var(--accent-strong); }
 
 /* 窄屏：条件面板回到顶部，结果占满宽度 */
 @media (max-width: 980px) {
-  .search-layout { grid-template-columns: minmax(0, 1fr); gap: 14px; }
-  .search-panel { position: static; }
+  .search-layout { gap: 14px; }
+  .search-options { grid-template-columns: minmax(0, 1fr); }
 }
 
 /* ==========================================================================
@@ -2237,6 +2259,29 @@ html[data-theme="dark"] .modal-mark { color: #06202a; }
   white-space: pre-wrap;
   overflow-wrap: anywhere
 }
+.docx-preview {
+  padding: 18px 20px;
+  border: 1px solid var(--border-soft);
+  border-radius: var(--r-lg);
+  background: var(--surface)
+}
+.docx-para {
+  margin: 0 0 10px;
+  font-size: 14px;
+  line-height: 1.8;
+  color: var(--text-2);
+  white-space: pre-wrap
+}
+.docx-para:last-child { margin-bottom: 0 }
+.docx-heading {
+  margin: 18px 0 8px;
+  font-size: 16px;
+  font-weight: 600;
+  color: var(--text)
+}
+.docx-heading:first-child { margin-top: 0 }
+.docx-preview .browse-table-wrap { margin: 10px 0 16px }
+.docx-preview .browse-table-wrap:last-child { margin-bottom: 0 }
 .fallback-mark {
   flex: 0 0 auto;
   display: grid;

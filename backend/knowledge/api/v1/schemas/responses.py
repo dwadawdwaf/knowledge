@@ -57,6 +57,8 @@ class ReindexAck(BaseModel):
 class SearchHitOut(BaseModel):
     # 检索服务返回的即字符串 ID，JSON 输出与 UUID 形式一致
     document_id: str
+    kb_id: str
+    kb_name: str
     version_id: str
     build_id: str
     chunk_id: str

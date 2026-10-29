@@ -201,6 +201,19 @@ def sheets(
     return envelope(data, request_id(request))
 
 
+@router.get("/documents/{document_id}/docx", response_model=Envelope)
+def docx(
+    document_id: uuid.UUID,
+    request: Request,
+    session: Session = Depends(get_session),
+    actor: Actor = Depends(get_actor),
+    storage: ObjectStorage = Depends(get_storage),
+) -> dict:
+    """DOCX 只读结构化预览：段落与表格按正文顺序返回。"""
+    data = document_service.preview_docx(session, actor, document_id, storage)
+    return envelope(data, request_id(request))
+
+
 @router.get("/documents/{document_id}/chunks", response_model=Envelope)
 def chunks(
     document_id: uuid.UUID,

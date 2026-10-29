@@ -8,7 +8,7 @@ export function renderFiles(app) {
   const page = el('div', 'page files-page');
   const head = el('div', 'page-head');
   const text = el('div');
-  text.append(el('h1', '', '全部文件'), el('p', '', '汇总各知识库的文档与处理状态；更新与删除在所属知识库内完成。'));
+  text.append(el('h1', '', '全部文件'));
   const actions = el('div', 'head-actions');
   actions.append(actionButton('刷新', 'btn ghost', () => app.loadAllFiles(true), 'refresh'));
   head.append(text, actions);

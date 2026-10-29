@@ -28,7 +28,7 @@ export function renderSearch(app) {
 
   const head = el('div', 'page-head');
   const text = el('div');
-  text.append(el('h1', '', '检索测试'), el('p', '', '先确认资料能被正确召回，再判断回答是否有据可依。'));
+  text.append(el('h1', '', '检索测试'));
   head.append(text);
   page.append(head);
 
@@ -50,9 +50,9 @@ export function renderSearch(app) {
   return page;
 }
 
-/** 左侧条件面板：问题、检索方式、知识范围与可比性说明。 */
+/** 检索条件：独占一行，方式与范围并排；结果在下方纵向排列。 */
 function consolePanel(app) {
-  const panel = el('aside', 'search-panel');
+  const panel = el('section', 'search-panel');
 
   const top = el('div', 'search-panel-head');
   top.append(el('span', 'search-panel-title', '检索条件'), el('span', 'count-note', '取前 5 条'));
@@ -116,12 +116,15 @@ function consolePanel(app) {
   modeBlock.append(segmented);
   const modeHint = el('p', 'field-hint', MODES.find(([value]) => value === app.state.mode)?.[2] || '');
   modeBlock.append(modeHint);
-  panel.append(modeBlock);
 
   const scopeBlock = el('div', 'field-block');
   scopeBlock.append(el('span', 'field-label', '知识范围'));
   scopeBlock.append(scopeControl(app));
-  panel.append(scopeBlock);
+
+  // 方式与范围并排，减少条件区高度；窄屏由 CSS 退回单列。
+  const options = el('div', 'search-options');
+  options.append(modeBlock, scopeBlock);
+  panel.append(options);
 
   const foot = el('div', 'search-foot');
   foot.append(icon('info'),
@@ -285,7 +288,14 @@ function card(app, hit, index, result) {
   title.addEventListener('click', () => app.openSource(hit.chunk_id));
 
   const score = el('span', 'result-score', `${hit.score_type || result.score_type} · ${Number(hit.score).toFixed(4)}`);
-  head.append(rank, title, el('div', 'spacer'), score);
+  const kb = el('button', 'result-kb');
+  kb.type = 'button';
+  kb.title = hit.kb_name ? `所属知识库：${hit.kb_name}` : '未知知识库';
+  kb.append(icon('library'), el('span', '', hit.kb_name || '未知知识库'));
+  kb.addEventListener('click', () => {
+    if (hit.kb_id) app.openLibraryById(hit.kb_id);
+  });
+  head.append(rank, title, kb, el('div', 'spacer'), score);
   node.append(head);
 
   if (hit.excerpt) node.append(el('p', 'result-excerpt', hit.excerpt));

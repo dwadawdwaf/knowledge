@@ -70,6 +70,8 @@ def test_upload_to_citation(session, settings, deps):
     )
     assert hits, "应当检索到内容"
     assert "清理现场" in hits[0].text
+    assert hits[0].kb_id == str(kb.id)
+    assert hits[0].kb_name == "制度库"
 
     answer = qa_service.answer(
         session,

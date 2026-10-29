@@ -75,3 +75,4 @@ def test_conversation_history_routes_are_published():
     assert "get" in paths["/api/v1/conversations"]
     assert "post" in paths["/api/v1/conversations"]
     assert "get" in paths["/api/v1/conversations/{conversation_id}"]
+    assert "get" in paths["/api/v1/documents/{document_id}/docx"]

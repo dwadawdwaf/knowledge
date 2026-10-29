@@ -84,10 +84,12 @@ def _build_sql(mode: str) -> str:
     return f"""
     {ctes}
     SELECT c.id AS chunk_id, c.build_id, b.version_id, d.id AS document_id,
-           d.title, c.text, c.locator, b.warnings, {score} AS score
+           d.kb_id, kb.name AS kb_name, d.title, c.text, c.locator, b.warnings,
+           {score} AS score
     FROM chunks c
     JOIN index_builds b ON b.id = c.build_id
     JOIN documents d ON d.active_build_id = c.build_id
+    JOIN knowledge_bases kb ON kb.id = d.kb_id
     {joins}
     {where}
     ORDER BY score DESC
@@ -136,6 +138,8 @@ def search(
     return [
         SearchHit(
             document_id=str(row["document_id"]),
+            kb_id=str(row["kb_id"]),
+            kb_name=row["kb_name"],
             version_id=str(row["version_id"]),
             build_id=str(row["build_id"]),
             chunk_id=str(row["chunk_id"]),

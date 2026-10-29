@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import csv
 import io
+import zipfile
 from typing import Any
 
 from openpyxl import load_workbook
@@ -36,6 +37,76 @@ def to_png(data: bytes, *, max_side: int = MAX_IMAGE_SIDE) -> bytes:
             return buffer.getvalue()
     except (UnidentifiedImageError, OSError) as exc:
         raise ParseFailed("图片无法转换成可预览格式") from exc
+
+
+DOCX_MAX_ENTRIES = 2048
+DOCX_MAX_UNCOMPRESSED = 100 * 1024 * 1024
+DOCX_MAX_BLOCKS = 2000
+DOCX_TABLE_MAX_ROWS = 200
+DOCX_TABLE_MAX_COLS = 60
+
+
+def docx_preview(data: bytes) -> dict[str, Any]:
+    """DOCX 结构化预览：段落与表格按正文顺序返回，不保留字体、分页与图片。"""
+    import docx
+    from docx.oxml.ns import qn
+    from docx.table import Table
+    from docx.text.paragraph import Paragraph
+
+    try:
+        with zipfile.ZipFile(io.BytesIO(data)) as archive:
+            entries = archive.infolist()
+            if (
+                len(entries) > DOCX_MAX_ENTRIES
+                or sum(entry.file_size for entry in entries) > DOCX_MAX_UNCOMPRESSED
+            ):
+                raise ParseFailed("DOCX 解压资源超限")
+    except zipfile.BadZipFile as exc:
+        raise ParseFailed("文档无法读取或已加密") from exc
+
+    try:
+        document = docx.Document(io.BytesIO(data))
+        blocks: list[dict[str, Any]] = []
+        truncated = False
+        for child in document.element.body.iterchildren():
+            if len(blocks) >= DOCX_MAX_BLOCKS:
+                truncated = True
+                break
+            if child.tag == qn("w:p"):
+                paragraph = Paragraph(child, document)
+                text = paragraph.text.strip()
+                if not text:
+                    continue
+                style = paragraph.style.name if paragraph.style is not None else ""
+                blocks.append(
+                    {
+                        "type": "paragraph",
+                        "text": text,
+                        "heading": (style or "").lower().startswith(("heading", "标题")),
+                    }
+                )
+            elif child.tag == qn("w:tbl"):
+                table = Table(child, document)
+                rows: list[list[str]] = []
+                for index, row in enumerate(table.rows):
+                    if index >= DOCX_TABLE_MAX_ROWS:
+                        truncated = True
+                        break
+                    cells = [
+                        cell.text.strip()
+                        for cell in list(row.cells)[:DOCX_TABLE_MAX_COLS]
+                    ]
+                    while cells and not cells[-1]:
+                        cells.pop()
+                    if any(cells):
+                        rows.append(cells)
+                if rows:
+                    blocks.append({"type": "table", "rows": rows})
+        return {"kind": "docx", "blocks": blocks, "truncated": truncated}
+    except ParseFailed:
+        raise
+    except Exception as exc:
+        raise ParseFailed("文档无法读取或已加密") from exc
 
 
 def sheet_preview(

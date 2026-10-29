@@ -8,6 +8,7 @@ import {
 
 const LIMIT = 500;
 const SHEET_MEDIA = 'application/vnd.openxmlformats-officedocument.spreadsheetml';
+const DOCX_MEDIA = 'application/vnd.openxmlformats-officedocument.wordprocessingml';
 const TIFF_MEDIA = 'image/tiff';
 // 原文视图里能直接解码显示的文本上限；超过就只给下载。
 const PLAIN_TEXT_LIMIT = 512 * 1024;
@@ -21,6 +22,8 @@ export function emptyBrowse() {
     tab: 'text', tabChosen: false,
     // 表格预览：浏览器渲染不了 xlsx，改由服务端转成二维数据
     sheets: null, sheetsLoading: false, sheetsError: null, sheetIndex: 0,
+    // DOCX 结构化预览：段落与表格，不做保真排版
+    docx: null, docxLoading: false, docxError: null,
     // 从哪个页面打开：决定左上角返回按钮的文字与去向
     returnPage: 'files', returnLabel: '全部文件',
     original: { url: null, loading: false, error: null, mediaType: null, text: null },
@@ -51,7 +54,10 @@ export async function loadBrowse(app) {
     browse.loading = false;
     // 默认视图可能从「正文」改为「原文」，工具条上的选中态要一起重建。
     app.render();
-    if (browse.tab === 'original' && !isSheet(browse.detail?.media_type)) loadOriginal(app);
+    if (browse.tab === 'original') {
+      if (isDocx(browse.detail?.media_type)) loadDocx(app);
+      else if (!isSheet(browse.detail?.media_type)) loadOriginal(app);
+    }
   }
 }
 
@@ -60,7 +66,12 @@ export function previewable(mediaType) {
   if (!mediaType) return false;
   return mediaType.startsWith('image/')
     || mediaType.startsWith('application/pdf')
-    || isSheet(mediaType);
+    || isSheet(mediaType)
+    || isDocx(mediaType);
+}
+
+export function isDocx(mediaType) {
+  return Boolean(mediaType) && mediaType.startsWith(DOCX_MEDIA);
 }
 
 export function isSheet(mediaType) {
@@ -360,6 +371,74 @@ function paint(app, target) {
   browse.focusLocator = null;
 }
 
+export async function loadDocx(app) {
+  const browse = app.state.browse;
+  if (!browse?.doc || browse.docx || browse.docxLoading) return;
+  browse.docxLoading = true;
+  browse.docxError = null;
+  paint(app);
+  try {
+    browse.docx = await app.api.request(`/documents/${browse.doc.id}/docx`);
+  } catch (error) {
+    browse.docxError = error;
+  } finally {
+    browse.docxLoading = false;
+    paint(app);
+  }
+}
+
+function paintDocx(app, body) {
+  const browse = app.state.browse;
+  if (browse.docxError) {
+    body.append(app.errorBox(browse.docxError));
+    return;
+  }
+  if (!browse.docx) {
+    body.append(loading('正在整理文档结构…'));
+    loadDocx(app);
+    return;
+  }
+
+  const note = el('div', 'plain-note');
+  note.append(icon('info'), el('span', '',
+    '结构化预览：保留段落与表格文字，不保留字体、分页与图片；原件可下载。'));
+  body.append(note);
+
+  const wrap = el('div', 'docx-preview');
+  (browse.docx.blocks || []).forEach(item => {
+    if (item.type === 'table') {
+      const table = el('table', 'document-table');
+      const head = el('thead');
+      const headRow = el('tr');
+      (item.rows[0] || []).forEach(cell => headRow.append(el('th', '', cell)));
+      head.append(headRow);
+      const tbody = el('tbody');
+      item.rows.slice(1).forEach(row => {
+        const tr = el('tr');
+        row.forEach(cell => tr.append(el('td', '', cell)));
+        tbody.append(tr);
+      });
+      table.append(head, tbody);
+      const scroll = el('div', 'browse-table-wrap');
+      scroll.append(table);
+      wrap.append(scroll);
+      return;
+    }
+    wrap.append(el(item.heading ? 'h3' : 'p',
+      item.heading ? 'docx-heading' : 'docx-para', item.text));
+  });
+  if (!wrap.childNodes.length) {
+    wrap.append(emptyState('文档没有可提取的文字', '可以下载原件用本地软件打开。'));
+  }
+  body.append(wrap);
+
+  if (browse.docx.truncated) {
+    const line = el('div', 'notice-line warn');
+    line.append(icon('alert'), el('span', '', '文档内容较多，预览只展示前一部分。'));
+    body.append(line);
+  }
+}
+
 export async function loadSheets(app) {
   const browse = app.state.browse;
   if (!browse?.doc || browse.sheets || browse.sheetsLoading) return;
@@ -456,7 +535,11 @@ function paintOriginal(app, body) {
   const browse = app.state.browse;
   const original = browse.original;
 
-  // 表格不取原件字节：直接走 /sheets 的二维数据，先于「读原件」的分支判断
+  // DOCX 不取原件字节：走 /docx 的段落与表格；表格走 /sheets 的二维数据
+  if (isDocx(browse.detail?.media_type)) {
+    paintDocx(app, body);
+    return;
+  }
   if (isSheet(browse.detail?.media_type)) {
     paintSheets(app, body);
     return;

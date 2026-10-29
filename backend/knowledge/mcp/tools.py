@@ -102,6 +102,8 @@ def search(
         "hits": [
             {
                 "document_id": hit.document_id,
+                "kb_id": hit.kb_id,
+                "kb_name": hit.kb_name,
                 "chunk_id": hit.chunk_id,
                 "title": hit.title,
                 "excerpt": hit.excerpt,

@@ -80,8 +80,7 @@ function hero(app) {
   const box = el('div', 'chat-hero');
   const mark = el('div', 'hero-mark');
   mark.append(icon('sparkle'));
-  box.append(mark, el('h2', '', '让知识，成为答案'));
-  box.append(el('p', '', '只在所选知识库里检索，回答附带可回溯的原文片段。'));
+  box.append(mark);
 
   if (!app.state.connected) {
     const cta = el('button', 'btn primary', '连接工作台');
