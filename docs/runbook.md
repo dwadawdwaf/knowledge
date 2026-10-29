@@ -22,26 +22,39 @@ CREATE EXTENSION IF NOT EXISTS pg_trgm;
 
 ## 2. 启动
 
-开发环境不需要另装数据库：`python scripts/dev_db.py` 会用依赖里的 `embedded-postgres`（PostgreSQL 18.6 + pgvector）起一个本地实例，连接串写入 `.data/db_url`。
+**推荐：双击 `start.cmd`。** 首次会自动启动本机数据库（依赖里自带的 PostgreSQL 18.6 + pgvector），
+不需要另装数据库，也不连任何远端服务器。
+
+数据都在本机：
+
+| 内容 | 位置 | 说明 |
+| --- | --- | --- |
+| 数据库集群 | `backend/.data/pgdata` | 已初始化时直接复用；换机后首次启动会用 `initdb` 初始化 |
+| 原件 | `backend/.data/objects` | 与数据库一一对应，见下方警告 |
+| 连接串 | `backend/.data/db_url` | 启动器写入，端口默认 55433 |
+
+手动起停与导入（排查时才需要）：
 
 ```bash
 cd backend
-pip install -e ".[dev]"
+python scripts/dev_db.py                 # 起库（已在跑则复用）
+python scripts/dev_db.py --stop          # 干净停库（pg_ctl fast）
+python scripts/local_setup.py            # 起库 + 自检（打印各表行数）
+python scripts/local_setup.py --remote-url <旧库连接串> --tunnel root@host   # 从旧库整库搬运
+```
 
-# 可选：本地数据库（前台运行，另开终端）
-python scripts/dev_db.py
+想用自己装好的 PostgreSQL：把连接串写进 `backend/.env` 的 `KS_DATABASE_URL`，启动器优先用它。
 
-export KS_DATABASE_URL=$(cat .data/db_url)     # 已有 PostgreSQL 时直接指向自己的库
-export KS_STORAGE_ROOT="./.data/objects"
-export KS_EMBEDDING_BASE_URL="..."  KS_EMBEDDING_MODEL="bge-m3"
-export KS_GENERATOR_BASE_URL="..."
+> 中文 Windows 上 `initdb` 可能报 `invalid byte sequence for encoding "UTF8"`，此时本机集群初始化失败。
+> 兜底两条：装一个 PostgreSQL 15+ 并把连接串写进 `KS_DATABASE_URL`；或用 `KS_LOCAL_DB_DIR` 指向一个已初始化的数据目录。
 
+自检：`GET /api/v1/knowledge-bases` 能返回列表，说明数据库连接、迁移与令牌校验都正常；跑 `python scripts/demo_flow.py` 可验证完整链路。
+
+```bash
 alembic upgrade head                                          # 1) 迁移
 uvicorn knowledge.entrypoints.api:app --port 8010             # 2) API
 python -m knowledge.entrypoints.worker                        # 3) Worker（另一终端）
 ```
-
-自检：`GET /api/v1/knowledge-bases` 能返回空列表，说明数据库连接、迁移与令牌校验都正常；跑 `python scripts/demo_flow.py` 可验证完整链路。
 
 > **对象目录与数据库必须一一对应。** 持久库要配持久目录（工作台启动器默认用 `backend/.data/objects`），临时库/测试库要配临时目录。两个库共用一个目录时，任一侧的孤儿回收会把另一侧仍在引用的原件删掉；回收器遇到「一次要删掉大半对象」会拒绝执行并记 `orphan_reclaim_skipped`，此时应先核对 `KS_DATABASE_URL` 与 `KS_STORAGE_ROOT` 是否配套。
 
@@ -62,7 +75,6 @@ curl -s -X POST localhost:8010/api/v1/knowledge-bases/$KB/documents \
 
 # 查任务
 curl -s localhost:8010/api/v1/jobs/$JOB -H "Authorization: Bearer $KS_TOKEN"
-
 # 检索调试：观察两路排名与融合结果
 curl -s -X POST localhost:8010/api/v1/search \
   -H "Authorization: Bearer $KS_TOKEN" -H 'Content-Type: application/json' \

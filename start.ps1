@@ -11,7 +11,7 @@ param(
     [switch]$NoDeepDoc
 )
 
-# 真实问答或本地演示入口，复用已有启动器，不加载现有业务数据库。
+# 真实问答或本地演示入口，复用已有启动器；数据库默认用本机内置实例（见 scripts/local_db.py）。
 # 保留 UTF-8 BOM，以便 Windows PowerShell 5.1 正确读取中文提示。
 $ErrorActionPreference = 'Stop'
 $python = Join-Path $PSScriptRoot 'backend\.venv\Scripts\python.exe'
@@ -141,7 +141,7 @@ print('Python ' + sys.version.split()[0] + '：开发依赖检查通过')
     }
     else {
         Write-Host '[5/5] 启动问答服务，终端将持续输出执行进度...' -ForegroundColor Cyan
-        Write-Host '自动启动临时数据库与 API/Worker，仅导入自制资料，不修改现有业务数据。'
+        Write-Host '启动本机数据库与 API/Worker；数据保存在本机，不访问外部数据库。'
         Write-Host '准备完成后自动打开浏览器工作台；在终端输入 /token 复制本次开发令牌到页面。'
         Write-Host '也可继续在终端提问。输入 /quit 或按 Ctrl+C 退出；-NoBrowser 可关闭自动打开。'
         $browserArgs = @()

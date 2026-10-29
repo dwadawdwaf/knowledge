@@ -25,6 +25,9 @@ BACKEND = pathlib.Path(__file__).resolve().parents[1]
 LOOPBACK_HOSTS = {"localhost", "127.0.0.1", "::1", "0.0.0.0"}
 OLLAMA_DEFAULT_PORT = 11434
 START_TIMEOUT_SECONDS = 45.0
+# 子进程一律不弹控制台窗口；不要加 DETACHED_PROCESS，
+# 否则 PostgreSQL 的每个 backend 连接都会自己弹一个窗。
+_NO_WINDOW = subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0
 
 
 class DependencyError(RuntimeError):
@@ -168,11 +171,7 @@ def _start_ollama(exe: pathlib.Path) -> None:
             cwd=str(exe.parent),
             stdout=output,
             stderr=subprocess.STDOUT,
-            creationflags=(
-                subprocess.CREATE_NO_WINDOW | subprocess.DETACHED_PROCESS
-                if os.name == "nt"
-                else 0
-            ),
+            creationflags=_NO_WINDOW,
         )
     finally:
         output.close()
@@ -231,7 +230,7 @@ def ensure_ollama(
     if exe is None:  # pragma: no cover - 极少出现，服务在跑但找不到命令
         raise DependencyError(f"找不到 ollama 命令，无法拉取模型 {model}。")
     progress(f"[依赖] 拉取向量模型 {model}（约 1.2 GB，首次较慢）")
-    result = subprocess.run([str(exe), "pull", model], check=False)
+    result = subprocess.run([str(exe), "pull", model], check=False, creationflags=_NO_WINDOW)
     if result.returncode != 0:
         raise DependencyError(f"拉取模型 {model} 失败，请检查网络后重试。")
 
@@ -351,6 +350,7 @@ def _docker_engine_running(docker: str) -> bool:
         completed = subprocess.run(
             [docker, "info", "--format", "{{.OSType}}"],
             check=False,  # 退出码自行判断，不用异常表达
+            creationflags=_NO_WINDOW,
             capture_output=True,
             text=True,
             encoding="utf-8",
@@ -438,6 +438,7 @@ def ensure_deepdoc(
         completed = subprocess.run(
             [docker, "compose", "-p", "ks-deepdoc", "-f", str(COMPOSE_FILE), "up", "-d"],
             check=False,  # 退出码自行判断，不用异常表达
+            creationflags=_NO_WINDOW,
             cwd=str(BACKEND.parent),
             env=env,
             capture_output=True,
@@ -467,15 +468,24 @@ def ensure_deepdoc(
 
 def ensure_database(
     settings, *, progress: Callable[[str], None] = _say
-) -> None:
-    """数据库指向本机端口但无人监听时，按配置建立 SSH 隧道。"""
+) -> str:
+    """确定本次运行使用的数据库，返回可直接使用的 URL。
+
+    没有显式配置 `KS_DATABASE_URL` 时用本机内置库（数据落在用户目录），
+    这样在别人的电脑上也不需要任何远端服务；显式配置了才走远端 + 隧道那条老路。
+    """
+    if "database_url" not in settings.model_fields_set:
+        from scripts import local_db
+
+        return local_db.ensure(progress)
+
     parsed = urlsplit(settings.database_url)
     if parsed.hostname not in LOOPBACK_HOSTS:
-        return
+        return settings.database_url
     port = parsed.port or 5432
     if _port_open(parsed.hostname, port):
         progress(f"[依赖] 数据库端口已就绪：{parsed.hostname}:{port}")
-        return
+        return settings.database_url
     target = settings.tunnel_ssh
     if not target:
         raise DependencyError(
@@ -495,19 +505,18 @@ def ensure_database(
             stdin=subprocess.DEVNULL,
             stdout=output,
             stderr=subprocess.STDOUT,
-            creationflags=(
-                subprocess.CREATE_NO_WINDOW | subprocess.DETACHED_PROCESS
-                if os.name == "nt"
-                else 0
-            ),
+            creationflags=_NO_WINDOW,
         )
     finally:
         output.close()
+    # 端口通了还要能查询：握手未完成就往下走，迁移会撞上连接超时。
+    from scripts import local_db
+
     deadline = time.monotonic() + START_TIMEOUT_SECONDS
     while time.monotonic() < deadline:
-        if _port_open(parsed.hostname, port):
+        if _port_open(parsed.hostname, port) and local_db.can_connect(settings.database_url):
             progress(f"[依赖] 隧道就绪：{parsed.hostname}:{port}")
-            return
+            return settings.database_url
         time.sleep(0.3)
     raise DependencyError(
         f"数据库隧道未就绪（{START_TIMEOUT_SECONDS:.0f}s 内端口未监听）；"

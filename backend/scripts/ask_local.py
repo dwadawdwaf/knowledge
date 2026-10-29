@@ -13,10 +13,10 @@ sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[1]))
 import httpx
 
 from scripts.ask_console import ask_once, run_console
-from scripts.deps import DependencyError, ensure_dependencies
+from scripts.deps import DependencyError, ensure_database, ensure_dependencies
 from scripts.http_scenario import expect, upload_sample, wait_job
 from scripts.local_runtime import WORKBENCH_OBJECTS, LocalRuntime
-from scripts.real_model import external_database_url, load_real_settings
+from scripts.real_model import load_real_settings
 from scripts.workbench import open_workbench
 
 
@@ -50,7 +50,6 @@ def main() -> int:
     args = parser.parse_args()
     try:
         settings = load_real_settings()
-        database_url = external_database_url(settings)
         print(f"向量模型：{settings.embedding_model}（{settings.embedding_dim} 维）", flush=True)
         print(f"生成模型：{settings.generator_model}", flush=True)
         print("模型配置检查通过；未输出 API 密钥。", flush=True)
@@ -62,13 +61,17 @@ def main() -> int:
                 pull_missing=args.pull_missing,
                 progress=lambda message: print(message, flush=True),
             )
+        # 数据库默认用本机内置库（数据落在用户目录），配置了 KS_DATABASE_URL 才走远端。
+        database_url = ensure_database(
+            settings, progress=lambda message: print(message, flush=True)
+        )
         with (
             LocalRuntime(
                 port=args.port,
                 model_settings=settings,
                 database_url=database_url,
-                # 持久库要配持久卷：临时卷在下一次启动就没了，旧文档原文会全部 404。
-                storage_root=str(WORKBENCH_OBJECTS) if database_url else None,
+                # 库是持久的，卷也必须持久：临时卷会让旧文档的原文在下次启动时全部 404。
+                storage_root=str(WORKBENCH_OBJECTS),
             ) as runtime,
             runtime.client() as client,
         ):

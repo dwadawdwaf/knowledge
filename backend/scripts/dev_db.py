@@ -1,93 +1,59 @@
-"""本地开发数据库：启动内置 PostgreSQL（含 pgvector），无需安装 PostgreSQL。
+"""本机数据库：确保内置 PostgreSQL 在跑，打印连接串。
+
+启动器会自动调用同样的逻辑（`scripts/local_db.py`），这个脚本只用于手动排查。
 
 用法：
-    python scripts/dev_db.py                 # 前台运行，Ctrl+C 停止
-    python scripts/dev_db.py --reset         # 删除数据目录后重建
-    python scripts/dev_db.py --data-dir D:/pgdata
+    python scripts/dev_db.py              # 启动（或复用）本机库
+    python scripts/dev_db.py --reset      # 停掉并删除数据目录后重建
+    python scripts/dev_db.py --stop       # 停止本机库
 
-启动后写入 `.data/db_url`（开发库）与 `.data/db_test_url`（测试库）：
-    export KS_DATABASE_URL=$(cat .data/db_url)
+数据目录默认：项目内 `backend/.data/pgdata`（已初始化时），否则用户目录下的 ks-postgres。
 """
 
 from __future__ import annotations
 
 import argparse
-import os
 import pathlib
 import shutil
-import tempfile
-import time
-from types import ModuleType
+import signal
+import sys
 
-DATA_URL = pathlib.Path(".data/db_url")
-TEST_URL = pathlib.Path(".data/db_test_url")
+sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[1]))
+
+from scripts.local_db import DEFAULT_PORT, data_dir, ensure, stop_instance
 
 
-def _prepare_environment(data_dir: pathlib.Path) -> None:
-    """中文 Windows 下 PostgreSQL 输出为 GBK，包内按 UTF-8 解码会失败。"""
-    os.environ.setdefault("LC_ALL", "C")
-    os.environ.setdefault("LANG", "C")
-
-    if not str(data_dir).isascii():
-        raise SystemExit(f"数据目录必须为纯英文路径（postmaster.pid 按本地编码写入）：{data_dir}")
-
-    import embedded_postgres._commands as commands
-
-    class _TempFile(ModuleType):
-        @staticmethod
-        def TemporaryFile(*args, **kwargs):
-            kwargs.setdefault("encoding", "utf-8")
-            kwargs.setdefault("errors", "replace")
-            return tempfile.TemporaryFile(*args, **kwargs)
-
-    commands.tempfile = _TempFile("embedded_postgres_tempfile")  # 仅替换该模块内的引用
+def stop() -> None:
+    """干净关闭本机库（pg_ctl fast），避免残留共享内存块让下一个实例起不来。"""
+    if stop_instance(data_dir()):
+        print("[db] 已停止", flush=True)
+    else:
+        print("[db] 没有运行中的本机库", flush=True)
 
 
 def main() -> int:
-    default_dir = pathlib.Path(tempfile.gettempdir()) / "ks_pgdata"
-    parser = argparse.ArgumentParser(description="启动内置 PostgreSQL（开发用）")
-    parser.add_argument("--data-dir", default=str(default_dir), help="数据目录，必须为纯英文路径")
+    parser = argparse.ArgumentParser(description="本机 PostgreSQL（内置二进制）")
     parser.add_argument("--reset", action="store_true", help="删除数据目录后重建")
+    parser.add_argument("--stop", action="store_true", help="停止本机库")
+    parser.add_argument("--port", type=int, default=DEFAULT_PORT)
     args = parser.parse_args()
 
-    data_dir = pathlib.Path(args.data_dir).resolve()
-    _prepare_environment(data_dir)
+    if args.stop:
+        stop()
+        return 0
 
-    if args.reset and data_dir.exists():
-        print(f"[db] removing {data_dir}", flush=True)
-        shutil.rmtree(data_dir, ignore_errors=True)
+    if args.reset:
+        stop()
+        directory = data_dir()
+        shutil.rmtree(directory, ignore_errors=True)
+        print(f"[db] 已删除数据目录：{directory}", flush=True)
 
-    import embedded_postgres as ep
-
-    with ep.get_server(str(data_dir)) as pg:
-        pg.psql("CREATE EXTENSION IF NOT EXISTS vector")
-        pg.psql("CREATE EXTENSION IF NOT EXISTS pg_trgm")
-
-        dsn = pg.get_uri().replace("postgresql://", "postgresql+psycopg://")
-        test_dsn = dsn.rsplit("/", 1)[0] + "/ks_test"
-        try:
-            pg.psql("CREATE DATABASE ks_test")
-        except Exception:  # noqa: BLE001, S110 - 数据库已存在即忽略
-            pass
-
-        DATA_URL.parent.mkdir(parents=True, exist_ok=True)
-        DATA_URL.write_text(dsn, encoding="utf-8")
-        TEST_URL.write_text(test_dsn, encoding="utf-8")
-
-        version = pg.psql("SELECT version()").splitlines()[2].strip()
-        print(f"[db] {version}", flush=True)
-        print(f"[db] dev  {dsn}", flush=True)
-        print(f"[db] test {test_dsn}", flush=True)
-        print("[db] Ctrl+C 停止", flush=True)
-
-        try:
-            while True:
-                time.sleep(3600)
-        except KeyboardInterrupt:
-            print("[db] stopping", flush=True)
-
+    url = ensure(print, port=args.port)
+    print(f"[db] 连接串 {url}", flush=True)
+    print("[db] 数据库在后台运行，关掉终端不会停；停止用 python scripts/dev_db.py --stop", flush=True)
     return 0
 
 
 if __name__ == "__main__":
+    signal.signal(signal.SIGINT, lambda *_: sys.exit(0))
     raise SystemExit(main())

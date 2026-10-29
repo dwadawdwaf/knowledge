@@ -406,3 +406,28 @@ Cookie 或浏览器存储。启动终端仅在用户显式输入 /token 时展�
 **重审条件** 出现多实例部署、需要与主系统共享资料卷、单库文件总量接近数据库容量上限，
 或必须「一次备份拿到全部内容」时，按 §2 的端口约定实现 `ObjectStorage` 的数据库/S3 适配，
 用开关切换，业务层不感知。
+
+## 0019 数据库从远端服务器搬到本机
+
+**状态** 已接受，2026-10-29，依据用户要求「不用服务器了，把数据存在本机」。
+
+**决定** 启动器默认使用本机 PostgreSQL（依赖自带的 18.6 + pgvector）：集群在
+`backend/.data/pgdata`，端口 55433，库名 `knowledge`；原件仍在 `backend/.data/objects`。
+远端库与 SSH 隧道只在 `.env` 显式配置 `KS_DATABASE_URL` 时才启用。
+
+**为什么** 远端库经 SSH 隧道访问，链路一抖就表现成「迁移超时 / 列表加载失败 / 原文 404」，
+排查成本远高于收益。数据放本机后，启动不依赖外网，备份等于拷一个目录。
+
+**代价与对策** 换机后首次要初始化空集群，而中文 Windows 上 `initdb` 会因代码页报
+`invalid byte sequence for encoding "UTF8"`（本机实测必现）。兜底两条：`KS_DATABASE_URL`
+指向自装 PostgreSQL，或 `KS_LOCAL_DB_DIR` 指向已初始化的数据目录。
+另外，启动器的子进程一律用 `CREATE_NO_WINDOW`，**禁止 `DETACHED_PROCESS`**——
+后者让 postmaster 没有控制台，PostgreSQL 每个 backend 连接都会自己申请控制台窗口，
+表现就是「每查一次库闪一个黑框」。
+
+**被否方案** 继续用远端库 + 隧道（抖动不可控）；用 Docker 跑 pgvector（本机 registry 不可达）；
+换 SQLite（缺 pgvector，检索要重写）。
+
+**重审条件** 需要多人共享同一份资料、需要跨机备份或高可用、或本机磁盘放不下资料时，
+再评估回到服务端数据库或对象存储。
+
