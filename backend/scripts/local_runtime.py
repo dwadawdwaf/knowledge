@@ -32,7 +32,9 @@ WORKBENCH_OBJECTS = pathlib.Path(os.environ.get("KS_WORKBENCH_OBJECTS") or BACKE
 @contextmanager
 def isolated_database(progress: Callable[[str], None]) -> Iterator[str]:
     progress("[database] Initializing NEW temporary PostgreSQL (existing data untouched)")
-    with tempfile.TemporaryDirectory(prefix="ks_runtime_pg_") as temporary:
+    with tempfile.TemporaryDirectory(
+        prefix="ks_runtime_pg_", ignore_cleanup_errors=True
+    ) as temporary:
         directory = pathlib.Path(temporary).resolve()
         if not directory.is_relative_to(pathlib.Path(tempfile.gettempdir()).resolve()):
             raise RuntimeError("Unexpected temporary database directory")
@@ -104,7 +106,11 @@ class LocalRuntime:
     def __enter__(self) -> Self:
         try:
             self.directory = pathlib.Path(
-                self.stack.enter_context(tempfile.TemporaryDirectory(prefix="ks_runtime_"))
+                self.stack.enter_context(
+                    tempfile.TemporaryDirectory(
+                        prefix="ks_runtime_", ignore_cleanup_errors=True
+                    )
+                )
             ).resolve()
             if not self.directory.is_relative_to(pathlib.Path(tempfile.gettempdir()).resolve()):
                 raise RuntimeError("Unexpected runtime directory")

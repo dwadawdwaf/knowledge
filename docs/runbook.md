@@ -437,6 +437,13 @@ node --test frontend/core.test.mjs
 .\backend\.venv\Scripts\python.exe -u backend/scripts/browser_smoke.py
 ```
 
+远端数据库经隧道抖动时，可加 `--temporary-database` 改跑本机临时库，只验证界面与流程，
+不代表外部库验收：
+
+```powershell
+.\backend\.venv\Scripts\python.exe -u backend/scripts/browser_smoke.py --temporary-database
+```
+
 界面运行本身无需 Node；测试需已有 Node.js 22+。浏览器验收另需本机 Edge/Chrome，缺少即报错，
 不自动安装、不跳过后宣称通过。使用独立浏览器配置，不读取个人浏览器状态。
 截图及测试配置保存在忽略目录 `backend/.data/workbench/<编号>/`，不是生产数据或提交产物。

@@ -23,6 +23,11 @@ def main() -> int:
     for stream in (sys.stdout, sys.stderr):
         if isinstance(stream, io.TextIOWrapper):
             stream.reconfigure(encoding="utf-8")
+    # 远端隧道抖动时可用 --temporary-database 改跑本机临时库，只验证界面与流程。
+    temporary_database = "--temporary-database" in sys.argv[1:]
+    database_url = None if temporary_database else smoke_database_url_from_file()
+    if temporary_database:
+        print("[database] 使用本机临时库（--temporary-database）", flush=True)
     candidates = [
         Path("C:/Program Files (x86)/Microsoft/Edge/Application/msedge.exe"),
         Path("C:/Program Files/Google/Chrome/Application/chrome.exe"),
@@ -39,7 +44,7 @@ def main() -> int:
         LocalRuntime(
             embedding_url=model.url,
             generator_url=model.url,
-            database_url=smoke_database_url_from_file(),
+            database_url=database_url,
         ) as runtime,
         runtime.client() as client,
     ):

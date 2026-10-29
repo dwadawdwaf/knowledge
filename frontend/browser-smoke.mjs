@@ -113,6 +113,10 @@ try {
   await send('Fetch.disable'); socket.removeEventListener('message', intercept);
   await js(`document.querySelector('[data-page=search]').click(); document.querySelector('.query-box textarea').value='会议室使用后需要做什么？'; document.querySelector('.query-box').requestSubmit()`);
   await wait(`document.querySelector('.result-card')`); await shot('retrieval');
+  assert.ok(await js(`document.querySelector('.result-card .result-kb')?.textContent.includes('行政制度')`),
+    '检索结果应标注所属知识库');
+  assert.equal(await js(`getComputedStyle(document.querySelector('.search-layout')).flexDirection`), 'column',
+    '检索页应为上下分布');
   console.log('[浏览器 6/9] 小屏布局无横向溢出');
   await send('Emulation.setDeviceMetricsOverride', { width: 390, height: 844, deviceScaleFactor: 1, mobile: true });
   assert.ok(await js(`document.documentElement.scrollWidth <= innerWidth`)); await shot('mobile');
