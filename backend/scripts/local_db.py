@@ -14,8 +14,10 @@ from __future__ import annotations
 import os
 import pathlib
 import subprocess
+import tempfile
 import time
 from collections.abc import Callable
+from types import ModuleType
 
 BACKEND = pathlib.Path(__file__).resolve().parents[1]
 DB_URL_FILE = BACKEND / ".data" / "db_url"
@@ -42,6 +44,29 @@ def bin_dir() -> pathlib.Path:
     from embedded_postgres import _commands
 
     return pathlib.Path(_commands.POSTGRES_BIN_PATH)
+
+
+def prepare_embedded_env(directory: pathlib.Path) -> None:
+    """embedded_postgres 的前置处理：中文 Windows 的输出编码 + ASCII 路径限制。
+
+    中文 Windows 上 PostgreSQL 输出是 GBK，包内按 UTF-8 解码会抛异常；
+    Windows 版本还要求数据目录是纯英文路径（postmaster.pid 按本地编码写）。
+    """
+    os.environ.setdefault("LC_ALL", "C")
+    os.environ.setdefault("LANG", "C")
+    if not str(directory).isascii():
+        raise LocalDatabaseError(f"数据目录必须是纯英文路径：{directory}")
+
+    import embedded_postgres._commands as commands
+
+    class _TempFile(ModuleType):
+        @staticmethod
+        def TemporaryFile(*args, **kwargs):  # noqa: ANN002, ANN003 - 透传给 tempfile
+            kwargs.setdefault("encoding", "utf-8")
+            kwargs.setdefault("errors", "replace")
+            return tempfile.TemporaryFile(*args, **kwargs)
+
+    commands.tempfile = _TempFile("embedded_postgres_tempfile")  # 仅替换该模块内的引用
 
 
 def data_dir() -> pathlib.Path:

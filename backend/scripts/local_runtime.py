@@ -20,7 +20,7 @@ import httpx
 
 from knowledge.config import Settings
 from knowledge.security import issue_token
-from scripts.dev_db import _prepare_environment
+from scripts.local_db import prepare_embedded_env
 from scripts.real_model import real_model_environment
 
 BACKEND = pathlib.Path(__file__).resolve().parents[1]
@@ -38,7 +38,7 @@ def isolated_database(progress: Callable[[str], None]) -> Iterator[str]:
         directory = pathlib.Path(temporary).resolve()
         if not directory.is_relative_to(pathlib.Path(tempfile.gettempdir()).resolve()):
             raise RuntimeError("Unexpected temporary database directory")
-        _prepare_environment(directory)
+        prepare_embedded_env(directory)
         import embedded_postgres as ep
         import embedded_postgres._commands as commands
         import embedded_postgres.postgres_server as server_module
