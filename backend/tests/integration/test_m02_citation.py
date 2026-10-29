@@ -8,7 +8,7 @@ import uuid
 import pytest
 
 from knowledge.adapters.generator import StubGenerator
-from knowledge.domain.entities import Actor
+from knowledge.domain.entities import Actor, GeneratedAnswer
 from knowledge.repositories import chunks as chunk_repo
 from knowledge.services import document as document_service
 from knowledge.services import knowledge as knowledge_service
@@ -63,3 +63,31 @@ def test_citation_resolves_to_chunk_and_version(session, settings, deps):
             assert locator["page"] >= 1
         if locator.get("char_start") is not None and locator.get("char_end") is not None:
             assert 0 <= locator["char_start"] < locator["char_end"]
+
+
+class _EmptyGenerator:
+    """模型按约定认为证据不足：返回空 sections。"""
+
+    revision = "empty"
+
+    def generate(self, question: str, evidence):
+        return GeneratedAnswer(sections=())
+
+
+def test_empty_sections_is_no_evidence_not_an_error(session, settings, deps):
+    """模型返回空 sections 属于正常拒答，不能报成引用校验失败（502）。"""
+    actor = Actor(subject_id="user-b", tenant_id="default")
+    kb = knowledge_service.create(session, actor, "空证据库")
+    document_service.upload(
+        session, actor, settings, deps.storage, deps.registry,
+        kb_id=kb.id, filename="meeting-room.md", data=MEETING_RULES,
+        embedder_model=deps.embedder.model, embedder_dim=deps.embedder.dimension,
+    )
+    assert process_next(session, deps) is True
+
+    answer = qa_service.answer(
+        session, actor, settings, deps.embedder, _EmptyGenerator(),
+        question="会议室使用后需要做什么", kb_ids=[kb.id],
+    )
+    assert answer.status == "no_evidence"
+    assert answer.citations == []

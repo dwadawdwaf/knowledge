@@ -146,6 +146,22 @@ def answer(
 
     evidence = _build_evidence(hits, settings.evidence_max_items)
     generated = generator.generate(question, evidence)
+
+    if not generated.sections:
+        # 模型按约定判断证据不足，返回空 sections：这是正常拒答（C6 无证据不生成），
+        # 不是「引用校验失败」。之前这里落到下游会抛 502，把正常拒答报成了系统错误。
+        log.info("qa_no_evidence", extra={"hits": len(hits), "reason": "empty_sections"})
+        result = Answer(
+            status=AnswerStatus.NO_EVIDENCE.value,
+            text="所选资料中没有足够依据回答这个问题。可以换一种问法，或把检索范围放宽到更多知识库。",
+            hits=len(hits),
+        )
+        _persist(
+            session, actor, conversation_id, question, result,
+            model_revision=generated.model_revision,
+        )
+        return result
+
     body, citations, warnings = _assemble(generated, evidence)
     warnings = sorted(set(warnings) | {
         warning for hit in hits[:settings.evidence_max_items] for warning in hit.warnings
