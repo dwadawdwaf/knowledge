@@ -74,7 +74,10 @@ def _post_json(
         headers["Authorization"] = f"Bearer {api_key}"
     body = json.dumps(payload).encode("utf-8")
     remote = (urlsplit(url).hostname or "") not in LOOPBACK_HOSTS
-    routes = [(_opener_for(url), "环境代理"), (urllib.request.build_opener(urllib.request.ProxyHandler({})), "直连")]
+    routes = [
+        (_opener_for(url), "环境代理"),
+        (urllib.request.build_opener(urllib.request.ProxyHandler({})), "直连"),
+    ]
     attempts = [(routes[0][0], routes[0][1])] if not remote else routes
     last: Exception | None = None
     for index, (opener, label) in enumerate(attempts):
@@ -161,17 +164,39 @@ def _matches(model: str, tags: list[str]) -> bool:
     return any(tag.split(":")[0] == wanted for tag in tags)
 
 
-def _start_ollama(exe: pathlib.Path) -> None:
+def _ollama_env(host: str, port: int) -> dict[str, str]:
+    """只覆盖子进程监听地址，模型目录等配置沿用当前环境。"""
+    address = f"[{host}]" if ":" in host else host
+    return {**os.environ, "OLLAMA_HOST": f"{address}:{port}"}
+
+
+def _check_bindable(host: str, port: int) -> None:
+    """提前区分系统保留/端口占用，避免必然失败仍等待完整启动超时。"""
+    family = socket.AF_INET6 if ":" in host else socket.AF_INET
+    try:
+        with socket.socket(family, socket.SOCK_STREAM) as probe:
+            probe.bind((host, port))
+    except OSError as exc:
+        raise DependencyError(
+            f"向量服务无法绑定 {host}:{port}（系统保留、权限限制或端口占用）。"
+            "Windows可检查 netsh interface ipv4 show excludedportrange protocol=tcp；"
+            "将 backend/.env 的 KS_EMBEDDING_BASE_URL 改为可用本机端口后重试，"
+            "启动器会同步设置 Ollama 监听地址；不要删除系统保留规则。"
+        ) from exc
+
+
+def _start_ollama(exe: pathlib.Path, host: str, port: int) -> subprocess.Popen[bytes]:
     log_dir = BACKEND / ".data" / "deps"
     log_dir.mkdir(parents=True, exist_ok=True)
     output = (log_dir / "ollama.log").open("ab")
     try:
-        subprocess.Popen(
+        return subprocess.Popen(
             [str(exe), "serve"],
             cwd=str(exe.parent),
             stdout=output,
             stderr=subprocess.STDOUT,
             creationflags=_NO_WINDOW,
+            env=_ollama_env(host, port),
         )
     finally:
         output.close()
@@ -199,12 +224,18 @@ def ensure_ollama(
                 "未找到 ollama，无法启动本机向量服务。请安装 Ollama 后重试，"
                 "或把 KS_EMBEDDING_BASE_URL 指向可用的向量服务。"
             )
-        progress(f"[依赖] 启动向量服务：{exe} serve")
-        _start_ollama(exe)
+        _check_bindable(host, port)
+        progress(f"[依赖] 启动向量服务：{exe} serve（监听 {host}:{port}）")
+        process = _start_ollama(exe, host, port)
         deadline = time.monotonic() + START_TIMEOUT_SECONDS
         while time.monotonic() < deadline:
             if _port_open(host, port):
                 break
+            if process.poll() is not None:
+                raise DependencyError(
+                    f"向量服务进程已退出（退出码 {process.returncode}），不是启动超时。"
+                    "请查看 backend/.data/deps/ollama.log，检查监听地址与系统保留端口。"
+                )
             time.sleep(0.3)
         else:
             raise DependencyError(
@@ -230,7 +261,12 @@ def ensure_ollama(
     if exe is None:  # pragma: no cover - 极少出现，服务在跑但找不到命令
         raise DependencyError(f"找不到 ollama 命令，无法拉取模型 {model}。")
     progress(f"[依赖] 拉取向量模型 {model}（约 1.2 GB，首次较慢）")
-    result = subprocess.run([str(exe), "pull", model], check=False, creationflags=_NO_WINDOW)
+    result = subprocess.run(
+        [str(exe), "pull", model],
+        check=False,
+        creationflags=_NO_WINDOW,
+        env=_ollama_env(host, port),
+    )
     if result.returncode != 0:
         raise DependencyError(f"拉取模型 {model} 失败，请检查网络后重试。")
 
@@ -362,9 +398,7 @@ def _docker_engine_running(docker: str) -> bool:
     return completed.returncode == 0
 
 
-def start_docker_engine(
-    docker: str, *, progress: Callable[[str], None] = _say
-) -> bool:
+def start_docker_engine(docker: str, *, progress: Callable[[str], None] = _say) -> bool:
     """引擎未运行时尝试拉起 Docker Desktop；返回是否就绪。"""
     exe = next((path for path in DOCKER_DESKTOP_EXES if path.is_file()), None)
     if exe is None:
@@ -401,12 +435,10 @@ def _deepdoc_healthy(url: str) -> bool:
         return False
 
 
-def ensure_deepdoc(
-    settings, *, progress: Callable[[str], None] = _say
-) -> None:
+def ensure_deepdoc(settings, *, progress: Callable[[str], None] = _say) -> None:
     """使用 DeepDoc 解析时，边车同样是前置依赖，未运行则拉起容器。"""
     profile = getattr(settings, "document_parser_profile", "legacy-v1")
-    if profile != DEEPDOC_PROFILE:
+    if profile not in {DEEPDOC_PROFILE, "deepdoc-v0.22.0-v2"}:
         return
     url = getattr(settings, "deepdoc_url", "") or ""
     if not url:
@@ -423,9 +455,7 @@ def ensure_deepdoc(
             "选择了 DeepDoc 解析，但边车未运行且未找到 docker。"
             "请先运行 start-deepdoc.ps1，或把 backend/.env 的 KS_DOCUMENT_PARSER_PROFILE 改回 legacy-v1。"
         )
-    if not _docker_engine_running(docker) and not start_docker_engine(
-        docker, progress=progress
-    ):
+    if not _docker_engine_running(docker) and not start_docker_engine(docker, progress=progress):
         raise DependencyError(
             "选择了 DeepDoc 解析，但 Docker 引擎未能启动。请手动启动 Docker Desktop 后重试；"
             "不打算用 DeepDoc 时，把 backend/.env 的 KS_DOCUMENT_PARSER_PROFILE 改回 legacy-v1。"
@@ -461,14 +491,10 @@ def ensure_deepdoc(
             progress(f"[依赖] DeepDoc 边车就绪：{url}")
             return
         time.sleep(2)
-    raise DependencyError(
-        f"DeepDoc 边车在 {DEEPDOC_READY_SECONDS:.0f}s 内未就绪，请查看容器日志。"
-    )
+    raise DependencyError(f"DeepDoc 边车在 {DEEPDOC_READY_SECONDS:.0f}s 内未就绪，请查看容器日志。")
 
 
-def ensure_database(
-    settings, *, progress: Callable[[str], None] = _say
-) -> str:
+def ensure_database(settings, *, progress: Callable[[str], None] = _say) -> str:
     """确定本次运行使用的数据库，返回可直接使用的 URL。
 
     没有显式配置 `KS_DATABASE_URL` 时用本机内置库（数据落在用户目录），
@@ -543,9 +569,7 @@ def ensure_dependencies(
     base_url = settings.embedding_base_url or ""
     if not base_url:
         raise DependencyError("缺少向量端点 KS_EMBEDDING_BASE_URL。")
-    ensure_ollama(
-        base_url, settings.embedding_model, pull_missing=pull_missing, progress=progress
-    )
+    ensure_ollama(base_url, settings.embedding_model, pull_missing=pull_missing, progress=progress)
     dimension = verify_embedding(
         base_url,
         settings.embedding_model,
@@ -582,7 +606,7 @@ def main() -> int:
     )
     args = parser.parse_args()
     try:
-        settings = load_real_settings()
+        settings = load_real_settings(resolve_local_parsers=True)
         ensure_dependencies(
             settings,
             pull_missing=args.pull_missing,

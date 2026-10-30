@@ -8,7 +8,10 @@ param(
     [switch]$PullMissing,
     [switch]$NoBrowser,
     # 显式不用 DeepDoc：PDF/图片退回旧解析器。默认按 .env 的 profile 走，不静默回退。
-    [switch]$NoDeepDoc
+    [switch]$NoDeepDoc,
+    # 仅启动已安装的独立环境，不自动安装依赖或下载模型。
+    [switch]$NoMinerU,
+    [string]$MinerURoot = 'D:\MinerU'
 )
 
 # 真实问答或本地演示入口，复用已有启动器；数据库默认用本机内置实例（见 scripts/local_db.py）。
@@ -62,7 +65,7 @@ try {
     $OutputEncoding = [Console]::OutputEncoding
     Write-Host '[1/5] 检查本地 Python 环境...' -ForegroundColor Cyan
     if (-not (Test-Path -LiteralPath $python -PathType Leaf)) {
-        throw '缺少 backend\.venv\Scripts\python.exe，请先按 backend\README.md 安装开发环境；脚本不会自动下载依赖。'
+        throw '缺少 backend\.venv\Scripts\python.exe，请先按 docs\runbook.md 安装开发环境；脚本不会自动下载依赖。'
     }
     if (-not (Test-Path -LiteralPath $entry -PathType Leaf)) {
         throw '缺少问答启动入口，请确认 backend\scripts 下的项目文件完整。'
@@ -85,7 +88,7 @@ print('Python ' + sys.version.split()[0] + '：开发依赖检查通过')
 '@
     & $python -X utf8 -c $probe
     if ($LASTEXITCODE -ne 0) {
-        throw '环境检查失败，请按 backend\README.md 安装或修复开发依赖。'
+        throw '环境检查失败，请按 docs\runbook.md 安装或修复开发依赖。'
     }
 
     Write-Host '[2/5] 检查模型模式与配置...' -ForegroundColor Cyan
@@ -104,6 +107,17 @@ print('Python ' + sys.version.split()[0] + '：开发依赖检查通过')
     }
     Write-Host '[3/5] 启动依赖服务...' -ForegroundColor Cyan
     if ($Mode -eq 'Real') {
+        if ($NoMinerU) {
+            Write-Host '[MinerU] 已跳过自动启动；不修改已有文档的解析方案。' -ForegroundColor Yellow
+        }
+        elseif (Test-Path -LiteralPath (Join-Path $MinerURoot 'venv\Scripts\mineru-kit.exe') -PathType Leaf) {
+            Write-Host '[依赖] 检查并启动D盘MinerU服务（不下载模型）...' -ForegroundColor Cyan
+            & (Join-Path $PSScriptRoot 'start-mineru.ps1') -Root $MinerURoot
+            Write-Host '[依赖] MinerU已就绪，继续检查数据库和模型。'
+        }
+        else {
+            Write-Host "[MinerU] 未找到 $MinerURoot 下的独立环境，未自动安装；选择MinerU解析前请按运行手册准备。" -ForegroundColor Yellow
+        }
         $depsArgs = @()
         if ($PullMissing) { $depsArgs += '--pull-missing' }
         & $python -X utf8 -u $deps $depsArgs

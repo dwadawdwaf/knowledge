@@ -24,7 +24,7 @@ import time
 BACKEND = pathlib.Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(BACKEND))
 
-from scripts import local_db  # noqa: E402
+from scripts import local_db
 
 # 只用 CREATE_NO_WINDOW：带 DETACHED_PROCESS 时 PostgreSQL 的每个 backend 都会自己开控制台，
 # 导数据时每连一次闪一个窗。隐藏控制台会被子进程继承，才是安静的做法。

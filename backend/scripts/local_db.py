@@ -61,7 +61,7 @@ def prepare_embedded_env(directory: pathlib.Path) -> None:
 
     class _TempFile(ModuleType):
         @staticmethod
-        def TemporaryFile(*args, **kwargs):  # noqa: ANN002, ANN003 - 透传给 tempfile
+        def TemporaryFile(*args, **kwargs):  # 透传给 tempfile。
             kwargs.setdefault("encoding", "utf-8")
             kwargs.setdefault("errors", "replace")
             return tempfile.TemporaryFile(*args, **kwargs)
