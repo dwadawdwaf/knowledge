@@ -25,6 +25,7 @@ SCRIPTS = (
     "evaluate_local",
     "workbench",
     "browser_smoke",
+    "retrieval_baseline",
 )
 
 
