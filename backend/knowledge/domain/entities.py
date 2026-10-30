@@ -4,7 +4,9 @@ from __future__ import annotations
 
 import enum
 from dataclasses import dataclass, field
-from typing import Any
+from typing import Any, Literal
+
+ParserProfile = Literal["legacy-v1", "deepdoc-v0.22.0-v1", "deepdoc-v0.22.0-v2", "mineru-api4.1-v1"]
 
 
 class Lifecycle(str, enum.Enum):

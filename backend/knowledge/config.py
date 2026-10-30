@@ -3,9 +3,10 @@
 from __future__ import annotations
 
 from functools import lru_cache
-from typing import Literal
 
 from pydantic_settings import BaseSettings, SettingsConfigDict
+
+from knowledge.domain.entities import ParserProfile
 
 
 class Settings(BaseSettings):
@@ -45,7 +46,10 @@ class Settings(BaseSettings):
     # 表格：单个文件最多读取的行数（超出显式告警，不静默截断），以及每块行数。
     xlsx_max_rows: int = 5000
     xlsx_rows_per_block: int = 40
-    document_parser_profile: Literal["legacy-v1", "deepdoc-v0.22.0-v1"] = "legacy-v1"
+    document_parser_profile: ParserProfile = "legacy-v1"
+    mineru_url: str = "http://127.0.0.1:8003"
+    mineru_token: str | None = None
+    mineru_timeout_seconds: float = 330.0
     deepdoc_url: str = "http://127.0.0.1:9381"
     deepdoc_token: str | None = None
     deepdoc_timeout_seconds: float = 330.0

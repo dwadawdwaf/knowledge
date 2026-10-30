@@ -111,6 +111,18 @@ _JOB_MESSAGES = {
     "UNKNOWN_KIND": "任务类型不受支持",
 }
 
+# 仅保留受控操作提示，不透传解析器、SDK或历史数据库中的任意异常正文。
+_PARSE_MESSAGES = frozenset(
+    {
+        "MinerU服务未就绪，请先启动本机解析服务",
+        "MinerU接口不匹配，需要4.1文件解析服务",
+        "DeepDoc未配置访问令牌，请使用 start-deepdoc.ps1 -LaunchWorkbench 启动",
+        "DeepDoc访问令牌不匹配，请从启动DeepDoc的同一终端启动项目",
+        "DeepDoc服务版本不匹配，请更新解析容器",
+        "DeepDoc服务未就绪，请先启动本机解析服务",
+    }
+)
+
 
 def public_job_error(error: dict | None) -> dict | None:
     """仅返回白名单中的固定说明，历史持久化错误也需再次脱敏。"""
@@ -121,6 +133,10 @@ def public_job_error(error: dict | None) -> dict | None:
         code = "INTERNAL_ERROR"
     return {
         "code": code,
-        "message": _JOB_MESSAGES[code],
+        "message": error["message"]
+        if code == "PARSE_FAILED"
+        and isinstance(error.get("message"), str)
+        and error.get("message") in _PARSE_MESSAGES
+        else _JOB_MESSAGES[code],
         "retryable": error.get("retryable") is True,
     }

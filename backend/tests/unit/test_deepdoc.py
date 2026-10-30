@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import urllib.error
 from io import BytesIO
 from unittest.mock import patch
 
@@ -26,6 +27,24 @@ def payload() -> dict:
 
 def parser() -> DeepDocParser:
     return DeepDocParser(Settings(deepdoc_url="http://127.0.0.1:9381", deepdoc_token="test"))
+
+
+@pytest.mark.parametrize("status,expected", [(401, "令牌不匹配"), (409, "版本不匹配")])
+def test_deepdoc_configuration_errors_are_actionable_and_sanitized(status, expected):
+    failure = urllib.error.HTTPError("http://127.0.0.1/private", status, "SECRET", {}, None)
+    with (
+        patch("knowledge.adapters.deepdoc._open", side_effect=failure),
+        pytest.raises(ParseFailed, match=expected) as error,
+    ):
+        parser().parse(b"synthetic", APPLICATION_PDF, "private.pdf")
+    assert "SECRET" not in str(error.value) and "private" not in str(error.value)
+
+
+def test_deepdoc_missing_token_has_an_explicit_hint():
+    with pytest.raises(ParseFailed, match="未配置访问令牌"):
+        DeepDocParser(Settings(deepdoc_token=None)).parse(
+            b"synthetic", APPLICATION_PDF, "input.pdf"
+        )
 
 
 def test_deepdoc_preserves_location_and_warnings():
@@ -129,3 +148,31 @@ def test_image_signature_not_extension(data, media):
 def test_parser_requires_loopback_origin(url):
     with pytest.raises(ValueError):
         DeepDocParser(Settings(deepdoc_url=url))
+
+
+def test_native_profile_has_no_fabricated_pdf_geometry_and_v1_stays_strict():
+    data = {
+        "profile": "deepdoc-v0.22.0-v2",
+        "warnings": [],
+        "blocks": [
+            {
+                "text": "合成正文",
+                "page": None,
+                "positions": [],
+                "warnings": ["deepdoc_native_location_unavailable"],
+            }
+        ],
+    }
+    mime = "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+    with patch("knowledge.adapters.deepdoc._open", return_value=BytesIO(json.dumps(data).encode())):
+        result = DeepDocParser(Settings(deepdoc_token="synthetic"), profile=data["profile"]).parse(
+            b"synthetic", mime, "x.docx"
+        )
+    assert result[0].locator.type == "docx" and result[0].locator.page is None
+    assert result[0].locator.positions == ()
+    data["profile"] = "deepdoc-v0.22.0-v1"
+    with (
+        patch("knowledge.adapters.deepdoc._open", return_value=BytesIO(json.dumps(data).encode())),
+        pytest.raises(ParseFailed),
+    ):
+        parser().parse(b"synthetic", "application/pdf", "x.pdf")

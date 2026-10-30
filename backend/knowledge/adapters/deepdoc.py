@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import math
+import urllib.error
 import urllib.request
 from typing import Literal
 from urllib.parse import urlsplit
@@ -14,20 +15,36 @@ from knowledge.domain.entities import Locator, ParsedBlock
 from knowledge.domain.errors import ParseFailed, PasswordProtected
 
 PROFILE = "deepdoc-v0.22.0-v1"
+NATIVE_PROFILE = "deepdoc-v0.22.0-v2"
+NATIVE_MEDIA_TYPES = {
+    "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+    "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+    "application/vnd.openxmlformats-officedocument.presentationml.presentation",
+    "text/csv",
+}
 WARNING_CODES = {
     "deepdoc_ocr_requires_review",
     "deepdoc_table_linearized",
     "deepdoc_figures_not_described",
     "deepdoc_empty_page",
+    "deepdoc_native_location_unavailable",
+    "deepdoc_native_content_requires_review",
+    "deepdoc_layout_unavailable",
 }
 MEDIA_TYPES = {"application/pdf", "image/png", "image/jpeg", "image/tiff"}
+NATIVE_LOCATOR_TYPES = {
+    "application/vnd.openxmlformats-officedocument.wordprocessingml.document": "docx",
+    "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet": "xlsx",
+    "application/vnd.openxmlformats-officedocument.presentationml.presentation": "pptx",
+    "text/csv": "csv",
+}
 
 
 class _Block(BaseModel):
     model_config = ConfigDict(extra="forbid")
     text: StrictStr = Field(min_length=1)
-    page: StrictInt = Field(ge=1)
-    positions: list[tuple[StrictInt, float, float, float, float]] = Field(min_length=1)
+    page: StrictInt | None = Field(ge=1)
+    positions: list[tuple[StrictInt, float, float, float, float]]
     # 兼容旧边车：早期版本没有块级字段，此时回退到文档级并集。
     warnings: list[str] | None = None
 
@@ -41,14 +58,16 @@ class _Block(BaseModel):
                 or not 0 <= top < bottom
             ):
                 raise ValueError("无效位置")
-        if self.page != self.positions[0][0] or not self.text.strip():
+        if (self.positions and self.page != self.positions[0][0]) or not self.text.strip():
             raise ValueError("无效块")
+        if not self.positions and self.page is not None:
+            raise ValueError("位置不匹配")
         return self
 
 
 class _Result(BaseModel):
     model_config = ConfigDict(extra="forbid")
-    profile: Literal["deepdoc-v0.22.0-v1"]
+    profile: Literal["deepdoc-v0.22.0-v1", "deepdoc-v0.22.0-v2"]
     blocks: list[_Block] = Field(min_length=1)
     warnings: list[StrictStr]
 
@@ -67,7 +86,8 @@ def _open(request: urllib.request.Request, *, timeout: float):
 class DeepDocParser:
     name = "deepdoc"
 
-    def __init__(self, settings: Settings) -> None:
+    def __init__(self, settings: Settings, profile: str = PROFILE) -> None:
+        self.profile = profile
         parts = urlsplit(settings.deepdoc_url)
         if (
             parts.scheme != "http"
@@ -85,10 +105,16 @@ class DeepDocParser:
         self.output_limit = settings.parse_output_bytes
 
     def supports(self, media_type: str, filename: str) -> bool:
-        return media_type in MEDIA_TYPES
+        return media_type in MEDIA_TYPES or (
+            self.profile == NATIVE_PROFILE and media_type in NATIVE_MEDIA_TYPES
+        )
 
     def parse(self, data: bytes, media_type: str, filename: str) -> list[ParsedBlock]:
-        if not self.token or not self.supports(media_type, filename):
+        if not self.token:
+            raise ParseFailed(
+                "DeepDoc未配置访问令牌，请使用 start-deepdoc.ps1 -LaunchWorkbench 启动"
+            )
+        if not self.supports(media_type, filename):
             raise ParseFailed("DeepDoc 配置不完整或文件类型不支持")
         request = urllib.request.Request(
             self.url,
@@ -97,7 +123,7 @@ class DeepDocParser:
             headers={
                 "Content-Type": media_type,
                 "Authorization": f"Bearer {self.token}",
-                "X-Parser-Profile": PROFILE,
+                "X-Parser-Profile": self.profile,
             },
         )
         try:
@@ -108,17 +134,36 @@ class DeepDocParser:
                 if raw == b'{"error":"PASSWORD_PROTECTED"}':
                     raise PasswordProtected("文件已加密")
                 result = _Result.model_validate_json(raw)
-                if not set(result.warnings) <= WARNING_CODES:
+                if result.profile != self.profile or not set(result.warnings) <= WARNING_CODES:
                     raise ValueError("未知警告码")
+                for block in result.blocks:
+                    if not set(block.warnings or ()) <= WARNING_CODES:
+                        raise ValueError("未知块警告")
+                    if (
+                        media_type in MEDIA_TYPES or self.profile == PROFILE
+                    ) and not block.positions:
+                        raise ValueError("缺少版面位置")
         except PasswordProtected:
             raise
+        except urllib.error.HTTPError as exc:
+            message = {
+                401: "DeepDoc访问令牌不匹配，请从启动DeepDoc的同一终端启动项目",
+                409: "DeepDoc服务版本不匹配，请更新解析容器",
+            }.get(exc.code, "DeepDoc 不可用或解析结果无效")
+            raise ParseFailed(message) from exc
+        except urllib.error.URLError as exc:
+            raise ParseFailed("DeepDoc服务未就绪，请先启动本机解析服务") from exc
         except Exception as exc:
             raise ParseFailed("DeepDoc 不可用或解析结果无效") from exc
         return [
             ParsedBlock(
                 text=block.text,
                 locator=Locator(
-                    type="pdf" if media_type == "application/pdf" else "image",
+                    type="pdf"
+                    if media_type == "application/pdf"
+                    else "image"
+                    if media_type in MEDIA_TYPES
+                    else NATIVE_LOCATOR_TYPES[media_type],
                     page=block.page,
                     block=index,
                     char_start=0,

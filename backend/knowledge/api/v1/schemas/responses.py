@@ -35,6 +35,7 @@ class DocumentOut(BaseModel):
     pending_build_id: uuid.UUID | None = None
     version_no: int | None = None
     pending_build_state: str | None = None
+    parser_profile: str | None = None
     job: JobOut | None = None
 
 
@@ -44,6 +45,7 @@ class UploadAck(BaseModel):
     build_id: uuid.UUID
     job_id: uuid.UUID
     deduplicated: bool = False
+    parser_profile: str = "legacy-v1"
 
 
 class ReindexAck(BaseModel):

@@ -1,6 +1,6 @@
 services:
   deepdoc:
-    image: ks-deepdoc-local:deepdoc-v0.22.0-v1
+    image: ${DEEPDOC_IMAGE:-ks-deepdoc-local:deepdoc-v0.22.0-v2}
     build:
       context: ../..
       dockerfile: deploy/deepdoc/Dockerfile
@@ -19,7 +19,7 @@ services:
     restart: "no"
   gateway:
     # 复用同一镜像已带的 Nginx；不启动 Python，也不加载解析模型。
-    image: ks-deepdoc-local:deepdoc-v0.22.0-v1
+    image: ${DEEPDOC_IMAGE:-ks-deepdoc-local:deepdoc-v0.22.0-v2}
     pull_policy: never
     entrypoint: ["nginx", "-c", "/opt/ks/gateway.conf", "-g", "daemon off;"]
     user: "65534:65534"

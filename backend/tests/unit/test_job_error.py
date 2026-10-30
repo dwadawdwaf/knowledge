@@ -26,3 +26,12 @@ def test_exception_logging_does_not_include_exception_payload():
     output = JsonFormatter().format(record)
     assert "secret" not in output
     assert "RuntimeError" in output
+
+
+@pytest.mark.parametrize("message", ["secret path", {"secret": True}, ["secret"], None])
+def test_parse_error_only_preserves_explicit_safe_hints(message):
+    error = public_job_error({"code": "PARSE_FAILED", "message": message})
+    assert error["message"] == "文件解析失败"
+    hint = "MinerU服务未就绪，请先启动本机解析服务"
+    safe = {"code": "PARSE_FAILED", "message": hint, "retryable": False}
+    assert public_job_error(public_job_error(safe)) == safe

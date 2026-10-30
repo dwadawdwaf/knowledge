@@ -161,7 +161,7 @@ def _handle_failure(
     exc: DomainError,
 ) -> None:
     session.rollback()
-    error = public_job_error({"code": exc.code, "retryable": exc.retryable})
+    error = public_job_error({"code": exc.code, "message": exc.message, "retryable": exc.retryable})
     assert error is not None
     retryable = exc.retryable and exc.code not in NON_RETRYABLE
 

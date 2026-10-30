@@ -15,7 +15,7 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 from starlette.concurrency import run_in_threadpool
 
 from deepdoc_sidecar.runtime import DeepDocRuntime
-from knowledge.adapters.deepdoc import MEDIA_TYPES, PROFILE
+from knowledge.adapters.deepdoc import MEDIA_TYPES, NATIVE_MEDIA_TYPES, NATIVE_PROFILE, PROFILE
 from knowledge.adapters.parse_process import BoundedParser
 from knowledge.config import Settings
 from knowledge.domain.errors import ParseFailed, PasswordProtected
@@ -44,6 +44,10 @@ def create_app(settings: SidecarSettings | None = None) -> FastAPI:
         parse_output_bytes=resolved.output_bytes,
     )
     parser = BoundedParser(DeepDocRuntime(resolved.max_pages, resolved.max_image_pixels), limits)
+    native_parser = BoundedParser(
+        DeepDocRuntime(resolved.max_pages, resolved.max_image_pixels, recover_image_text=True),
+        limits,
+    )
     app = FastAPI(docs_url=None, redoc_url=None, openapi_url=None)
     slots = asyncio.Semaphore(1)
 
@@ -58,10 +62,13 @@ def create_app(settings: SidecarSettings | None = None) -> FastAPI:
             request.headers.get("authorization", "").encode(), ("Bearer " + resolved.token).encode()
         ):
             return JSONResponse({"error": "UNAUTHORIZED"}, status_code=401)
-        if request.headers.get("x-parser-profile") != PROFILE:
+        profile = request.headers.get("x-parser-profile")
+        if profile not in {PROFILE, NATIVE_PROFILE}:
             return JSONResponse({"error": "PROFILE_MISMATCH"}, status_code=409)
         media = request.headers.get("content-type", "")
-        if media not in MEDIA_TYPES:
+        if media not in MEDIA_TYPES and not (
+            profile == NATIVE_PROFILE and media in NATIVE_MEDIA_TYPES
+        ):
             return JSONResponse({"error": "UNSUPPORTED_FORMAT"}, status_code=415)
         if slots.locked():
             return JSONResponse({"error": "BUSY"}, status_code=503)
@@ -77,17 +84,18 @@ def create_app(settings: SidecarSettings | None = None) -> FastAPI:
                         if len(data) > resolved.input_bytes:
                             return JSONResponse({"error": "FILE_TOO_LARGE"}, status_code=413)
                 # 不调用上游服务入口；仅在可终止子进程中使用解析器。
-                blocks = await run_in_threadpool(parser.parse, bytes(data), media, "input")
+                selected = native_parser if profile == NATIVE_PROFILE else parser
+                blocks = await run_in_threadpool(selected.parse, bytes(data), media, "input")
                 if not blocks:
                     raise ParseFailed("未提取到正文")
                 return JSONResponse(
                     {
-                        "profile": PROFILE,
+                        "profile": profile,
                         "blocks": [
                             {
                                 "text": b.text,
                                 "page": b.locator.page,
-                                "positions": b.locator.to_dict()["positions"],
+                                "positions": b.locator.to_dict().get("positions", []),
                                 # 按块回传：只给并集会让纯文本块也带上表格/OCR 标签。
                                 "warnings": sorted(b.warnings),
                             }

@@ -5,17 +5,19 @@ from __future__ import annotations
 import hashlib
 import uuid
 from dataclasses import dataclass
+from typing import get_args
 
 from sqlalchemy.orm import Session
 
 from knowledge.adapters.preview import docx_preview, sheet_preview, to_png
 from knowledge.adapters.storage import new_object_key
 from knowledge.config import Settings
-from knowledge.domain.entities import Actor, BuildState, JobKind, Lifecycle
+from knowledge.domain.entities import Actor, BuildState, JobKind, Lifecycle, ParserProfile
 from knowledge.domain.errors import (
     FileTooLarge,
     NotFound,
     UnsupportedFormat,
+    ValidationFailed,
     VersionConflict,
     public_job_error,
 )
@@ -35,6 +37,7 @@ class UploadResult:
     build_id: uuid.UUID
     job_id: uuid.UUID
     deduplicated: bool
+    parser_profile: str = "legacy-v1"
 
 
 @dataclass(frozen=True)
@@ -90,6 +93,7 @@ def _new_build(
     settings: Settings,
     embedder_model: str,
     embedder_dim: int,
+    parser_profile: str | None = None,
 ) -> IndexBuild:
     build = IndexBuild(
         version_id=version_id,
@@ -97,7 +101,7 @@ def _new_build(
         chunk_config={
             "max_chars": settings.chunk_max_chars,
             "overlap_chars": settings.chunk_overlap_chars,
-            "parser_profile": settings.document_parser_profile,
+            "parser_profile": parser_profile or settings.document_parser_profile,
         },
         embedding_model=embedder_model,
         embedding_dim=embedder_dim,
@@ -108,7 +112,7 @@ def _new_build(
     return build
 
 
-def _validate(data: bytes, settings: Settings, registry, filename: str):
+def _validate(data: bytes, settings: Settings, registry, filename: str, profile: str | None = None):
     from knowledge.adapters.parser import detect_media_type
 
     if len(data) == 0:
@@ -117,8 +121,21 @@ def _validate(data: bytes, settings: Settings, registry, filename: str):
         raise FileTooLarge("文件超过大小上限")
 
     media_type = detect_media_type(data, filename)
-    registry.for_file(media_type, filename)  # 不支持时抛 UnsupportedFormat
+    selected = profile or settings.document_parser_profile
+    if selected not in get_args(ParserProfile):
+        raise ValidationFailed("未知解析方案")
+    registry.for_file(media_type, filename, profile=selected)
     return media_type
+
+
+def _existing_profile(session: Session, document: Document, *, pending_first: bool = False) -> str:
+    build_id = (
+        (document.pending_build_id or document.active_build_id)
+        if pending_first
+        else (document.active_build_id or document.pending_build_id)
+    )
+    build = session.get(IndexBuild, build_id) if build_id else None
+    return (build.chunk_config or {}).get("parser_profile", "legacy-v1") if build else "legacy-v1"
 
 
 def upload(
@@ -133,12 +150,13 @@ def upload(
     data: bytes,
     embedder_model: str,
     embedder_dim: int,
+    parser_profile: str | None = None,
 ) -> UploadResult:
     kb = kb_repo.get_owned(session, actor, kb_id)
     if kb.status != Lifecycle.ACTIVE:
         raise NotFound("知识库不存在")
 
-    media_type = _validate(data, settings, registry, filename)
+    media_type = _validate(data, settings, registry, filename, parser_profile)
     sha256 = hashlib.sha256(data).hexdigest()
     title = filename.rsplit("/", 1)[-1][:300]
 
@@ -153,6 +171,7 @@ def upload(
                 build_id=document.active_build_id or document.pending_build_id or uuid.uuid4(),
                 job_id=latest.id if latest else uuid.uuid4(),
                 deduplicated=True,
+                parser_profile=_existing_profile(session, document),
             )
 
     object_key = new_object_key(media_type)
@@ -167,7 +186,7 @@ def upload(
         media_type=media_type,
         byte_size=len(data),
     )
-    build = _new_build(session, version.id, settings, embedder_model, embedder_dim)
+    build = _new_build(session, version.id, settings, embedder_model, embedder_dim, parser_profile)
     job = job_repo.create(
         session,
         JobKind.INGEST,
@@ -187,6 +206,7 @@ def upload(
         build_id=build.id,
         job_id=job.id,
         deduplicated=False,
+        parser_profile=build.chunk_config["parser_profile"],
     )
 
 
@@ -203,12 +223,13 @@ def add_version(
     expected_generation: int | None,
     embedder_model: str,
     embedder_dim: int,
+    parser_profile: str | None = None,
 ) -> UploadResult:
     document = doc_repo.lock_owned(session, actor, document_id)
     if expected_generation is not None and expected_generation != document.generation:
         raise VersionConflict("文档已被修改，请刷新后重试")
 
-    media_type = _validate(data, settings, registry, filename)
+    media_type = _validate(data, settings, registry, filename, parser_profile)
     sha256 = hashlib.sha256(data).hexdigest()
 
     existing = doc_repo.find_version_by_sha(session, document.kb_id, sha256)
@@ -220,6 +241,7 @@ def add_version(
             build_id=document.pending_build_id or document.active_build_id or uuid.uuid4(),
             job_id=latest.id if latest else uuid.uuid4(),
             deduplicated=True,
+            parser_profile=_existing_profile(session, document, pending_first=True),
         )
 
     object_key = new_object_key(media_type)
@@ -233,7 +255,7 @@ def add_version(
         media_type=media_type,
         byte_size=len(data),
     )
-    build = _new_build(session, version.id, settings, embedder_model, embedder_dim)
+    build = _new_build(session, version.id, settings, embedder_model, embedder_dim, parser_profile)
     job = job_repo.create(
         session,
         JobKind.INGEST,
@@ -253,6 +275,7 @@ def add_version(
         build_id=build.id,
         job_id=job.id,
         deduplicated=False,
+        parser_profile=build.chunk_config["parser_profile"],
     )
 
 
@@ -267,9 +290,8 @@ def detail(session: Session, actor: Actor, document_id: uuid.UUID) -> dict:
         session.get(IndexBuild, document.pending_build_id) if document.pending_build_id else None
     )
     latest = job_repo.latest_for_document(session, document.id)
-    active = (
-        session.get(IndexBuild, document.active_build_id) if document.active_build_id else None
-    )
+    active = session.get(IndexBuild, document.active_build_id) if document.active_build_id else None
+    visible_build = active or pending
 
     return {
         "id": str(document.id),
@@ -284,10 +306,12 @@ def detail(session: Session, actor: Actor, document_id: uuid.UUID) -> dict:
         "pending_build_id": str(document.pending_build_id) if document.pending_build_id else None,
         "version_no": version.version_no if version else None,
         "pending_build_state": pending.state.value if pending else None,
-        # 阅读视图需要原始文件的类型与体积；解析策略按已发布构建记录，未发布时为空。
+        # 已发布方案优先；首次处理尚未发布时仍显示冻结方案，避免失败文件隐藏选择。
         "media_type": version.media_type if version else None,
         "byte_size": version.byte_size if version else None,
-        "parser_profile": (active.chunk_config or {}).get("parser_profile") if active else None,
+        "parser_profile": (visible_build.chunk_config or {}).get("parser_profile")
+        if visible_build
+        else None,
         "job": _job_dict(latest) if latest else None,
     }
 
@@ -295,9 +319,7 @@ def detail(session: Session, actor: Actor, document_id: uuid.UUID) -> dict:
 INLINE_MEDIA_PREFIXES = ("application/pdf", "image/")
 
 
-def source(
-    session: Session, actor: Actor, document_id: uuid.UUID, storage: ObjectStorage
-) -> dict:
+def source(session: Session, actor: Actor, document_id: uuid.UUID, storage: ObjectStorage) -> dict:
     """取回当前版本的原始文件，供浏览器直接预览。
 
     只读已发布版本的字节；所有权与状态由 `get_owned` 保证（他人与已删除一律 404）。
@@ -368,9 +390,7 @@ def _current_version(session: Session, actor: Actor, document_id: uuid.UUID):
     return doc_repo.get_version(session, document.current_version_id)
 
 
-def chunks(
-    session: Session, actor: Actor, document_id: uuid.UUID, limit: int = 200
-) -> dict:
+def chunks(session: Session, actor: Actor, document_id: uuid.UUID, limit: int = 200) -> dict:
     """当前已发布 build 的分块视图；未发布时返回空列表而不是报错。"""
     document = doc_repo.get_owned(session, actor, document_id)
     version = (

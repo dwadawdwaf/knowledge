@@ -4,8 +4,9 @@ from __future__ import annotations
 
 import urllib.parse
 import uuid
+from typing import Annotated
 
-from fastapi import APIRouter, Depends, File, Query, Request, Response, UploadFile
+from fastapi import APIRouter, Depends, File, Form, Query, Request, Response, UploadFile
 from sqlalchemy.orm import Session
 
 from knowledge.api.deps import (
@@ -21,7 +22,7 @@ from knowledge.api.v1.schemas.common import Envelope, envelope
 from knowledge.api.v1.schemas.requests import ReindexRequest
 from knowledge.api.v1.schemas.responses import ReindexAck, UploadAck
 from knowledge.config import Settings
-from knowledge.domain.entities import Actor
+from knowledge.domain.entities import Actor, ParserProfile
 from knowledge.domain.errors import FileTooLarge, ValidationFailed
 from knowledge.domain.ports import Embedder, ObjectStorage
 from knowledge.logging import get_logger
@@ -130,6 +131,7 @@ async def upload(
     request: Request,
     response: Response,
     file: UploadFile = File(...),
+    parser_profile: Annotated[ParserProfile | None, Form()] = None,
     session: Session = Depends(get_session),
     actor: Actor = Depends(get_actor),
     settings: Settings = Depends(get_settings_dep),
@@ -149,6 +151,7 @@ async def upload(
         data=data,
         embedder_model=embedder.model,
         embedder_dim=embedder.dimension,
+        parser_profile=parser_profile,
     )
     if result.deduplicated:
         response.status_code = 200
@@ -159,6 +162,7 @@ async def upload(
             build_id=result.build_id,
             job_id=result.job_id,
             deduplicated=result.deduplicated,
+            parser_profile=result.parser_profile,
         ).model_dump(mode="json"),
         request_id(request),
     )
@@ -234,6 +238,7 @@ async def add_version(
     request: Request,
     response: Response,
     file: UploadFile = File(...),
+    parser_profile: Annotated[ParserProfile | None, Form()] = None,
     expected_generation: int | None = None,
     session: Session = Depends(get_session),
     actor: Actor = Depends(get_actor),
@@ -255,6 +260,7 @@ async def add_version(
         expected_generation=expected_generation,
         embedder_model=embedder.model,
         embedder_dim=embedder.dimension,
+        parser_profile=parser_profile,
     )
     if result.deduplicated:
         response.status_code = 200
@@ -265,6 +271,7 @@ async def add_version(
             build_id=result.build_id,
             job_id=result.job_id,
             deduplicated=result.deduplicated,
+            parser_profile=result.parser_profile,
         ).model_dump(mode="json"),
         request_id(request),
     )

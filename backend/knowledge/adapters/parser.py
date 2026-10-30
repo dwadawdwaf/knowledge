@@ -44,7 +44,6 @@ def decode_table_text(data: bytes) -> str | None:
     return None
 
 
-
 def detect_media_type(data: bytes, filename: str) -> str:
     """按内容签名判断类型，扩展名只作兜底。"""
     if data.startswith(b"%PDF"):
@@ -257,9 +256,7 @@ class XlsxParser:
         import openpyxl
 
         try:
-            workbook = openpyxl.load_workbook(
-                io.BytesIO(data), read_only=True, data_only=True
-            )
+            workbook = openpyxl.load_workbook(io.BytesIO(data), read_only=True, data_only=True)
         except Exception as exc:
             raise ParseFailed("表格无法读取或已加密") from exc
 
@@ -285,9 +282,7 @@ class XlsxParser:
                         batch_start = row_number
                     batch.append("\t".join(cells).rstrip())
                     if len(batch) >= self.rows_per_block:
-                        blocks.append(
-                            _sheet_block(title, batch_start, row_number, batch)
-                        )
+                        blocks.append(_sheet_block(title, batch_start, row_number, batch))
                         batch = []
                 if batch:
                     blocks.append(_sheet_block(title, batch_start, row_number, batch))
@@ -450,7 +445,6 @@ class PptxParser:
         return blocks
 
 
-
 def _sheet_block(sheet: str, start: int, end: int, rows: list[str]) -> ParsedBlock:
     header = f"工作表《{sheet}》第{start}-{end}行"
     text = header + "\n" + "\n".join(rows)
@@ -469,18 +463,44 @@ def _sheet_block(sheet: str, start: int, end: int, rows: list[str]) -> ParsedBlo
 
 
 class ParserRegistry:
-    def __init__(self, parsers: list, *, deepdoc: Parser | None = None,
-                 profile: str = "legacy-v1") -> None:
+    def __init__(
+        self,
+        parsers: list,
+        *,
+        deepdoc: Parser | None = None,
+        profile: str = "legacy-v1",
+        deepdoc_native: Parser | None = None,
+        mineru: Parser | None = None,
+        direct_text: Parser | None = None,
+    ) -> None:
         self._parsers = parsers
         self._deepdoc = deepdoc
         self.profile = profile
+        self._deepdoc_native = deepdoc_native
+        self._mineru = mineru
+        self._direct_text = direct_text or DirectTextParser()
 
     def for_file(self, media_type: str, filename: str, *, profile: str | None = None):
         selected = profile or self.profile
-        if selected not in {"legacy-v1", "deepdoc-v0.22.0-v1"}:
+        if selected not in {
+            "legacy-v1",
+            "deepdoc-v0.22.0-v1",
+            "deepdoc-v0.22.0-v2",
+            "mineru-api4.1-v1",
+        }:
             raise ParseFailed("处理策略版本不受支持")
-        if (selected == "deepdoc-v0.22.0-v1" and self._deepdoc is not None
-                and self._deepdoc.supports(media_type, filename)):
+        if selected in {"deepdoc-v0.22.0-v2", "mineru-api4.1-v1"}:
+            if media_type in {TEXT_PLAIN, TEXT_MARKDOWN}:
+                return self._direct_text
+            parser = self._deepdoc_native if selected.startswith("deepdoc") else self._mineru
+            if parser is None or not parser.supports(media_type, filename):
+                raise UnsupportedFormat("所选解析器未配置或不支持该文件")
+            return parser
+        if (
+            selected == "deepdoc-v0.22.0-v1"
+            and self._deepdoc is not None
+            and self._deepdoc.supports(media_type, filename)
+        ):
             return self._deepdoc
         for parser in self._parsers:
             if parser.supports(media_type, filename):
@@ -488,8 +508,19 @@ class ParserRegistry:
         raise UnsupportedFormat(f"暂不支持该格式：{media_type}")
 
 
+class DirectTextParser(TextParser):
+    name = "direct-text"
+
+    def parse(self, data: bytes, media_type: str, filename: str) -> list[ParsedBlock]:
+        return [
+            ParsedBlock(b.text, b.locator, (*b.warnings, "parser_direct_text"))
+            for b in super().parse(data, media_type, filename)
+        ]
+
+
 def build_parser_registry(settings: Settings | None = None) -> ParserRegistry:
     from knowledge.adapters.deepdoc import DeepDocParser
+    from knowledge.adapters.mineru import MinerUParser
     from knowledge.adapters.parse_process import BoundedParser
 
     resolved = settings or Settings.model_construct()
@@ -504,5 +535,9 @@ def build_parser_registry(settings: Settings | None = None) -> ParserRegistry:
     # 远端调用自身有超时；服务端负责可终止的重型解析，不受本地 512MiB 上限误杀。
     return ParserRegistry(
         [BoundedParser(parser, resolved) for parser in parsers],
-        deepdoc=DeepDocParser(resolved), profile=resolved.document_parser_profile,
+        deepdoc=DeepDocParser(resolved),
+        profile=resolved.document_parser_profile,
+        deepdoc_native=DeepDocParser(resolved, profile="deepdoc-v0.22.0-v2"),
+        mineru=MinerUParser(resolved),
+        direct_text=BoundedParser(DirectTextParser(), resolved),
     )

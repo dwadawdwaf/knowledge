@@ -9,7 +9,7 @@ import os
 from dataclasses import replace
 from html.parser import HTMLParser
 
-from knowledge.adapters.deepdoc import PROFILE
+from knowledge.adapters.deepdoc import NATIVE_LOCATOR_TYPES, NATIVE_MEDIA_TYPES, PROFILE
 from knowledge.domain.entities import Locator, ParsedBlock
 from knowledge.domain.errors import ParseFailed, PasswordProtected
 
@@ -65,7 +65,10 @@ def _merge_short_blocks(blocks: list[ParsedBlock], threshold: int = 16) -> list[
             else:
                 merged.append(pending)
                 pending = None
-        if len(current.text.strip()) < threshold and "deepdoc_table_linearized" not in current.warnings:
+        if (
+            len(current.text.strip()) < threshold
+            and "deepdoc_table_linearized" not in current.warnings
+        ):
             pending = current
             continue
         merged.append(current)
@@ -93,9 +96,7 @@ def normalize_boxes(boxes: list[dict], page_count: int) -> list[ParsedBlock]:
         if kind == "figure":
             if positions:
                 for position in positions:
-                    page_signals.setdefault(position[0], set()).add(
-                        "deepdoc_figures_not_described"
-                    )
+                    page_signals.setdefault(position[0], set()).add("deepdoc_figures_not_described")
             else:
                 unplaced.add("deepdoc_figures_not_described")
             continue
@@ -176,12 +177,22 @@ def normalize_boxes(boxes: list[dict], page_count: int) -> list[ParsedBlock]:
 class DeepDocRuntime:
     name = PROFILE
 
-    def __init__(self, max_pages: int = 50, max_image_pixels: int = 40_000_000) -> None:
+    def __init__(
+        self,
+        max_pages: int = 50,
+        max_image_pixels: int = 40_000_000,
+        *,
+        recover_image_text: bool = False,
+    ) -> None:
         self.max_pages = max_pages
         self.max_image_pixels = max_image_pixels
+        self.recover_image_text = recover_image_text
 
     def supports(self, media_type: str, filename: str) -> bool:
-        return media_type in {"application/pdf", "image/png", "image/jpeg", "image/tiff"}
+        return (
+            media_type
+            in {"application/pdf", "image/png", "image/jpeg", "image/tiff"} | NATIVE_MEDIA_TYPES
+        )
 
     def parse(self, data: bytes, media_type: str, filename: str) -> list[ParsedBlock]:
         # 上游调试日志可能含 OCR 文本；整个子进程中禁用并丢弃第三方标准输出。
@@ -194,6 +205,8 @@ class DeepDocRuntime:
             return self._parse(data, media_type)
 
     def _parse(self, data: bytes, media_type: str) -> list[ParsedBlock]:
+        if media_type in NATIVE_MEDIA_TYPES:
+            return self._native(data, media_type)
         from pypdf import PdfReader
 
         if media_type != "application/pdf":
@@ -223,4 +236,79 @@ class DeepDocRuntime:
 
         # 不使用 rag.app.naive 的图片描述、超链接递归和数据库绑定。
         boxes = RAGFlowPdfParser().parse_into_bboxes(data)
-        return normalize_boxes(boxes, page_count)
+        result = normalize_boxes(boxes, page_count)
+        if not result and media_type.startswith("image/") and self.recover_image_text:
+            return self._image_text(frames)
+        return result
+
+    def _image_text(self, frames: list) -> list[ParsedBlock]:
+        """图片版面全空时复用同一DeepDoc OCR；显式告警，不伪称恢复了表格结构。"""
+        import numpy as np
+        from deepdoc.vision import OCR
+
+        ocr = OCR()
+        boxes = []
+        for page, frame in enumerate(frames, 1):
+            lines = ocr(np.array(frame))
+            if not isinstance(lines, list):
+                raise ParseFailed("DeepDoc OCR结果无效")
+            for corners, (text, _score) in lines:
+                xs, ys = zip(*corners)
+                boxes.append(
+                    {
+                        "text": text,
+                        "positions": [
+                            [page, float(min(xs)), float(max(xs)), float(min(ys)), float(max(ys))]
+                        ],
+                    }
+                )
+        result = normalize_boxes(boxes, len(frames))
+        return [
+            ParsedBlock(b.text, b.locator, (*b.warnings, "deepdoc_layout_unavailable"))
+            for b in result
+        ]
+
+    def _native(self, data: bytes, media_type: str) -> list[ParsedBlock]:
+        """调用固定RAGFlow原生解析，不借用PDF模型伪造Office页码。"""
+        if media_type != "text/csv":
+            import zipfile
+
+            with zipfile.ZipFile(io.BytesIO(data)) as archive:
+                if (
+                    len(archive.infolist()) > 2048
+                    or sum(e.file_size for e in archive.infolist()) > 100 * 1024**2
+                ):
+                    raise ParseFailed("Office解压预算超限")
+        texts: list[str] = []
+        if NATIVE_LOCATOR_TYPES[media_type] == "docx":
+            from deepdoc.parser.docx_parser import RAGFlowDocxParser
+
+            sections, tables = RAGFlowDocxParser()(data)
+            texts = [section[0] for section in sections]
+            texts.extend("\n".join(table) for table in tables)
+        elif NATIVE_LOCATOR_TYPES[media_type] == "pptx":
+            from deepdoc.parser.ppt_parser import RAGFlowPptParser
+
+            texts = RAGFlowPptParser()(data, 0, 100000000)
+        else:
+            from deepdoc.parser.excel_parser import RAGFlowExcelParser
+
+            for html in RAGFlowExcelParser().html(data):
+                parser = _TableText()
+                parser.feed(html)
+                texts.append("".join(parser.parts).strip())
+        return [
+            ParsedBlock(
+                value,
+                Locator(
+                    type=NATIVE_LOCATOR_TYPES[media_type],
+                    char_start=0,
+                    char_end=len(value),
+                    block=index,
+                    precision="block",
+                ),
+                ("deepdoc_native_location_unavailable", "deepdoc_native_content_requires_review"),
+            )
+            for index, value in enumerate(texts)
+            if value.strip()
+        ]

@@ -21,7 +21,9 @@ def create(session: Session, kb_id: uuid.UUID, title: str) -> Document:
 
 def next_version_no(session: Session, document_id: uuid.UUID) -> int:
     current = session.scalar(
-        select(func.max(DocumentVersion.version_no)).where(DocumentVersion.document_id == document_id)
+        select(func.max(DocumentVersion.version_no)).where(
+            DocumentVersion.document_id == document_id
+        )
     )
     return int(current or 0) + 1
 
@@ -56,7 +58,8 @@ def get_owned(session: Session, actor: Actor, document_id: uuid.UUID) -> Documen
         .where(
             Document.id == document_id,
             KnowledgeBase.owner_id == actor.subject_id,
-            Document.status != Lifecycle.DELETED,
+            KnowledgeBase.status == Lifecycle.ACTIVE,
+            Document.status == Lifecycle.ACTIVE,
         )
     )
     document = session.scalar(stmt)
@@ -72,7 +75,8 @@ def lock_owned(session: Session, actor: Actor, document_id: uuid.UUID) -> Docume
         .where(
             Document.id == document_id,
             KnowledgeBase.owner_id == actor.subject_id,
-            Document.status != Lifecycle.DELETED,
+            KnowledgeBase.status == Lifecycle.ACTIVE,
+            Document.status == Lifecycle.ACTIVE,
         )
         .with_for_update(of=Document)
     )
@@ -90,7 +94,7 @@ def lock_by_id(session: Session, document_id: uuid.UUID) -> Document | None:
 def list_by_kb(session: Session, kb_id: uuid.UUID) -> list[Document]:
     stmt = (
         select(Document)
-        .where(Document.kb_id == kb_id, Document.status != Lifecycle.DELETED)
+        .where(Document.kb_id == kb_id, Document.status == Lifecycle.ACTIVE)
         .order_by(Document.created_at.desc())
     )
     return list(session.scalars(stmt))
