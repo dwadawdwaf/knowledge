@@ -107,10 +107,19 @@ export function locatorText(locator = {}) {
 }
 
 const WARNING_LABELS = {
+  parser_direct_text: '所选方案对纯文本直接读取，未使用 OCR',
+  deepdoc_native_location_unavailable: 'DeepDoc 原生解析：仅块级定位，无可靠页码/行列',
+  deepdoc_native_content_requires_review: 'DeepDoc 原生结果需复核，图形/公式及表格顺序可能不完整',
+  mineru_requires_review: 'MinerU 结果需复核',
+  mineru_geometry_unavailable: 'MinerU 未使用精确字框定位',
+  mineru_native_location_unavailable: 'MinerU 原生结果无可靠原文件页码/行列',
+  mineru_table_linearized: 'MinerU 表格/HTML已转纯文本',
+  mineru_content_skipped: 'MinerU存在未提取的非文本或不支持块，内容可能不完整',
   deepdoc_ocr_requires_review: 'OCR 识别，需复核',
   deepdoc_table_linearized: '表格已线性化',
   deepdoc_figures_not_described: '含未描述的图片',
   deepdoc_empty_page: '存在空白页',
+  deepdoc_layout_unavailable: '版面识别为空，已用 DeepDoc OCR 提取文字；未恢复版式和表格结构',
   xlsx_rows_truncated: '表格行数超上限，仅索引前若干行',
   csv_rows_truncated: '表格行数超上限，仅索引前若干行',
 };
@@ -188,11 +197,26 @@ const DEEPDOC_MEDIA = ['application/pdf', 'image/png', 'image/jpeg', 'image/tiff
  * 各自的常规解析器，不贴「旧解析器」这类会让人误以为质量降级的标签。
  */
 export function parserLabel(profile, mediaType) {
+  if (profile === 'mineru-api4.1-v1') return 'MinerU 文档解析';
+  if (profile === 'deepdoc-v0.22.0-v2') return 'DeepDoc 文档解析';
   if (!profile || !profile.startsWith('deepdoc')) return '';
   if (!mediaType || DEEPDOC_MEDIA.some(prefix => mediaType.startsWith(prefix))) {
     return 'DeepDoc 版面解析';
   }
   return '';
+}
+
+export const PARSER_OPTIONS = [
+  ['', '沿用服务默认'], ['legacy-v1', '基础解析'],
+  ['deepdoc-v0.22.0-v2', 'DeepDoc'], ['mineru-api4.1-v1', 'MinerU'],
+];
+
+export function uploadForm(file, profile = '') {
+  if (!PARSER_OPTIONS.some(([value]) => value === profile)) throw new Error('未知解析方案');
+  const form = new FormData();
+  form.append('file', file);
+  if (profile) form.append('parser_profile', profile);
+  return form;
 }
 
 /** 所有块共有的警告，用于提到文档级只提示一次。 */

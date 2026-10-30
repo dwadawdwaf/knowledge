@@ -2,7 +2,19 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { ApiClient, ApiError, reindexTarget, jobLabel, locatorText, chunkMetrics, warningLabel,
   readableSize, mediaLabel, parserLabel, groupByPage, splitHighlight, sharedWarnings,
-  turnsFromMessages } from './core.mjs';
+  turnsFromMessages, uploadForm, PARSER_OPTIONS } from './core.mjs';
+
+test('上传和新版本显式选择解析器，默认请求不偷偷改策略', () => {
+  const file = new Blob(['synthetic']);
+  for (const [profile] of PARSER_OPTIONS) {
+    const form = uploadForm(file, profile);
+    assert.equal(form.get('parser_profile'), profile || null);
+    assert.ok(form.get('file'));
+  }
+  assert.throws(() => uploadForm(file, 'unknown'));
+  assert.equal(parserLabel('mineru-api4.1-v1', 'text/csv'), 'MinerU 文档解析');
+  assert.equal(parserLabel('deepdoc-v0.22.0-v2', 'text/plain'), 'DeepDoc 文档解析');
+});
 
 test('无令牌也发起请求，由服务端决定是否放行', async () => {
   let sent;

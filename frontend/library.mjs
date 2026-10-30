@@ -3,7 +3,8 @@ import {
   el, icon, toast, emptyState, loading, fmtDate, relativeCreated, actionButton, iconButton,
   openMenu, menuItem,
 } from './dom.mjs';
-import { jobLabel, reindexTarget } from './core.mjs';
+import { jobLabel, reindexTarget, PARSER_OPTIONS, uploadForm, parserLabel } from './core.mjs';
+import { renderSearch } from './search.mjs';
 
 const ACCEPT = '.txt,.md,.csv,.pdf,.docx,.xlsx,.pptx,.png,.jpg,.jpeg,.tif,.tiff';
 const PATTERN = /\.(txt|md|csv|pdf|docx|xlsx|pptx|png|jpe?g|tiff?)$/i;
@@ -160,19 +161,25 @@ export function renderKnowledgeDetail(app) {
   page.append(head);
 
   const tabs = el('div', 'tabs');
-  const tabFiles = el('button', 'tab active', `文件`);
+  const tabFiles = el('button', app.state.libraryTab === 'search' ? 'tab' : 'tab active', '文件');
   tabFiles.type = 'button';
+  tabFiles.addEventListener('click', () => { app.state.libraryTab = 'files'; app.render(); });
   const tabCount = el('span', 'count', String(app.state.documents.length));
   tabCount.id = 'doc-tab-count';
   tabFiles.append(tabCount);
-  const tabSearch = el('button', 'tab', '检索');
+  const tabSearch = el('button', app.state.libraryTab === 'search' ? 'tab active' : 'tab', '检索');
   tabSearch.type = 'button';
   tabSearch.addEventListener('click', () => {
-    app.state.scope = kb.id;
-    app.navigate('search');
+    app.state.libraryTab = 'search';
+    app.render();
   });
   tabs.append(tabFiles, tabSearch);
   page.append(tabs);
+
+  if (app.state.libraryTab === 'search') {
+    page.append(renderSearch(app, { embedded: true }));
+    return page;
+  }
 
   page.append(detailShoulder(app, kb));
   page.append(uploadZone(app, kb));
@@ -217,7 +224,7 @@ function uploadZone(app, kb) {
   const mark = el('span', 'upload-mark');
   mark.append(icon('upload'));
   const text = el('div');
-  text.append(el('strong', '', '添加知识资料'), el('p', '', 'TXT / MD / CSV / PDF / DOCX / XLSX / PPTX；扫描件需后端启用 DeepDoc · 单文件不超过 50 MB'));
+  text.append(el('strong', '', '添加知识资料'), el('p', '', '所有文档均可选择方案；图片需 DeepDoc / MinerU 服务，纯文本直接读取。单文件不超过 50 MB。此选择也用于上传新版本；重建保留原方案。'));
   copy.append(mark, text);
 
   const input = el('input');
@@ -228,8 +235,16 @@ function uploadZone(app, kb) {
   input.setAttribute('aria-label', '选择知识库文档');
 
   const actions = el('div', 'upload-actions');
+  const select = el('select', 'input parser-choice');
+  select.setAttribute('aria-label', '文档解析方案');
+  select.title = 'DeepDoc / MinerU 须先配置并启动本机服务；故障不回退';
+  for (const [value, label] of PARSER_OPTIONS) {
+    const option = el('option', '', label);
+    option.value = value;
+    select.append(option);
+  }
   const choose = actionButton('选择文件', 'btn ghost', () => input.click(), 'upload');
-  actions.append(choose, input);
+  actions.append(select, choose, input);
 
   zone.append(copy, actions);
 
@@ -269,24 +284,27 @@ async function uploadFiles(app, kb, files) {
   if (app.state.busy) { toast('上一个上传还在进行，请稍候。'); return; }
   document.querySelector('#upload-feedback')?.replaceChildren();
   app.state.busy = true;
+  const profile = document.querySelector('.parser-choice')?.value || '';
+  let submitted = 0;
   try {
     for (const file of files) {
       if (!PATTERN.test(file.name) || file.size > MAX_BYTES) {
         feedback(`${file.name}：已跳过，格式不支持或超过 50 MB。`, 'warning');
         continue;
       }
-      const form = new FormData();
-      form.append('file', file);
+      const form = uploadForm(file, profile);
       try {
         const ack = await app.api.request(`/knowledge-bases/${kb.id}/documents`, { method: 'POST', body: form });
         app.state.receipts.set(ack.document_id, ack.version_id);
-        feedback(`${file.name}：${ack.deduplicated ? '相同内容已存在，未新建任务' : '上传已接收，等待后台处理'}`);
+        if (!ack.deduplicated) submitted += 1;
+        const actual = parserLabel(ack.parser_profile) || '基础解析';
+        feedback(`${file.name}：${ack.deduplicated ? '相同内容已存在，未新建任务；保留原方案，不因重传切换' : '上传已接收，等待后台处理'} · ${actual}`);
       } catch (error) {
         feedback(`${file.name}：${app.errorText(error)}`, 'warning');
       }
     }
     await app.loadDocuments();
-    toast('上传已接收，后台任务正在处理。');
+    toast(submitted ? `已创建 ${submitted} 个处理任务，请等待后台处理。` : '未创建新任务，请查看上方文件反馈。');
   } finally {
     app.state.busy = false;
   }
@@ -357,6 +375,7 @@ function documentRow(app, doc) {
   name.addEventListener('click', () => app.openBrowse(doc));
   meta.append(name);
   meta.append(el('small', 'file-sub', `代次 ${doc.generation}${doc.active_build_id ? ' · 已有可用内容' : ' · 暂无发布内容'}`));
+  if (doc.parser_profile) meta.append(el('small', 'file-sub', `文档方案：${parserLabel(doc.parser_profile, doc.media_type) || '基础解析'} · 重建保留此方案`));
   cell.append(mark, meta);
   nameCell.append(cell);
 
@@ -365,7 +384,7 @@ function documentRow(app, doc) {
   badge.append(el('i'), document.createTextNode(jobLabel(doc)));
   statusCell.append(badge);
   if (doc.job?.state === 'failed') {
-    statusCell.append(el('small', 'status-detail', doc.job.last_error?.code || '处理失败'));
+    statusCell.append(el('small', 'status-detail', doc.job.last_error?.message || doc.job.last_error?.code || '处理失败'));
   }
 
   const versionCell = el('td', 'version-cell');
@@ -460,15 +479,14 @@ async function replaceVersion(app, doc, file) {
   if (app.state.busy) { toast('另一个上传仍在进行，请稍候。'); return; }
   app.state.busy = true;
   try {
-    const form = new FormData();
-    form.append('file', file);
+    const form = uploadForm(file, document.querySelector('.parser-choice')?.value || '');
     const ack = await app.api.request(
       `/documents/${doc.id}/versions?expected_generation=${doc.generation}`,
       { method: 'POST', body: form },
     );
     app.state.receipts.set(doc.id, ack.version_id);
     await app.loadDocuments();
-    toast(ack.deduplicated ? '相同内容已存在，未新建版本。' : '新版本已接收，发布前旧版本继续可用。');
+    toast(`${ack.deduplicated ? '相同内容已存在，保留原方案，未新建版本。' : '新版本已接收，发布前旧版本继续可用。'} ${parserLabel(ack.parser_profile) || '基础解析'}`);
   } catch (error) {
     app.notify(app.errorText(error));
   } finally {

@@ -23,17 +23,18 @@ const EXAMPLES = [
   '新员工入职要准备哪些材料？',
 ];
 
-export function renderSearch(app) {
+export function renderSearch(app, { embedded = false } = {}) {
   const page = el('div', 'page search-page');
 
   const head = el('div', 'page-head');
   const text = el('div');
-  text.append(el('h1', '', '检索测试'));
+  text.append(el('h1', '', '资料检索'));
   head.append(text);
-  page.append(head);
+  if (!embedded) page.append(head);
+  else page.classList.add('embedded-search');
 
   const layout = el('div', 'search-layout');
-  layout.append(consolePanel(app));
+  layout.append(consolePanel(app, embedded));
   const results = el('div', 'results search-results');
   results.id = 'search-results';
   layout.append(results);
@@ -42,7 +43,7 @@ export function renderSearch(app) {
   if (app.state.searchResult) paintResults(app, results, app.state.searchResult);
   else {
     results.append(guide());
-    const scope = scopeSummary(app);
+    const scope = embedded ? null : scopeSummary(app);
     if (scope) results.append(scope);
   }
 
@@ -51,7 +52,7 @@ export function renderSearch(app) {
 }
 
 /** 检索条件：独占一行，方式与范围并排；结果在下方纵向排列。 */
-function consolePanel(app) {
+function consolePanel(app, embedded) {
   const panel = el('section', 'search-panel');
 
   const top = el('div', 'search-panel-head');
@@ -119,7 +120,7 @@ function consolePanel(app) {
 
   const scopeBlock = el('div', 'field-block');
   scopeBlock.append(el('span', 'field-label', '知识范围'));
-  scopeBlock.append(scopeControl(app));
+  scopeBlock.append(embedded ? el('span', 'chip', app.state.library.name) : scopeControl(app));
 
   // 方式与范围并排，减少条件区高度；窄屏由 CSS 退回单列。
   const options = el('div', 'search-options');
@@ -136,7 +137,7 @@ function consolePanel(app) {
     const query = input.value.trim();
     if (!query) return;
     if (!app.state.connected) { app.openConnection(); return; }
-    const ids = scopeIds(app);
+    const ids = embedded ? [app.state.library.id] : scopeIds(app);
     if (!ids.length) { toast('还没有可检索的知识库。'); return; }
     if (app.state.busy) { toast('上一次检索还在进行，请稍候。'); return; }
 

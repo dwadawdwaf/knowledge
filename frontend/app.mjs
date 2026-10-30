@@ -5,7 +5,7 @@ import { renderChat } from './chat.mjs';
 import { renderKnowledge, renderKnowledgeDetail, drawDocuments } from './library.mjs';
 import { renderFiles, updateFilesView } from './files.mjs';
 import { renderBrowse, loadBrowse, emptyBrowse, disposeBrowse } from './browse.mjs';
-import { renderSearch } from './search.mjs';
+import { renderEvaluation } from './evaluation.mjs';
 import { openChunks, openSource } from './reader.mjs';
 
 const main = document.querySelector('#content');
@@ -18,6 +18,7 @@ const state = {
   browsePushed: false,
   libraries: [],
   library: null,
+  libraryTab: 'files',
   documents: [],
   docSignature: '',
   // 首次/手动读取文档列表：为真时列表区显示「正在读取」，而不是空态
@@ -38,6 +39,7 @@ const state = {
   searchResult: null,
   sessions: [],
   sessionId: '',
+  historySelection: '',
   conversationsError: null,
   receipts: new Map(),
   connected: false,
@@ -284,8 +286,7 @@ async function ensureConversation(session, title) {
 async function selectSession(session) {
   state.sessionId = session.id;
   if (!session.loaded) session.loading = true;
-  renderSessions();
-  navigate('chat');
+  navigate('chat', { historySelection: session.id });
   closeMobileNav();
   if (session.loaded) return;
   try {
@@ -308,7 +309,9 @@ function renderSessions() {
   if (empty) empty.hidden = state.sessions.length > 0;
 
   state.sessions.forEach(session => {
-    const item = el('button', session.id === state.sessionId ? 'session-item active' : 'session-item');
+    const active = state.page === 'chat' && session.id === state.historySelection;
+    const item = el('button', active ? 'session-item active' : 'session-item');
+    if (active) item.setAttribute('aria-current', 'page');
     item.type = 'button';
     item.title = session.title || '新对话';
     item.append(icon('chat'), el('span', '', session.title || '新对话'));
@@ -321,7 +324,7 @@ function renderSessions() {
 
 function keyFor(page) {
   // 知识库列表与详情共用一个页名；对话页共用页名但会切换会话。两者都要进标识。
-  if (page === 'knowledge') return state.library ? `knowledge:${state.library.id}` : 'knowledge:list';
+  if (page === 'knowledge') return state.library ? `knowledge:${state.library.id}:${state.libraryTab}` : 'knowledge:list';
   if (page === 'chat') return `chat:${state.sessionId || 'new'}`;
   return page;
 }
@@ -330,7 +333,9 @@ function viewKey() {
   return keyFor(state.page);
 }
 
-function navigate(page) {
+function navigate(page, { historySelection = '' } = {}) {
+  state.historySelection = page === 'chat' ? historySelection : '';
+  renderSessions();
   if (page === 'chat' && !state.sessionId) ensureSession();
   // 只有真正停在同一个视图上才跳过重绘；同名页换了内容（详情→列表、换会话）必须重画。
   if (keyFor(page) === state.renderedKey) { closeMobileNav(); return; }
@@ -387,6 +392,8 @@ function closeBrowse() {
 
 function openLibrary(kb) {
   state.library = kb;
+  state.libraryTab = 'files';
+  state.searchResult = null;
   state.documents = [];
   state.docSignature = '';
   state.docError = null;
@@ -406,6 +413,7 @@ function openLibraryById(kbId) {
 }
 
 function render() {
+  renderSessions();
   // 浏览页高亮来源入口：从知识库进来就高亮「知识库」，从全部文件进来就高亮「全部文件」。
   const activePage = state.page === 'browse'
     ? (state.browse.returnPage === 'knowledge' ? 'knowledge' : 'files')
@@ -421,7 +429,7 @@ function render() {
   if (state.page === 'chat') main.append(renderChat(app));
   else if (state.page === 'browse' && state.browse.doc) main.append(renderBrowse(app));
   else if (state.page === 'files') main.append(renderFiles(app));
-  else if (state.page === 'search') main.append(renderSearch(app));
+  else if (state.page === 'search') main.append(renderEvaluation(app));
   else if (state.library) main.append(renderKnowledgeDetail(app));
   else main.append(renderKnowledge(app));
   state.renderedKey = viewKey();
@@ -571,6 +579,14 @@ const app = {
   loadAllFiles,
   openLibrary,
   openLibraryById,
+  openLibrarySearch: (kbId, query = '') => {
+    if (!state.libraries.some(kb => kb.id === kbId)) { notify('评测资料已删除或不再可访问。'); return; }
+    openLibraryById(kbId);
+    state.libraryTab = 'search';
+    state.query = query;
+    state.searchResult = null;
+    render();
+  },
   openKnowledgeList: () => { state.library = null; navigate('knowledge'); },
   openBrowse: (doc, focus) => openBrowse(doc, focus),
   closeBrowse: () => closeBrowse(),

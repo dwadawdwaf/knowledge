@@ -51,8 +51,14 @@ try {
   await wait(`document.querySelector('#notice').hidden`); await shot('knowledge');
   console.log('[浏览器 2/9] 打开知识库，通过文件输入上传实际自制文档');
   await clickText('行政制度 · 自制样本'); await wait(`document.querySelector('.document-table')`);
+  assert.equal(await js(`document.querySelectorAll('.parser-choice option').length`), 4);
+  assert.equal(await js(`getComputedStyle(document.querySelector('.parser-choice')).height`), '38px');
+  // 用纯文本验证显式选择的请求/冻结，不要求本机实际安装MinerU。
+  await js(`document.querySelector('.parser-choice').value='mineru-api4.1-v1'`);
   await setFile('.upload-zone input[type=file]', path.join(root, 'backend/testdata/evaluation/expense.md'));
   await wait(`!![...document.querySelectorAll('tbody tr')].find(row=>row.textContent.includes('expense.md') && row.textContent.includes('已就绪'))`, 120000);
+  assert.ok(await js(`document.querySelector('#upload-feedback').textContent.includes('MinerU')`));
+  await js(`document.querySelector('.parser-choice').value=''`);
   console.log('[浏览器 3/9] 打开分块结果，核对覆盖条与明细一一对应');
   await setFile('.upload-zone input[type=file]', path.join(root, 'backend/testdata/engineering/handbook-sections.md'));
   await wait(`!![...document.querySelectorAll('tbody tr')].find(row=>row.textContent.includes('handbook-sections.md') && row.textContent.includes('已就绪'))`, 120000);
@@ -93,6 +99,15 @@ try {
   await send('Input.dispatchKeyEvent', { type: 'keyDown', key: 'Escape', code: 'Escape', windowsVirtualKeyCode: 27, nativeVirtualKeyCode: 27 });
   await send('Input.dispatchKeyEvent', { type: 'keyUp', key: 'Escape', code: 'Escape', windowsVirtualKeyCode: 27, nativeVirtualKeyCode: 27 });
   await wait(`!document.querySelector('#source-dialog').open`);
+  console.log('[导航状态] 只有点击历史会话时高亮；页面入口不得残留历史选中');
+  await js(`document.querySelector('.session-item').click()`);
+  await wait(`document.querySelectorAll('.session-item.active').length === 1`);
+  for (const page of ['files', 'chat', 'knowledge', 'search']) {
+    await js(`document.querySelector('[data-page=${page}]').click()`);
+    assert.equal(await js(`document.querySelectorAll('.session-item.active').length`), 0);
+    assert.equal(await js(`document.querySelectorAll('.session-item[aria-current]').length`), 0);
+  }
+  await js(`document.querySelector('[data-page=chat]').click()`);
   console.log('[浏览器 5/9] 库外问题显示无证据，检索测试展示真实片段');
   await js(`document.querySelector('.chat-compose textarea').value='量子纠缠星际导航协议是什么？'; document.querySelector('.chat-compose').requestSubmit()`);
   await wait(`[...document.querySelectorAll('.answer-message')].at(-1)?.textContent.includes('未找到回答依据')`);
@@ -111,7 +126,14 @@ try {
   await wait(`[...document.querySelectorAll('.answer-message')].at(-1)?.textContent.includes('答案未通过引用校验')`);
   assert.equal(await js(`[...document.querySelectorAll('.answer-message')].at(-1).querySelector('.answer-body')`), null);
   await send('Fetch.disable'); socket.removeEventListener('message', intercept);
-  await js(`document.querySelector('[data-page=search]').click(); document.querySelector('.query-box textarea').value='会议室使用后需要做什么？'; document.querySelector('.query-box').requestSubmit()`);
+  await js(`document.querySelector('[data-page=search]').click()`);
+  await wait(`document.querySelector('.evaluation-page h1')?.textContent==='检索评测'`);
+  assert.equal(await js(`document.querySelector('#search-query')`), null, '全局入口不再提供手动检索');
+  await js(`document.querySelector('[data-page=knowledge]').click()`);
+  await clickText('行政制度 · 自制样本');
+  await clickText('检索');
+  await wait(`document.querySelector('#search-query')`);
+  await js(`document.querySelector('.query-box textarea').value='会议室使用后需要做什么？'; document.querySelector('.query-box').requestSubmit()`);
   await wait(`document.querySelector('.result-card')`); await shot('retrieval');
   assert.ok(await js(`document.querySelector('.result-card .result-kb')?.textContent.includes('行政制度')`),
     '检索结果应标注所属知识库');
