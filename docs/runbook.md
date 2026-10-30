@@ -1,497 +1,125 @@
 # 运行手册
 
-_二创项目 · v0.3 · 2026-10-23_
+根目录命令均在项目根目录执行；接口语义见[设计](design.md)，未完成项见[issues](../issues.md)。
 
-> 启动、日常操作与故障处置。命令入口为约定名称，M1 落地后以其为准；入口变更须回写本文，否则视为失效。
+## 1. 安装与配置
 
----
-
-## 1. 前置检查
-
-| 项 | 要求 | 检查 |
-| --- | --- | --- |
-| Python | 3.11+；与 QwenPaw 同环境时须 3.11–3.13 | `python -V` |
-| PostgreSQL | 已装 `vector` 与 `pg_trgm` | `SELECT extname FROM pg_extension;` |
-| 文件目录 | 一个可写目录作为对象存储根 | 启动时自动创建 |
-| 模型端点 | 生成、向量各一个，地址由环境变量注入 | `curl` 探活 |
-
-```sql
-CREATE EXTENSION IF NOT EXISTS vector;
-CREATE EXTENSION IF NOT EXISTS pg_trgm;
-```
-
-## 2. 启动
-
-**推荐：双击 `start.cmd`。** 首次会自动启动本机数据库（依赖里自带的 PostgreSQL 18.6 + pgvector），
-不需要另装数据库，也不连任何远端服务器。
-
-数据都在本机：
-
-| 内容 | 位置 | 说明 |
-| --- | --- | --- |
-| 数据库集群 | `backend/.data/pgdata` | 已初始化时直接复用；换机后首次启动会用 `initdb` 初始化 |
-| 原件 | `backend/.data/objects` | 与数据库一一对应，见下方警告 |
-| 连接串 | `backend/.data/db_url` | 启动器写入，端口默认 55433 |
-
-手动起停与导入（排查时才需要）：
-
-```bash
-cd backend
-python scripts/dev_db.py                 # 起库（已在跑则复用）
-python scripts/dev_db.py --stop          # 干净停库（pg_ctl fast）
-python scripts/local_setup.py            # 起库 + 自检（打印各表行数）
-python scripts/local_setup.py --remote-url <旧库连接串> --tunnel root@host   # 从旧库整库搬运
-```
-
-想用自己装好的 PostgreSQL：把连接串写进 `backend/.env` 的 `KS_DATABASE_URL`，启动器优先用它。
-
-> 中文 Windows 上 `initdb` 可能报 `invalid byte sequence for encoding "UTF8"`，此时本机集群初始化失败。
-> 兜底两条：装一个 PostgreSQL 15+ 并把连接串写进 `KS_DATABASE_URL`；或用 `KS_LOCAL_DB_DIR` 指向一个已初始化的数据目录。
-
-自检：`GET /api/v1/knowledge-bases` 能返回列表，说明数据库连接、迁移与令牌校验都正常；跑 `python scripts/demo_flow.py` 可验证完整链路。
-
-```bash
-alembic upgrade head                                          # 1) 迁移
-uvicorn knowledge.entrypoints.api:app --port 8010             # 2) API
-python -m knowledge.entrypoints.worker                        # 3) Worker（另一终端）
-```
-
-> **对象目录与数据库必须一一对应。** 持久库要配持久目录（工作台启动器默认用 `backend/.data/objects`），临时库/测试库要配临时目录。两个库共用一个目录时，任一侧的孤儿回收会把另一侧仍在引用的原件删掉；回收器遇到「一次要删掉大半对象」会拒绝执行并记 `orphan_reclaim_skipped`，此时应先核对 `KS_DATABASE_URL` 与 `KS_STORAGE_ROOT` 是否配套。
-
-
-**顺序**：迁移先于 API 与 Worker；API 与 Worker 彼此无先后。Worker 未启动时上传停在 `queued`，这是正常状态而非故障。
-
-## 3. 日常操作
-
-```bash
-# 建库
-curl -s -X POST localhost:8010/api/v1/knowledge-bases \
-  -H "Authorization: Bearer $KS_TOKEN" -H 'Content-Type: application/json' \
-  -d '{"name":"制度库"}'
-
-# 上传（返回 job_id，不等待解析）
-curl -s -X POST localhost:8010/api/v1/knowledge-bases/$KB/documents \
-  -H "Authorization: Bearer $KS_TOKEN" -F "file=@./testdata/engineering/meeting-room.md"
-
-# 查任务
-curl -s localhost:8010/api/v1/jobs/$JOB -H "Authorization: Bearer $KS_TOKEN"
-# 检索调试：观察两路排名与融合结果
-curl -s -X POST localhost:8010/api/v1/search \
-  -H "Authorization: Bearer $KS_TOKEN" -H 'Content-Type: application/json' \
-  -d "{\"query\":\"会议室使用后要做什么\",\"knowledge_base_ids\":[\"$KB\"],\"mode\":\"hybrid\"}"
-```
-
-任务 `failed` 时先读 `last_error.code`：`UNSUPPORTED_FORMAT` / `PASSWORD_PROTECTED` / `EMPTY_CONTENT` 属确定性错误，不重试。
-
-## 4. 故障处置
-
-| 症状 | 判断 | 处置 |
-| --- | --- | --- |
-| 长时间 `queued` | Worker 未启动或已退出 | 启动 Worker；无需重新上传，任务已在表中 |
-| 长期 `running` 且 `heartbeat_at` 不再更新 | 执行进程已死，租约 120 秒后过期 | 存活 Worker 每轮领取前回收；若全部停止则启动 Worker；不要手工改 `state` |
-| 反复 `failed` 且 `attempt` 已达上限 | 内容本身有问题 | 修文件后重新上传；不要提高重试次数掩盖问题 |
-| 检索 0 命中但文档 active | `active_build_id` 为空或 build 非 ready | 查 §5 指针一致性 SQL；处理完成前属预期行为 |
-| 向量维度错误 | 换了向量模型但未重建 | 新建构建并重建；不得在同一索引混用不同维度 |
-| 迁移卡住 | 另一进程持锁 | 查 `pg_locks`，确认无其他迁移进程后重试 |
-| 磁盘持续增长 | 孤儿对象或清理积压 | Worker 启动时自动回收超过 1 小时且无引用的对象（`orphans_reclaimed` 日志）；反复增长说明上传事务持续失败或 cleanup 积压，查 `jobs` 表与 `upload` 接口错误 |
-| 删除后仍能检索到 | 逻辑删除未提交，或代码缺陷 | 查文档 `status` 与 `active_build_id`；本服务不缓存检索结果 |
-| 浏览器显示「无法访问此网站 / 可能已永久移动到新网址」，但终端已打印访问地址且 `curl` 能通 | 端口落在 Chromium 保留列表（如 5060 = SIP、6000、6665–6669），浏览器在建立连接前就拒绝，报 `ERR_UNSAFE_PORT`；服务本身正常 | 换端口重启：`.\start.cmd -Port 8011`。启动器现在自动选端口时已跳过这些端口，仅旧实例或手工指定才会踩到 |
-
-## 5. 诊断 SQL
-
-```sql
--- 任务分布与最老排队时间
-SELECT state, stage, count(*), min(available_at)
-FROM jobs GROUP BY state, stage ORDER BY state;
-
--- 租约已过期但仍在 running（可被接管）
-SELECT id, kind, resource_id, attempt, lease_expires_at, heartbeat_at
-FROM jobs WHERE state = 'running' AND lease_expires_at < now();
-
--- 指针一致性：active_build 必须存在且 ready
-SELECT d.id, d.status, d.active_build_id, b.state
-FROM documents d LEFT JOIN index_builds b ON b.id = d.active_build_id
-WHERE d.status = 'active'
-  AND (d.active_build_id IS NULL OR b.state <> 'ready');
-
--- 重复 chunk（应为 0 行）
-SELECT build_id, ordinal, count(*) FROM chunks
-GROUP BY build_id, ordinal HAVING count(*) > 1;
-
--- 分块数与向量维度
-SELECT build_id, count(*), min(vector_dims(embedding))
-FROM chunks GROUP BY build_id;
-
--- 清理积压
-SELECT count(*) FROM jobs WHERE kind = 'cleanup' AND state IN ('queued','running');
-```
-
-## 6. 变更纪律
-
-- **迁移只增不改**：已执行的迁移不修改，修正用新迁移。
-- **Worker 先停后改结构**：涉及 `jobs` / `chunks` 的迁移，先停 Worker 再迁移。
-- **重建索引走新构建**：不直接改 `chunks`，不删 `ready` 构建的数据。
-- **不手工改状态字段**：`state`、`generation`、发布指针只由业务流程写，手工修改会破坏发布栅栏与任务过期判定。
-
-## 7. 日志与追踪
-
-日志为单行 JSON（`ts` / `level` / `logger` / `event` + 业务字段）。请求日志含 `request_id`；任务相关再加 `job_id`、`build_id`。关键事件名：`http_request`、`job_claimed`（含排队时长）、`stage_done`（各阶段耗时）、`job_retry_scheduled`、`job_failed`、`lease_recovered`、`build_published`、`qa_no_evidence`、`qa_answered`、`citation_validation_failed`。
-
-1. 用 `request_id` 定位请求；
-2. 涉及处理时用 `job_id` 查任务时间线（领取、阶段、重试、失败原因）；
-3. 涉及检索或引用时用 `build_id` 确认当时生效的构建，不要用当前状态解释历史行为。
-
-日志不含问题正文、分块内容、答案与令牌；需要正文复现时用显式授权的临时调试模式，用完即关。
-
-## 8. 审计修复版本升级与验证
-
-### 任务目标迁移 0002
-
-1. 停止上传入口，等待 ingest/reindex 任务排空；历史卡住任务需先调查并经授权处置，不直接猜测其目标构建。
-2. 停止所有 Worker，备份数据库，执行 `alembic upgrade head`。
-3. 迁移发现未完成 ingest/reindex 时明确失败并回滚；不要绕过检查。已结束任务允许目标字段为空。
-4. 启动新版本 Worker 与 API；确认新任务含 build_id/generation，重试后 job ID 不变而 build ID 改变。
-
-旧失败构建不会再被覆盖；其残留数据随文档清理，不作为检索来源。
-切换向量模型前安排离线索引重建；不兼容时恢复原模型配置，或显式使用 keyword，不得把 503 当作无答案。
-
-### 解析限制
-
-统一 Settings 提供 `KS_PARSE_TIMEOUT_SECONDS`、`KS_PARSE_CPU_SECONDS`、`KS_PARSE_MEMORY_BYTES`、
-`KS_PARSE_OUTPUT_BYTES`、`KS_DOCX_MAX_ENTRIES`、`KS_DOCX_MAX_UNCOMPRESSED_BYTES`。
-默认值见 `backend/knowledge/config.py`，是资源保护配置，不是性能承诺。超限归为 PARSE_FAILED，
-结束解析子进程，不无限续租重试。需要更严格的内存硬限额时在部署层设置进程/容器配额。
-
-### 隔离回归
-
-从仓库根目录运行 `backend/.venv/Scripts/python.exe backend/scripts/test_isolated.py`（Windows）。
-脚本创建独立临时 PostgreSQL 和迁移测试库，仅使用本地模型桩；不连接现有业务数据库，结束后停止服务器。
-Windows 非 ASCII 安装路径会将测试数据库运行组件复制到独立临时目录；临时目录使用 `ks_audit_test_` / `ks_audit_pg_` 前缀，确认进程退出后可清理。
-测试过程不会读取项目 backend/.env；禁止将现有集成测试夹具指向业务库，因为夹具会重建表。
-
-## 9. 可观察演示与 HTTP 端到端验收
-
-### 一条命令看完整流程
-
-在仓库根目录执行（Windows PowerShell）：
-
-```powershell
-.\backend\.venv\Scripts\python.exe -u backend/scripts/demo_local.py
-```
-
-入口自动创建临时数据库、执行迁移、启动独立 API 与 Worker，再通过真实 HTTP 执行 10 步验收。
-它只使用仓库自制资料、HashEmbedder 和 StubGenerator，不读取项目 `.env`，不调用外部模型，
-不重置现有数据库。终端逐步输出启动进度、进程 PID、任务 state/stage/attempt 与校验结果，
-每条输出立即刷新。服务日志只包含运行元数据，不把答案、问题或令牌写入日志。
-
-演示结束后自动停止进程与临时数据库，结果保存在 `backend/.data/demo/latest.md`：
-包括实际 HTTP 返回的版本一/版本二答案、引用和定位，明确标注为确定性桩的链路演示。
-答案不是预填文本；该演示不代替真实模型效果评测。每次报告含生成时间，避免与历史结果混淆。
-
-API、Worker 与迁移日志保存在 `backend/.data/e2e/<本次运行编号>/`，失败时按终端路径查看。
-
-### 保持服务运行，自己调用
-
-根目录 `start.cmd` 默认进入真实模型终端问答：
-
-```powershell
-.\start.cmd
-# 显式指定端口；默认 0 表示自动选择，避免误连旧演示实例。
-.\start.cmd -Port 8011
-# 检查环境、启动依赖并自检模型，不进入问答。
-.\start.cmd -CheckOnly
-# 本机缺少向量模型时自动拉取（约 1.2 GB）。
-.\start.cmd -PullMissing
-# 完全离线：10 步验收后进入模型桩终端问答。
-.\start.cmd -Mode Demo
-```
-
-省略 `-Port` 时，启动器在 8010–8099 内取第一个空闲端口，并跳过 Chromium 拒绝连接的端口
-（5060、5061、6000、6665–6669 等）；这些端口上服务能起、`curl` 也通，但 Chrome/Edge 会直接显示
-「网页可能已永久移动到新网址」，即 `ERR_UNSAFE_PORT`。手工指定端口时同样会被拦下并提示换端口。
-本机动态端口范围被改成从 1024 起时，系统自动分配的端口可能正好落在该列表内，这是自动选端口必须排除它们的理由。
-
-`start.cmd` 优先使用 PowerShell 7，没有时使用 Windows PowerShell 5.1，统一调用根目录
-`start.ps1`；也可直接执行 `.\start.ps1 -Port 8011`。它检查项目虚拟环境、依赖与端口，
-失败时明确提示，不自动下载依赖、不停止其他进程。模式为 `Real` / `Demo`，均使用隔离临时数据库与资料卷，
-不会采用 `.env` 中的数据库地址、存储路径或身份密钥。
-
-Real 模式从 `backend/.env` 和环境变量读取模型字段：`KS_EMBEDDING_BASE_URL` / `MODEL` / `API_KEY` / `DIM`，
-`KS_GENERATOR_BASE_URL` / `MODEL` / `API_KEY`，以及相关超时、检索阈值和任务配置。
-维度必须为 1024；端点、模型名缺失时拒绝启动，不回退 HashEmbedder / StubGenerator。
-
-### 依赖自动启动
-
-Real 模式在启动服务前先处理依赖：端点为本机（`localhost` / `127.0.0.1`）且端口未监听时，
-自动拉起 `ollama serve`（日志 `backend/.data/deps/ollama.log`），并确认配置的向量模型已安装；
-缺模型时默认提示 `ollama pull <model>`，加 `-PullMissing` 改为自动拉取。
-
-`KS_DOCUMENT_PARSER_PROFILE=deepdoc-v0.22.0-v1` 时，DeepDoc 边车也是前置依赖：
-探测 `KS_DEEPDOC_URL/health`，未就绪则尝试拉起 Docker Desktop（`docker info` 判定引擎），
-再 `docker compose -p ks-deepdoc up -d` 并等待健康检查，失败输出可操作原因。
-不想用 DeepDoc 时加 `-NoDeepDoc`（本次运行改用旧解析器，并显式提示扫描件/版面能力不可用），
-或把 `.env` 里的 profile 改回 `legacy-v1`。
-
-随后真实调用一次 `/embeddings` 校验实际维度与配置一致，再用 1 个 token 调用 `/chat/completions`
-校验生成端点、密钥与余额。任一环节失败即停止启动并输出具体原因（未启动 / 鉴权 / 余额 / 模型名 /
-维度不符 / 不可达的具体主机与原因类），不回退桩模型。连接层失败会换另一条路由重试一次：
-先按环境代理，失败再直连（反之亦然）；HTTP 状态码是确定结论，不重试。
-
-出口策略：本机端点始终直连；远端端点默认走环境代理，但**代理端口未监听时改直连**并打印一行提示
-（`环境代理 127.0.0.1:7890 未监听，远端请求改直连`）。代理开着又退出是常见状态，此时请求会以
-`ConnectionRefused` 失败，与「模型服务不可达」表现相同；代理不可用不等于目标不可达。
-
-数据库、API 与 Worker 仍由运行环境按每次运行现起。
-
-出口策略：本机端点直连，不经过系统代理；远程端点沿用环境代理配置。
-可选字段留空会忽略。首次仅导入仓库自制会议室资料，准备好后在当前终端输入问题，
-显示答案、服务端引用原文、文件名和字符/页码定位；等待期间持续显示耗时。
-非敏感示例问题：“会议室使用后需要做什么？”“预约需要提前多久？”
-
-真实模式的问题和证据会发送到已配置模型服务，可能产生费用；仅用经授权的资料和问题。
-启动器不打印 API 密钥；终端问答不传 conversation_id，不保存问答存档，也不写 Demo 报告。
-输入 `/quit` / `/exit`、EOF 或 Ctrl+C 退出并清理本次进程。此控制台按当前问题独立问答，不实现多轮指代。
-
-真实模式的单次复验命令（建议仅用于自制示例，真实问题不要写入 shell 历史）：
-
-```powershell
-.\backend\.venv\Scripts\python.exe -u backend/scripts/ask_local.py --question "会议室使用后需要做什么？"
-```
-
-Demo 模式直接运行 Python 的等价命令：
-
-```powershell
-.\backend\.venv\Scripts\python.exe -u backend/scripts/demo_local.py --serve --port 8010
-```
-
-Demo 正常验收后，程序额外建立一个供手动体验的知识库，并输出其 ID，然后进入终端问答。打开本机
-`http://127.0.0.1:8010/docs`；端口占用时换一个端口，或者省略 `--port` 自动选空闲端口。
-服务仅监听 127.0.0.1；终端中的实际地址以本次输出为准。输入 `/quit` 或按 Ctrl+C 结束体验。临时资料不作为持久知识库保存。
-
-演示环境使用默认的本地开发令牌桩，主体为 `demo-owner`。在另一个终端、仓库根目录执行：
-
-```powershell
-$env:KS_TOKEN_SECRET = "dev-only-secret"
-.\backend\.venv\Scripts\python.exe -m knowledge.security issue --subject demo-owner
-```
-
-这是显式签发开发令牌的命令，不是服务日志。令牌只用于当前本机演示，不提交、不写入报告。
-Swagger 中每个需要鉴权的操作有 `authorization` 请求头参数，填写 `Bearer <开发令牌>`。
-先调用 GET `/api/v1/knowledge-bases` 查看手动体验库，再用其 ID 调用 POST `/api/v1/qa`。
-建议问题与样本答案见演示报告。此入口不接入真实身份或真实资料。
-
-### 运行有实时进度的完整回归
-
-```powershell
-.\backend\.venv\Scripts\python.exe -u backend/scripts/test_isolated.py
-```
-
-默认打印测试名称、通过/失败与 E2E 步骤。入口复用临时数据库管理，为服务层集成、迁移和
-HTTP E2E 使用不同数据库；显式启用进程测试，不能用跳过 E2E 的普通 pytest 结果代替完整验收。
-完整验收禁止跳过或排除用例；传入 `-k` 排除测试会以非零退出，不能当作完整验收通过。
-完整回归中的模型接口故障由本机 HTTP 桩制造，
-Worker 崩溃测试会实际终止处于 embedding 阶段的 Worker，再在租约过期前重启，
-等待其自动回收并以新 build 完成，不手动修改数据库租约。
-
-## 10. 固定环境与完整交付检查
-
-开发验收基线固定为根目录 `.python-version` 中的 Python 版本；依赖版本统一维护在
-`backend/requirements-dev.lock`。这是版本快照，不含制品哈希，不表示供应链完整性验证。
-`pyproject.toml` 保留库依赖范围；安装时使用锁文件，修改依赖后必须同步锁文件并重跑验收。
-
-新环境安装（在项目根目录执行，需允许从软件包源下载依赖）：
+解释器版本以.python-version为准，依赖用backend/requirements-dev.lock，不只装pyproject的浮动范围。
+首次安装需要允许下载，已有环境不盲目删除或重装：
 
 ```powershell
 py -3.12 -m venv backend/.venv
 .\backend\.venv\Scripts\python.exe -m pip install -r backend/requirements-dev.lock
-.\backend\.venv\Scripts\python.exe -u backend/scripts/check.py
 ```
 
-创建环境前确认解释器的补丁版本也与 `.python-version` 一致；`py -3.12` 本身不保证补丁版本。
-脚本从源码目录运行，不要求 editable 安装。Linux 使用 `.venv/bin/python` 对应命令。
-现有环境不要盲目重装或删除；完整检查会列出缺失、漂移的依赖并退出，不自行安装。
+py -3.12不保证补丁版本。脚本从源码运行，不要求editable安装。
+配置放backend/.env或环境变量，不提交密钥：
 
-统一入口按顺序显示：版本预检 → lint → 业务类型检查 → 脚本类型检查 → 独立数据库完整回归。
-任一步失败立即停止；数据库迁移、HTTP 生命周期、Worker 重启均在回归内。
-跳过、xfail/xpass、排除用例或未收集到测试均不能让完整验收显示成功。
-普通 `pytest` 仍可用于快速开发，但不能替代此入口。
+| 配置 | 用途 |
+| --- | --- |
+| KS_EMBEDDING_BASE_URL / KS_EMBEDDING_MODEL / KS_EMBEDDING_API_KEY / KS_EMBEDDING_DIM | 向量服务与1024维配置 |
+| KS_GENERATOR_BASE_URL / KS_GENERATOR_MODEL / KS_GENERATOR_API_KEY | OpenAI兼容聊天服务 |
+| KS_DATABASE_URL | 显式数据库；根启动器未设置时自动用本机内置库 |
+| KS_WORKBENCH_OBJECTS | 根启动器持久原件目录，默认backend/.data/objects |
+| KS_STORAGE_ROOT | 手动运行API/Worker的原件目录，不等同根启动器的卷配置 |
+| KS_DOCUMENT_PARSER_PROFILE | legacy-v1或deepdoc-v0.22.0-v1，只影响新构建 |
+| KS_TOKEN_SECRET | 本地开发身份桩签名密钥，正式接入替换验证器 |
 
-PDF 中文测试默认使用 Windows 黑体。其他环境须提供本地中文字体，例如：
+模型配置可能向外部服务发送内容，真实资料须另授权。换向量模型必须离线迁移索引、重建和重标阈值，不在现有索引混写。
 
-```bash
-export KS_TEST_FONT_PATH=/usr/share/fonts/truetype/wqy/wqy-zenhei.ttc
-python -u backend/scripts/check.py
+## 2. 启动与数据保留
+
+```powershell
+.\start.cmd
+.\start.cmd -Mode Demo
+.\start.cmd -CheckOnly
+.\start.cmd -NoBrowser -Port 8011
 ```
 
-CI 配置位于 `.github/workflows/backend.yml`，使用 Ubuntu、固定 Python、同一锁文件及检查入口，
-额外安装文泉驿中文测试字体。CI 不注入模型密钥或业务数据库配置，不上传问答/服务日志。
-本地 Windows 验证与远端 Ubuntu 流水线结果须分别记录，不能把配置文件存在当作云端运行通过。
+| 模式 | 行为 |
+| --- | --- |
+| 默认Real | 真实模型、持久库及原件卷，退出后资料保留 |
+| Demo | 临时隔离库及原件目录、确定性模型桩，退出清理，不代表模型效果 |
+| CheckOnly | 检查配置/依赖及模型，不进入问答；可能启动依赖，不是完全无副作用 |
 
-## 11. 人工恢复与同模型重建
+启动器输出阶段、端口、/workbench/与/docs地址；终端可提问，/token显示开发令牌，/quit退出。
+令牌属本次启动桩，服务重启后重新连接，不写进报告或提交。
+依赖失败停止，不静默切模型桩；-PullMissing才允许拉取缺失向量模型，-NoDeepDoc显式关闭本次DeepDoc。
+Real模式自动调用start-mineru.ps1启动或复用已安装的MinerU；-MinerURoot可指定D盘环境目录（默认D:\MinerU），
+-NoMinerU仅跳过自动启动，不切换默认或已有文件的解析方案。Demo不启动MinerU；CheckOnly也会准备该依赖。
+未安装时明确提示且不自动安装；已安装但模型/接口检查失败则停止启动，不静默回退。
 
-接口契约只在 design §7.1 定义。以下是调用顺序，不增加重试/回滚语义。
+未显式设置数据库时复用/启动本机PostgreSQL，默认55433端口。
+数据目录优先已初始化的backend/.data/pgdata，否则本机应用数据目录；KS_LOCAL_DB_DIR可指定ASCII路径。
+API/Worker退出不等于后台数据库停止，停止用：
 
-1. 保留上传/新版本上传回执中的 `document_id`、`version_id`、`job_id`。
-2. 查询 GET `/api/v1/jobs/{job_id}`。queued/running 时继续等待，不发重建请求。
-3. failed 后先排除原因：例如模型恢复可用、Worker 恢复原模型配置。加密、空内容或不可解析文件
-   不是重建可以修好的问题，应按业务要求上传修正后的新版本。
-4. GET `/api/v1/documents/{document_id}` 读取最新 `generation`；保留上传回执中的目标版本。
-5. 在 Swagger 中携带本人的开发令牌，调用 POST `/api/v1/documents/{document_id}/reindex`：
+```powershell
+.\backend\.venv\Scripts\python.exe backend/scripts/dev_db.py --stop
+```
+
+**不要为排障使用dev_db.py --reset，它会删除整个库。** 数据库与原件目录成对备份/迁移，临时库不得共用持久原件卷。
+
+### 手动部署与迁移
+
+确认目标KS_DATABASE_URL/KS_STORAGE_ROOT，先备份并停止Worker、处理旧任务。
+在backend目录执行，API和Worker分别在不同终端运行且使用同一配置：
+
+```powershell
+.\.venv\Scripts\python.exe -m alembic upgrade head
+.\.venv\Scripts\python.exe -m uvicorn knowledge.entrypoints.api:app --host 127.0.0.1 --port 8010
+.\.venv\Scripts\python.exe -m knowledge.entrypoints.worker
+```
+
+当前head为0003_chunk_warnings；0002固定任务目标，升级前不能留下未处理旧任务；0003保存块警告。
+不对未知默认库运行迁移，不改历史迁移，不原地回填已发布片段。
+
+### 本次数据库回退与备份
+
+2026-10-30已将本机knowledge库由0005事务降至0003，移除快照表和库描述列；
+8张核心业务表记录数与原件保持不变。保留最新上传和片段，不等于恢复历史时间点的数据内容。
+备份先恢复到独立副本并试降级，验证业务表/列和记录数后才改原库。
+备份在忽略目录 `backend/.data/rollback-backups/20261030T021547Z/`：before.dump是完整custom格式备份，
+manifest.json记录版本和计数，迁移源码副本用于恢复演练。含业务资料，仅本地保存，禁止提交/外发。
+恢复时先用pg_restore到新库验证，再评审切换；不要直接覆盖当前库，也不重复运行一次性降级脚本。
+
+### 建立持久基础评测库（会清空当前业务数据）
+
+仅明确要求替换当前数据时运行，不作为日常启动命令：
+
+```powershell
+.\backend\.venv\Scripts\python.exe -X utf8 -u backend/scripts/retrieval_baseline.py --reset-current --confirm-real --serve
+```
+
+脚本仅接受`.data/db_url`记录的本机knowledge库及项目`.data/objects`卷；备份在
+`backend/.data/evaluation-backups/<UTC时间>/`，包含before.dump、旧objects和校验清单。
+清空前自动停止精确匹配该库/卷的API/Worker，原启动终端将断开；发现其他数据库连接则停止，不强制踢掉。
+先实际恢复到独立副本校验记录数和版本，成功才清空。原件留在配套备份，不外发。
+导入11份自制文件（5种格式），固定24题/8维度，对比4种召回配置并执行24次问答；上限120次检索/问答，
+使用现有真实模型，只有自制资料会被提交。入库和报告发布另需向量调用，费用未知，失败不自动重跑。
+每6题发布一次进度；前端“检索评测”可刷新查看过程、结果、标注、实际来源并跳转知识库复测或历史问答。
+`--serve`使实验后前端继续运行，Ctrl+C停止服务；不加则完成后退出，数据持久保留，下次start.cmd可继续查看。
+报告库应与被测资料库分开选择，不能将含标注答案的报告库纳入被测检索范围。
+
+## 3. 同模型重建与人工恢复
+
+1. 保存上传回执document_id/version_id/job_id，queued/running时等待，不重复发请求。
+2. failed后先修模型/Worker/解析环境；加密或空原件应更正后上传新版本。
+3. 读取最新generation，使用**最新上传回执version_id**，不是仍可能指向旧发布的current_version_id。
+4. POST /api/v1/documents/{id}/reindex，UUID与代次换成实际值：
 
 ```json
-{"version_id": "目标上传回执中的 UUID", "expected_generation": 2}
+{"version_id":"最新上传版本UUID","expected_generation":3}
 ```
 
-这里的 2 仅示例，必须替换为实际代次。首次上传失败时 `current_version_id` 可以为空；
-新版本失败时它仍指向旧发布版本。不要把 current_version_id 误作最新上传版本。
+202后查新job，409刷新详情与已有任务，不盲目重发。重建复用原件/版本和冻结配置，旧发布继续服务直到成功切换。
+不支持在线换向量、历史回滚或表格/语义策略升级；原样重传去重不能代替恢复。
 
-6. 202 响应保存新的 `job_id` / `build_id` / `generation`，按原来的任务查询接口轮询。
-   新任务重新计数，历史失败 job 不改成成功。重建期间仍可检索旧发布内容，成功后引用绑定新 build。
-7. 若遇 409 VERSION_CONFLICT，刷新详情并查询最新任务，不盲目重发。旧 generation 的重复请求不会被当作成功。
-   如果 Worker 不是原模型/维度，恢复原配置后再处理；此接口不执行跨模型迁移或历史版本回滚。
-8. 删除中、删除后或非本人资源返回 404，不需要等物理清理完成。
+## 4. DeepDoc与D盘Docker
 
-接口同时可用于已成功最新版本的主动重建，不复制文件或增加版本。
-沿用原构建的分段与向量配置；修改 settings 中分段参数不会借此接口改变原构建配置。
-启动方式仍按 §9：`start.cmd -Mode Demo` 可离线在 Swagger 体验，不调用真实模型。
-开发令牌签发方式见 §9；不要将令牌、正文或真实资料贴入文档或提交记录。
-
-可观察自动验收仍使用 §10 的统一入口。终端显示 `[reindex 1/5]` 至 `[reindex 5/5]`；
-人工恢复验收显示 `[recovery 1/4]` 至 `[recovery 4/4]`，在本机 HTTP 模型桩返回 503 后，
-让独立 Worker 按真实退避耗尽三次自动尝试，再经公开重建接口恢复，不手工修改任务状态。
-
-## 12. 固定问题集与效果评测
-
-数据集只取 `backend/testdata/evaluation/` 和既有自制会议室 v1/v2 文件，
-不读取旧语料中的抓取文件、甲方数据或用户任意目录。问题集包含 12 个固定用例：
-精确事实、语义改写、跨来源信息、文号、库外、同主题无答案、版本更新、文档内指令干扰。
-`cases.json` 是初始开发标注，需业务方复核，不是已确认的业务验收标准。
-
-在项目根目录执行离线评测：
-
-```powershell
-.\backend\.venv\Scripts\python.exe -u backend/scripts/evaluate_local.py
-```
-
-显式获得一次真实模型调用授权后，才执行：
-
-```powershell
-.\backend\.venv\Scripts\python.exe -u backend/scripts/evaluate_local.py --real --confirm-real
-```
-
-真实模式读取既有模型白名单配置，仍使用临时独立数据库、API、Worker 和固定自制资料；
-不接受自定义数据路径或问题，缺少确认参数时不读取真实配置、不调用模型。
-固定每题三种检索及一次问答，共 48 次检索/问答 API 请求，上限 60，不自动重跑。
-上传、轮询、引用读取是额外本地 API 请求；上传会产生向量调用，后台故障按原有任务契约重试。
-token 用量与费用因现有 API 未提供而记为 null，不能视作免费，也不能把本地 API 请求数当供应商精确计费次数。
-
-终端逐题显示 ID、分类、状态和自动发现，不打印问题/答案。指标报告写入忽略目录
-`backend/.data/evaluation/<本次编号>/report.json`，保存语料指纹、模型配置名、阈值、逐题指标与耗时，
-不保存问题、答案、原文、令牌、端点或资源存储路径；模型 ID 不等于已固定的模型权重版本。
-
-| 指标 | 表示什么 | 不能据此认定什么 |
-| --- | --- | --- |
-| gold_fact_recall_at_5 / first_relevant_rank / MRR | 正确文档及当前版本的支持片段是否进入 Top5、首次位置 | 生成答案正确 |
-| fact_lexical_coverage | 标注事实的匹配词是否出现在答案 | 否定、推断、额外事实等语义正确 |
-| gold_support_coverage | 标注支持片段是否在实际引用的正确版本原文中 | 答案每句话都得到原文支持 |
-| status_matches_label | answered/no_evidence 状态是否符合可回答标注 | 模型没有编造，或正文拒答与状态完全一致 |
-| forbidden_text_detected | 命中版本过期词或注入探针词，需人工检查 | 单凭命中就能判定恶意服从或事实错误 |
-
-引用另外经 GET chunks 验证可访问性、四个资源 ID、定位与摘录。注入用例先检查探针是否确实进入混合检索证据，
-未暴露时记录 instruction_probe_not_exposed，不宣称抗注入验证成功。
-不可答题被标为 answered 记录 unanswerable_not_no_evidence；这是状态契约不符，不直接等同于事实幻觉。
-上游错误单独记录 qa_error_not_refusal，不能当作正确拒答。统计显示错误数，检索错误按零计入可回答题召回分母。
-
-退出码 0：没有自动发现；2：执行完成但发现待处理项；1：配置、启动或执行未完成；130：人工中止。
-即便退出 0，quality_accepted 仍为 false，语义支持与业务标注均待人工复核。
-评测失败不能通过改标注、阈值或跳过用例掩盖；生产拒答/部分段落无证据行为沿用 design §6.2，变更需评审。
-效果命令与快速回归分开；统一检查仅自动运行离线评测工具与自制 HTTP 夹具测试，不调用真实模型。
-
-## 13. 浏览器知识工作台
-
-### 启动与连接
-
-根目录双击 start.cmd，默认 Real 模式；自制资料处理完成后会打开本次服务的 `/workbench/` 页面。
-离线体验用 `start.cmd -Mode Demo`；避免自动打开浏览器用 `-NoBrowser`。
-浏览器与终端共用本次临时 API/Worker，不增加前端服务，不需要 npm install 或构建步骤。
-
-1. 启动器把本次令牌放在地址片段里打开页面，**页面自动连接，无需手工填写**；
-   片段不进入请求行、不写服务端日志，页面读取后立即从地址栏清除。
-2. 令牌密钥每次运行随机生成，浏览器历史里残留的旧令牌对下一次运行无效。
-   若手工打开 `/workbench/`（不带片段），页面仍会弹出连接窗口，此时在终端输入 `/token` 复制粘贴。
-3. 创建/打开知识库，上传自制文件并等待状态“已就绪”；不是按假百分比展示进度。
-4. 检索测试支持三种方式，显示接口片段、来源、实际分数与所属知识库；结果按上下分布，
-   条件在上、结果在下；点知识库标签可直接打开对应库。智能问答点击引用可重新读取授权原文。
-5. 页面支持新版本上传、同模型重建、文档与知识库删除。删除有确认框；重建沿用 §11 的既有契约。
-6. 终端 `/quit` 或 Ctrl+C 结束本次临时服务，临时数据库和原件被清理，**不是持久个人资料部署**。
-
-无证据、模型故障、引用失败分别展示；同主题无答案的已知 502 不会包装成成功或正常拒答。
-问答每次独立，没有多轮上下文。引用仅为文本分块，不提供原文件保真预览。
-真实模式上传与提问可能向配置的模型发送内容；开发体验只用自制资料。
-
-### 身份、刷新与限制
-
-令牌、上传回执和问答仅在页面内存中；刷新需重新连接。点击左下身份按钮或右上“我”可断开并清空内容。
-不使用 localStorage/sessionStorage 保存令牌、问答，不把令牌放进 URL，也不传模型密钥到页面。
-会话与消息已写入后端：重新连接后按 owner 加载历史并展示；历史只读，不参与检索或生成上下文。
-旧身份未结束的响应在断开/切换后丢弃。
-
-失败的新版本可能没有 current_version_id。若刷新丢失上传回执，页面不能可靠推断恢复目标，
-因此禁用对应重建操作；此时按 §11 使用保留的回执调用接口，不以旧发布版本替代。
-页面保留明确的上传跳过/失败信息；自动刷新失败会提示，不静默假装处理完成。
-
-### 检查与浏览器验收
-
-```powershell
-node --check frontend/app.mjs
-node --test frontend/core.test.mjs
-.\backend\.venv\Scripts\python.exe -u backend/scripts/check.py
-.\backend\.venv\Scripts\python.exe -u backend/scripts/browser_smoke.py
-```
-
-远端数据库经隧道抖动时，可加 `--temporary-database` 改跑本机临时库，只验证界面与流程，
-不代表外部库验收：
-
-```powershell
-.\backend\.venv\Scripts\python.exe -u backend/scripts/browser_smoke.py --temporary-database
-```
-
-界面运行本身无需 Node；测试需已有 Node.js 22+。浏览器验收另需本机 Edge/Chrome，缺少即报错，
-不自动安装、不跳过后宣称通过。使用独立浏览器配置，不读取个人浏览器状态。
-截图及测试配置保存在忽略目录 `backend/.data/workbench/<编号>/`，不是生产数据或提交产物。
-
-浏览器验证连接、实际建库/上传、任务就绪、回答/引用、正常无证据、检索、重建/更新/删除、
-HTML 文本安全、窄屏和刷新清理；HTTP 502 的界面分支采用显式浏览器故障注入，不冒充真实模型结果。
-其中「分块结果」一步会打开文档行的分块视图，核对覆盖条色块数与明细卡片数一致、首块编号为 `#1`，
-截图存为 `chunks.png`。缺少字符偏移时视图退化为等宽展示并在提示中说明，不伪造覆盖比例。
-CI 增加 Node 原生协议测试；本机浏览器通过不等于远端 CI 浏览器验收通过。
-
-静态目录由源码布局定位；独立安装后端 wheel 不会自动打包根目录 frontend。
-正式交付需按主系统部署方式提供静态资产和正式身份；没有完成这一步就不能宣称生产前端已交付。
-## 14. DeepDoc 可选服务（2026-10-27）
-
-契约见 design §2.1，决策见 decisions 0015。主后端默认仍走旧解析，不会因缺少模型静默降级。
-
-### 14.1 环境与启动
-
-需要支持 Linux 容器的 Docker Desktop + Compose、可拉取镜像的软件网络及足够的磁盘/内存。
-复用的 RAGFlow 镜像包含较多依赖，首次构建不是轻量下载；不自动安装 Docker 或改系统配置。
-
-本机按用户要求将 Docker 程序安装到 `D:\Docker\Desktop`，WSL 数据盘指定为 `D:\Docker\wsl`，
-安装包与临时目录为 `D:\Docker\Downloads`、`D:\Docker\Temp`，不把镜像/容器大数据放到 C 盘。
-这不等于 Windows 零系统盘写入：注册信息及少量用户配置由操作系统管理。
-根目录 `install-docker.ps1` 只运行 D 盘指定位置、数字签名有效的官方安装包，
-使用官方 `--installation-dir` / `--wsl-default-data-root` 参数；需要管理员确认，不自动重启。
-安装成功与引擎就绪分开验证，数据盘实际位置确认前不拉取业务镜像；不会修改已有 Ubuntu 发行版。
-
-本机默认 C 盘 Docker 配置目录写入失败，目录带 Encrypted 属性；复制及改名也被拒绝，
-未更改其权限、加密设置或原文件，未生成备份或目录链接。实际采用根目录 `start-docker.ps1`：
-仅给 Docker 子进程指定 `D:\Docker\UserData\Roaming`、`D:\Docker\UserData\Local` 和 D 盘临时目录，
-启动后恢复调用终端的环境变量。不要从普通快捷方式启动来绕过该入口；它可能再次使用原 C 盘配置。
-2026-10-27 已验证 Linux 引擎及 Compose 可用，实际业务数据盘为
-`D:\Docker\wsl\disk\docker_data.vhdx`。该结论不等于 DeepDoc 镜像或解析效果已验收。
-
-根目录 PowerShell：
+需要Linux容器引擎及Compose，初次安装/拉镜像需要授权。项目机器Docker程序用D:\Docker\Desktop，
+数据用D:\Docker\wsl，下载与临时文件也在D盘；少量Windows系统配置不等于完全零C盘写入。
+install-docker.ps1只处理指定安装路径；用start-docker.ps1启动以指定D盘用户配置，避免原C盘配置改名失败。
+不要擅自移动现有WSL盘或改其他发行版，也不要绕过该脚本使用普通快捷方式。
 
 ```powershell
 .\start-docker.ps1
@@ -499,166 +127,99 @@ CI 增加 Node 原生协议测试；本机浏览器通过不等于远端 CI 浏�
 .\start-deepdoc.ps1 -LaunchWorkbench
 ```
 
-脚本按步骤实时输出检查、构建和启动信息；生成的共享令牌不打印、不写文件。
-只启动边车可省略 `-LaunchWorkbench`，再在**同一个 PowerShell 会话**运行 `.\start.cmd`。
-工作台仍是原真实模型模式，问题/证据会送配置的生成与向量服务；DeepDoc 本身不调用外部模型。
-演示/隔离测试仍保持旧解析，不继承真实解析端点。
-
-主系统自行部署 API/Worker 时，两者显式配置相同的 `KS_DOCUMENT_PARSER_PROFILE`、
-`KS_DEEPDOC_URL`、`KS_DEEPDOC_TOKEN`；令牌与边车 `DEEPDOC_TOKEN` 相同（至少32字符）。
-不得把令牌提交进仓库。`KS_DEEPDOC_TIMEOUT_SECONDS` 是网络等待上限，不是处理时延目标。
-主服务连边车仅支持回环 HTTP；跨机/TLS/外部解析 SaaS 不属于本次契约。
-
-`deploy/deepdoc/compose.yaml` 可独立使用；固定 release 镜像后可通过 `RAGFLOW_IMAGE`
-指定同一 release 的镜像 digest。构建检查上游 VERSION，边车 HTTP 依赖锁定且不改上游环境。
-容器运行期禁外连并设置 HuggingFace 离线模式，模型缺失时失败，不在处理资料时偷偷下载。
-这里的禁外连指 `deepdoc` 解析容器。`gateway` 是复用同镜像 Nginx 的固定入口，连接入口和内部网络，
-仅发布宿主回环端口；不加载模型，不接收动态目标，不打印请求或正文。部署依据见 decisions 0016。
-不要把解析容器额外接到普通桥接网络；本机仅内部网络直接发布端口不可达，必须保留入口代理。
-
-Docker Hub 令牌请求超时时，可显式使用同版本的上游国内镜像，不改系统 DNS 或使用未知加速源：
-
-```powershell
-$env:RAGFLOW_IMAGE = 'swr.cn-north-4.myhuaweicloud.com/infiniflow/ragflow:v0.22.0@sha256:3e7f2b8a796f55bf7fde363638086f32f7017e9d01bee753f827b50725ba8d7a'
-.\start-deepdoc.ps1
-```
-
-地址依据：[上游 v0.22.0 配置](https://github.com/infiniflow/ragflow/blob/v0.22.0/docker/.env)。
-此 digest 是本次解析到的镜像内容标识，不冒充模型权重的独立指纹验收。
-
-### 14.2 查看与停止
+仅启动边车可不加LaunchWorkbench，再在同一PowerShell运行start.cmd。
+脚本生成共享令牌但不打印；API/Worker配置KS_DOCUMENT_PARSER_PROFILE、KS_DEEPDOC_URL、KS_DEEPDOC_TOKEN，
+与边车DEEPDOC_TOKEN一致且至少32字符，换令牌后两端一起重启。KS_DEEPDOC_TIMEOUT_SECONDS是等待上限而非性能目标。
 
 ```powershell
 Invoke-RestMethod http://127.0.0.1:9381/health
 docker compose -p ks-deepdoc -f deploy/deepdoc/compose.yaml logs -f
+docker compose -p ks-deepdoc -f deploy/deepdoc/compose.yaml exec deepdoc /opt/ks-sidecar-venv/bin/python -m deepdoc_sidecar.smoke
 docker compose -p ks-deepdoc -f deploy/deepdoc/compose.yaml down
 ```
 
-这些命令需要同一个 `DEEPDOC_TOKEN` 环境变量以解析 Compose 配置；日志只输出请求 ID 和耗时，
-不输出 OCR 文本/文件名。`health.models_verified=false` 是设计上的提示，不是推理就绪证明。
-工作台退出**不停止**边车；停止后已发布内容仍可检索，但新的 DeepDoc 任务会失败。
-重启 PowerShell 后令牌不会保留；重新运行脚本会生成新令牌并重建相同项目的容器，
-同时需重启使用旧令牌的 API/Worker，不要只重启一侧。
+Compose命令需同会话令牌；工作台退出不停止边车。health只证明存活，smoke是自制样本，不代表复杂业务验收。
+真实启动器未显式配置DeepDoc令牌时，可只读复用本项目ks-deepdoc/deepdoc正在运行容器的令牌，
+在内存中传给API与Worker，不打印、不落盘；显式令牌不覆盖，其他容器/地址不读取。更新后重启项目才生效。
+保持解析器内部网络禁外连，网关只转发固定目标；缺模型/非法输出失败，不改用旧解析器兜底。
+镜像可用RAGFLOW_IMAGE固定同release digest，许可保留在deploy/deepdoc/LICENSE.ragflow，传递依赖另遵守自身许可。
 
-### 14.3 验证与故障边界
+## 5. 验证与评测
 
-环境启动后执行真实解析自检（容器内动态生成自制扫描 PDF、PNG/JPEG、双页 TIFF 与简单表格）：
+### 解析器三选一与MinerU
+
+上传区选择“沿用服务默认 / 基础解析 / DeepDoc / MinerU”，该选择也用于上传新版本。
+API在multipart中传parser_profile；选项与冻结语义见设计“显式可选解析器”。默认可配KS_DOCUMENT_PARSER_PROFILE，
+两端须重启到同一版本。重试/普通重建不换策略，同字节去重提示实际已有方案，不把选择当作已切换。
+TXT/MD直接读取并告警，不依赖OCR服务；基础模式没有图片OCR，选基础上传图片仍报不支持。
+DeepDoc v2支持Office原生路径，须重建并重启已有边车，新客户端不能假定旧镜像已支持v2。
+在已设置DEEPDOC_TOKEN的会话执行：`docker compose -p ks-deepdoc -f deploy/deepdoc/compose.yaml up -d --build`；
+没有本地镜像或模型缓存时可能联网，先确认下载安排，再执行。
+若只有镜像站不可达且已有可信v0.22.0边车镜像，可用deploy/deepdoc/Dockerfile.refresh制作离线代码更新层：
+`docker build --pull=false --network=none -f deploy/deepdoc/Dockerfile.refresh -t ks-deepdoc-local:deepdoc-v0.22.0-v2 .`。
+旧Docker在BuildKit仍请求镜像站时，可在该会话临时设DOCKER_BUILDKIT=0，完成后恢复；没有旧镜像时不能使用此路径。
+随后在有DEEPDOC_TOKEN的会话执行Compose up -d --no-build --pull never；不使用docker cp制作无法复现的运行态补丁。
+
+MinerU固定本机4.1.2独立环境，主环境不安装其重依赖。用户已批准本次在D盘安装与下载basic模型；
+后续启动默认MINERU_MODEL_SOURCE=local，缺模型明确失败，不自动联网下载。
+准备环境时先将TEMP/TMP、PIP_CACHE_DIR指向D:\MinerU\tmp和D:\MinerU\cache\pip，
+用已有Python创建D:\MinerU\venv，再用该环境pip安装mineru==4.1.2；不使用系统pip或主后端环境。
+按官方[同步文件API](https://opendatalab.github.io/MinerU/usage/file_parse/)部署，项目根目录提供：
 
 ```powershell
-docker compose -p ks-deepdoc -f deploy/deepdoc/compose.yaml exec deepdoc /opt/ks-sidecar-venv/bin/python -m deepdoc_sidecar.smoke
+.\start-mineru.ps1 -DownloadModels -CheckOnly # 仅显式下载并验证，不启动服务
+.\start-mineru.ps1                          # 本地模型检查，启动8000/8003两个回环服务
+.\start.cmd                                # 自动准备已安装的MinerU，再启动项目
 ```
 
-逐项输出 blocks 数量、正文/表格/页码检查结果，不保存 OCR 正文；任一项失败退出1。
-这是最小解析冒烟测试，不替代复杂多栏/跨页表格及完整业务链路验收。
+启动脚本将环境/模型/缓存/临时文件/状态/日志放D:\MinerU，服务在后台隐藏窗口运行，打印PID与就绪进度；
+日志位于D:\MinerU\logs，退出工作台不自动停止解析服务。复用前校验接口，不停止占用端口的其他进程。
+启动脚本不改写KS_MINERU_URL；默认对应8003，若显式配置其他端点，仍以该配置为准。
+确认API未被配置为外部Router/SaaS；wrapper本身不加载模型，不代表上游不会转发。
+主项目配置KS_MINERU_URL=http://127.0.0.1:8003，可选KS_MINERU_TOKEN供本机认证代理，
+KS_MINERU_TIMEOUT_SECONDS为总等待预算（默认330秒），而非性能承诺。代理必须是本机origin；不接外网地址或任意响应URL。
+请求固定basic/auto/all，不对长文档只取前10页；超时或异常明确失败，不回退DeepDoc或基础解析。
+上游可能在超时/断连后继续工作，本项目不自动重提同次HTTP请求；须按本机服务的保留/清理规则处理其缓存。
+4.1 ZIP要求structured_content.json与完整标记，限制压缩/解压预算，不解压任意路径或获取图片。
+当前客户端以页/块定位，不承诺字框、Office物理分页或完整表格语义，相关warnings需人工核对。
+实际OCR/版面效果验收独立于协议测试，当前已验证范围与遗留问题见根目录issues。
+上游[输出契约](https://opendatalab.github.io/MinerU/reference/output_files/)及[许可](https://github.com/opendatalab/MinerU/blob/master/LICENSE.md)须按部署版本核对。
 
-- `backend/scripts/check.py` 包含边车 lint/类型检查、协议单测与真实数据库/本机 HTTP 协议集成测试。
-  测试服务明确使用自制响应夹具，只验证集成、警告、引用、授权和删除，不代表识别效果。
-- 真实模型验收须在新建的独立知识库中上传自制扫描 PDF、PNG/JPEG、多帧 TIFF、
-  多栏 PDF 和跨页表格；人工逐项核对提取文本、页码、所有 positions、表头/行列关系及 warnings。
-  再验证旧内容不受失败新版本影响、引用可读、他人 ID 与删除后返回404；不得使用甲方资料替代。
-- 不要对旧 build 改库：原 reindex 保留原 parser_profile，不能用来偷换算法。
-  升级策略用新库重导入；同版本跨策略迁移待另评审。
-- 服务不可达、忙碌、模型缺失或无效输出统一在主任务表现为现有 `PARSE_FAILED`，
-  不调用 pypdf 兜底，不变成 `no_evidence`。当前按既有确定性解析失败策略不自动重试；
-  修复服务后用现有人工重建恢复。加密文件仍为 `PASSWORD_PROTECTED`。
-- 本机 Docker Desktop 4.97.0 的 D 盘程序、独立配置目录及实际 WSL 数据盘已核验，Linux 引擎可用。
-  镜像已构建并跑过真实推理（2026-10-27）：自制版面 PNG/JPEG/TIFF/PDF 四格式字符全部识别正确，
-  表格与跨帧页码正确，但**词间空格在整行文本中丢失**，导致 `deepdoc_sidecar.smoke` 的正常断言
-  4/4 失败（该自检按英文带空格断言，中文不受影响）。适配层 warnings 全局共享的缺陷已于当日修复，
-  见 14.4。记录与证据见 `reports/deepdoc-parse-validation-2026-10-27.html`。
-  **不能据此宣告 DeepDoc 移植验收完成**：多栏、跨页表格、复杂公式与真实扫描件仍未验证，
-  容量与吞吐也没有实测结论。
-
-### 14.4 边车输出归一（2026-10-27 实测后修订）
-
-`normalize_boxes` 在边车内做三件事，均为实测后确认的行为：
-
-1. **阅读顺序**：上游按版面探测批次返回块，同一页会出现“第二条”排在“第一条”之前；
-   按页、上边距、左边距排序后恢复阅读顺序。局限：只处理单一阅读顺序，多栏排版会按行交错。
-2. **短块合并**：版面模型会把“第二条”这类编号单独切成 3 字块，单独成段是检索噪声；
-   不足 16 字的块并入紧随其后的同页块（表格块不并入）。
-3. **警告按块归属**：`deepdoc_table_linearized` 只标表格块，`deepdoc_figures_not_described`
-   标在图形所在页的块上（无定位则记到首块），`deepdoc_ocr_requires_review` 标全部块。
-   早先跨块复用一个集合，纯文本块也带表格警告。边车按块回传 `warnings` 字段，
-   旧客户端按文档级并集回退兼容。
-
-`chunks.warnings`（迁移 0003）把块级信号落库；分块继承来源块的警告。
-前端分块抽屉按块显示橙色标签；`locator.precision="block"` 的偏移是块内偏移，
-覆盖条退化为等宽并说明，不伪造文档级比例。
-
-多格式自制样本在 `backend/testdata/multiformat/`（生成脚本 `generate.py`）：
-文本层 PDF、扫描版 PDF、PNG、JPEG、双页 TIFF、DOCX。同内容双格式（文本 PDF 与扫描 PDF）
-可对照 DeepDoc 的版面/表格能力与纯 OCR 路径；实测中文 OCR 字符级准确，扫描表格可识别并线性化
-（线性化按列序输出，行列对应关系需人工核对）。单页解析约 33 秒（2 核 CPU）。
-
-重建镜像需要拉取 RAGFlow 基础镜像；基础镜像不在本地时须可访问 Docker Hub。
-本机开发时边车代码改动可直接 `docker cp` 进容器后 `docker restart`，但容器重建后会丢失，
-以源码为准。
-
-## 15. 文件浏览（原文与正文）
-
-「全部文件」每行的文件名或「浏览」进入阅读页，两个视图：
-
-- **原文**：`GET /documents/{id}/file` 取当前版本字节，前端转成 blob 内嵌。
-  PDF 用 `<iframe>` 交给浏览器内置阅读器，图片直接 `<img>`；XLSX/CSV 走 `/sheets` 画表格，
-  DOCX 走 `/docx` 按正文顺序渲染段落与表格（结构化预览，不保留字体/分页/图片），
-  Markdown 给出下载与切到正文的提示。页头的「下载原文件」与视图无关，始终可用。
-- **提取正文**：按已发布分块还原，PDF / 图片按页分组（`第 N 页` 吸顶），
-  DOCX / Markdown 不伪造页码；支持页内查找（本地高亮）与复制单块。
-
-实现要点：
-
-- 页面 CSP 需放行 `blob:`（`img-src` / `frame-src` / `connect-src`），否则 blob 预览会被
-  静默拦截，表现为图片 `naturalWidth=0`、`fetch(blob:)` 报 `Failed to fetch`。
-  已核对 `frontend/index.html` 的 CSP 含 `blob:`；改动时不要去掉。
-- blob 地址在切换文件与离开页面时释放（`disposeBrowse`），避免长时间浏览后内存累积。
-- 非 PDF/图片一律 `Content-Disposition: attachment`，不把上传内容当同源页面渲染。
-- 阅读页只用块级定位：DeepDoc 的偏移是块内偏移，正文视图标注「块内 [a, b)」，
-  不冒充文档级字符位置。
-
-## 16. 表格与演示文稿（XLSX / CSV / PPTX）
-
-`.xlsx`、`.csv` 走常规解析器（DeepDoc 只处理 PDF 与图片），按工作表与行区间出块：
-
-- XLSX 一行一条记录，单元格用制表符分隔；块头带 `工作表《名称》第a-b行`，便于检索命中后回到具体行。
-- CSV 表名固定为 `CSV`，编码按 UTF-8（含 BOM）优先、失败再按 GB18030；行号规则与 XLSX 一致。
-- 空行跳过，但行区间仍按真实 Excel / CSV 行号给出（用户看到的行号一致）。
-- 单个文件最多读取 `KS_XLSX_MAX_ROWS`（默认 5000）行；超出时在最后一块加
-  `xlsx_rows_truncated`（CSV 为 `csv_rows_truncated`）警告，界面提示「表格行数超上限」，不静默截断。
-- 每块行数由 `KS_XLSX_ROWS_PER_BLOCK`（默认 40）控制；块过大会让行号失去定位意义。
-- 合并单元格只保留左上角的值（openpyxl 行为），其余为空。
-- 旧格式 `.xls` 与加密表格不支持：分别返回 `UNSUPPORTED_FORMAT` / `PARSE_FAILED`，不猜测解析。
-- 阅读页：表格无法在浏览器内嵌，原文视图由 `/sheets` 画成只读表格；正文视图用等宽字体并按 `│` 分隔列，
-  复制仍给原始制表符（可直接粘回 Excel）。
-
-`.pptx` 只提取幻灯片文本（标准库读 OOXML，不引入 Office 依赖）：
-
-- 每张幻灯片一块，`locator.page` 为幻灯片序号（从 1 开始），正文按幻灯片分组显示。
-- 不还原版式、母版、动画或图片；原件仍可下载。旧格式 `.ppt` 返回 `UNSUPPORTED_FORMAT`。
-
-## 17. 外部数据库（可选）
-
-默认每次运行都创建临时库。要让服务与验证改用已有 PostgreSQL（例如远端服务器），在 `backend/.env`
-写一行 `KS_DATABASE_URL=postgresql+psycopg://<user>:<password>@127.0.0.1:5433/<db>`：
-`ask_local.py` 与 `browser_smoke.py` 检测到这一行被显式配置后，就不再创建临时库，改为对该库执行迁移。
-该行被注释掉即回到临时库。使用外部库时运行环境自动把租约放宽到 60 秒、心跳 15 秒
-（临时库仍是 8/5 秒）：每次心跳都是一个网络往返，秒级租约会在发布前过期并让任务被判取消。
-
-配置 `KS_TUNNEL_SSH=<user>@<host>`（可选 `KS_TUNNEL_KEY`）后，启动器在数据库端口未监听时
-自动建立隧道，无需手动执行下面的命令；隧道随启动器结束保留，下次直接复用。
-
-远端库不要直接暴露公网，用隧道把本机端口转到服务器回环地址：
-
-```bash
-ssh -N -L 5433:127.0.0.1:5432 root@<server>
+```powershell
+.\backend\.venv\Scripts\python.exe -u backend/scripts/check.py
+node --test frontend/core.test.mjs
+.\backend\.venv\Scripts\python.exe -u backend/scripts/browser_smoke.py
 ```
 
-浏览器验收用**独立库**：它使用桩模型 `hash-1024`，而全库共用一个向量索引，与真实模型的 `bge-m3` 混用会被 `guard_vector_index` 拒绝（任务表现为 `MODEL_UNAVAILABLE`）。
-用 `KS_SMOKE_DATABASE_URL` 指定验收库；未配置时退回临时库。两个库不要互换使用。
+后端按预检、lint、类型、独立数据库回归/迁移/HTTP验收执行，不调用真实模型、不修改业务库。
+跳过/xfail/排除用例不能算完整通过。非Windows中文PDF测试需KS_TEST_FONT_PATH指定已有字体。
+浏览器检查仅在相关前端改动收尾运行，需要已有Node/测试浏览器，不自动安装。
+CI定义在.github/workflows/backend.yml，文件存在不等于远端已实跑。
 
-前提：库内已启用 `vector` 与 `pg_trgm`（扩展需超级用户创建一次）；应用角色对该库有 CREATE 权限。
-浏览器验收按相对数量断言，结束时删除本轮新建的知识库，不必为清空历史数据而重置 `public` schema；
-删除是异步清理，反复运行后残留的 `deleting` 记录可择机重置。连接串含口令，只写进被忽略的 `.env`，
-不提交、不写日志。
+固定12题自制集评测默认离线；真实调用先获得授权，confirm参数不替代授权：
 
-2026-10-27 实测：Ubuntu 22.04 + PostgreSQL 16.15 + pgvector 0.8.7，经隧道完成集成用例与浏览器全链路。
+```powershell
+.\backend\.venv\Scripts\python.exe -u backend/scripts/evaluate_local.py
+.\backend\.venv\Scripts\python.exe -u backend/scripts/evaluate_local.py --real --confirm-real
+```
+
+真实模式使用固定自制资料及临时库/API/Worker，48次检索/问答API请求、上限60，不自动重跑。
+上传向量化和轮询是额外调用，不据此推断供应商token或费用。报告在backend/.data/evaluation，
+只存指纹、配置名、指标与耗时，不存正文/密钥/端点。词面覆盖、结构引用有效均不等于事实正确。
+
+## 6. 排障
+
+| 现象 | 先检查 |
+| --- | --- |
+| 页面无法访问 | 启动器实际地址、安全端口；占用换-Port，不擅自杀其他进程 |
+| 401/404 | 本次令牌、资源归属、删除状态；UUID不是凭证 |
+| running停滞 | Worker、stage/attempt、租约、模型等待，不手改任务状态 |
+| 模型故障 | 端点、认证、余额、名称、1024维及索引模型兼容性，不把故障记成无资料 |
+| Ollama绑定失败/10013 | 检查Windows保留端口：`netsh interface ipv4 show excludedportrange protocol=tcp`；不要删系统规则。若11434被保留，将backend/.env的KS_EMBEDDING_BASE_URL改为经检查可用的本机端口（如http://127.0.0.1:21434/v1）。启动器为serve/pull同步设置OLLAMA_HOST，不改系统环境，不更换模型或下载资料；手动启动时也需在该终端设置同一OLLAMA_HOST。 |
+| PARSE_FAILED | 格式/加密/资源限制、DeepDoc网络/令牌/模型，不循环重传相同内容 |
+| no_evidence | 范围、发布状态、阈值及原文是否支持，不用降低门槛制造答案 |
+| 409 | 刷新文档/任务，不重复旧代次 |
+| 原文404但分块在 | 数据库与持久原件卷是否配对，是否曾误用临时目录 |
+
+按request_id关联请求，任务再看job_id/build_id、阶段与耗时。日志不加正文或密钥，外发前脱敏。
+生产硬配额与身份接入另配置，不把采样资源保护当安全沙箱。

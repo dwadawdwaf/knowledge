@@ -1,0 +1,149 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>知识检索与问答助手 · 基础评测报告</title>
+<style>
+:root{color-scheme:light;--ink:#17272d;--muted:#5c6d73;--line:#dce6e8;--teal:#046a82;--soft:#edf7f9}
+*{box-sizing:border-box}body{margin:0;background:#f4f7f8;color:var(--ink);font:15px/1.85 "Microsoft YaHei","Segoe UI",sans-serif}
+main{max-width:1120px;margin:32px auto;padding:48px 56px;background:white;border:1px solid var(--line);border-radius:16px}
+header{border-bottom:3px solid var(--teal);padding-bottom:24px}.eyebrow{color:var(--teal);font-weight:700;font-size:13px;letter-spacing:2px}
+h1{font-size:32px;line-height:1.4;margin:12px 0}h2{font-size:23px;margin:42px 0 16px}h3{font-size:18px;margin:26px 0 12px}
+p{margin:10px 0}a{color:var(--teal);text-underline-offset:3px}.meta,small,figcaption{color:var(--muted);font-size:13px}
+.verdict{background:var(--soft);border-left:4px solid var(--teal);padding:20px 24px;margin:24px 0}.verdict strong{font-size:19px}
+.warning{background:#fff8e6;border-left:4px solid #b98819;padding:14px 20px;margin:20px 0}
+.metrics{display:grid;grid-template-columns:repeat(4,1fr);gap:14px;margin:24px 0}.metric{border:1px solid var(--line);padding:18px;border-radius:10px}.metric span{display:block;color:var(--muted);font-size:13px}.metric strong{display:block;font-size:27px}
+.table-wrap{overflow:auto}table{width:100%;border-collapse:collapse;margin:16px 0 10px;font-size:14px}th,td{text-align:left;padding:12px 14px;border-bottom:1px solid var(--line);vertical-align:top}th{background:var(--soft);white-space:nowrap}tbody tr:last-child td{border-bottom:2px solid var(--line)}
+figure{margin:24px 0 30px}figure img{display:block;width:100%;height:auto;border:1px solid var(--line);border-radius:8px}figcaption{margin-top:10px;line-height:1.8}figcaption strong{color:var(--ink)}
+code{font-family:Consolas,monospace;background:#f0f4f5;padding:2px 5px;border-radius:4px;overflow-wrap:anywhere}ul,ol{padding-left:24px}li{margin:7px 0}.hash{font-size:12px;word-break:break-all}footer{margin-top:38px;border-top:1px solid var(--line);padding-top:20px;color:var(--muted);font-size:13px}
+@media(max-width:720px){main{margin:0;padding:26px 18px;border:0;border-radius:0}h1{font-size:26px}.metrics{grid-template-columns:repeat(2,1fr)}th,td{padding:10px}h2{font-size:21px}}
+@media print{body{background:white;font-size:11pt}main{border:0;margin:0;padding:0;max-width:none}header,h2,h3{break-after:avoid}figure,.metrics,tr{break-inside:avoid}figure img{max-height:225mm;object-fit:contain}a{color:inherit}main{border-radius:0}.table-wrap{overflow:visible}footer{font-size:9pt}}
+</style>
+</head>
+<body><main>
+<header>
+<div class="eyebrow">个人知识服务 / 检索基线实验</div>
+<h1>知识检索与问答助手<br>基础评测报告</h1>
+<p class="meta">实验日期：2026年10月30日（北京时间） · 数据集：retrieval-baseline-v1 · 性质：开发者自制基础集，非业务验收</p>
+</header>
+
+<section class="verdict">
+<strong>结论：评测链路已跑通，检索效果仍有明确缺口。</strong>
+<p>本轮复现了语义改写、跨文档和表格定位三类问题。混合检索优于单路检索，但只增加返回条数没有改善失败用例；下一阶段应优先检查候选召回与阈值，而不是仅提高Top-K。</p>
+</section>
+<div class="metrics">
+<div class="metric"><span>问题 / 维度</span><strong>24 / 8</strong></div>
+<div class="metric"><span>混合检索平均事实召回</span><strong>83.33%</strong></div>
+<div class="metric"><span>可答题完整证据覆盖</span><strong>17 / 21</strong></div>
+<div class="metric"><span>待复核用例</span><strong>4</strong></div>
+</div>
+<p>以上是本次小规模自制集的观测结果，<strong>不是答案正确率，也不能外推为真实业务资料的整体效果。</strong></p>
+
+<h2>一、评测目标与实验条件</h2>
+<p>目标是建立可在前端回看的真实模型基线，判断失败位于召回、证据完整性还是问答阶段。本轮不修改检索算法，不为改善分数临时更改阈值，不引入甲方资料或网络抓取内容。</p>
+<div class="table-wrap"><table>
+<tr><th>项目</th><th>本轮设置</th></tr>
+<tr><td>资料</td><td>11份自制文件：8份主题资料、3份干扰资料；MD、TXT、CSV、DOCX、XLSX共5种格式。</td></tr>
+<tr><td>内容范围</td><td>办公场地、差旅报销、信息安全、项目进度、设备库存、档案借阅、耗材管理、合作方差旅说明；人名、项目与规则均为虚构。</td></tr>
+<tr><td>问题集</td><td>24题，8个维度，每维度3题。其中21题有标注事实，3题无答案。</td></tr>
+<tr><td>模型</td><td>向量模型bge-m3；生成模型deepseek-flash。未固定或验证模型权重摘要/服务内部修订号。</td></tr>
+<tr><td>检索设置</td><td>关键词相似度下限0.06；语义余弦距离上限0.42；RRF融合沿用当前实现。语义距离越小越相似，不将距离上限当成相似度下限。</td></tr>
+<tr><td>实验组合</td><td>每题对比关键词Top-5、语义Top-5、混合Top-5、混合Top-20；问答固定使用混合Top-5。</td></tr>
+<tr><td>执行边界</td><td>96次检索请求＋24次问答请求＝120次HTTP请求，单轮执行，无自动重跑。不是120次模型调用；入库与报告发布另有向量调用，token与费用未统计。</td></tr>
+<tr><td>隔离</td><td>实验仅检索基础资料库。问题标注与结果放在独立报告库，不参与被测检索，防止答案泄漏。</td></tr>
+</table></div>
+<p class="meta">原库清空前已备份，实际恢复到独立副本并核对8张业务表计数及迁移版本；旧原件配套归档。当前数据库保留2个知识库、12份文档（含报告）、8个会话及48条消息。</p>
+
+<h2>二、指标口径：如何读懂结果</h2>
+<ul>
+<li><strong>平均事实召回：</strong>先计算每题“找回的标注事实数 / 全部标注事实数”，再对21个可答题取平均。命中必须同时符合预期文档、发布build和支持片段。</li>
+<li><strong>完整证据覆盖：</strong>一题的全部标注事实均被召回才计入。跨文档问题只命中一半，不能算完整成功。</li>
+<li><strong>MRR：</strong>首个被找回的标注事实的倒数排名，缺失记0；它不能证明多事实问题已完整回答。</li>
+<li><strong>回答词面完整：</strong>所有标注答案词或别名均出现在回答中。它不验证逻辑、条件约束或逐句语义正确性。</li>
+<li><strong>引用事实覆盖：</strong>标注事实是否存在于可解析、版本与定位一致的被引原文中。它不等于答案中的每句话都由引用蕴含。</li>
+<li><strong>正常拒答：</strong>无答案题返回<code>no_evidence</code>。接口错误不算正常拒答；本轮检索和问答均未发生接口错误。</li>
+</ul>
+
+<h2>三、总体结果：混合有效，但增加Top-K无收益</h2>
+<div class="table-wrap"><table>
+<thead><tr><th>检索方案</th><th>平均事实召回</th><th>MRR</th><th>完整证据覆盖</th><th>有效可答题</th></tr></thead>
+<tbody>
+<tr><td>关键词Top-5</td><td>40.48%</td><td>0.405</td><td>8 / 21</td><td>21 / 21</td></tr>
+<tr><td>语义Top-5</td><td>73.81%</td><td>0.690</td><td>15 / 21</td><td>21 / 21</td></tr>
+<tr><td><strong>混合Top-5</strong></td><td><strong>83.33%</strong></td><td><strong>0.786</strong></td><td><strong>17 / 21</strong></td><td>21 / 21</td></tr>
+<tr><td>混合Top-20</td><td>83.33%</td><td>0.786</td><td>17 / 21</td><td>21 / 21</td></tr>
+</tbody></table></div>
+<p>混合Top-5较关键词提高约42.86个百分点，较语义提高约9.52个百分点（按未舍入指标计算）。Top-20结果与Top-5相同，<strong>本轮未观察到扩大返回数量的收益</strong>。失败问题的实际命中数为0或2，说明不是最终Top-5截断导致这些证据缺失；上游过滤和候选召回仍需进一步定位。</p>
+<figure><a href="images/overview.png"><img src="images/overview.png" alt="实际评测总览：24题8维度120次请求，4个待复核用例，四种检索方案结果"></a>
+<figcaption><strong>图1｜真实前端总览。</strong>页面将完成数量、调用上限和待复核用例分开呈现。截图百分比取整数显示；精确值以本报告及原始JSON为准。点击截图可打开原图。</figcaption></figure>
+<p>问答侧：21个可答题中18题返回answered、3题返回no_evidence；其中只有17题同时达到回答词面完整和标注引用事实完整。X01虽然返回answered，仍缺少半数标注事实。3个无答案题均正常拒答，未出现接口错误。</p>
+
+<h2>四、分维度结果：短板集中在哪里</h2>
+<div class="table-wrap"><table>
+<thead><tr><th>维度</th><th>题数</th><th>混合Top-5完整覆盖</th><th>回答词面完整</th><th>主要观察</th></tr></thead>
+<tbody>
+<tr><td>精确事实</td><td>3</td><td>3 / 3</td><td>3 / 3</td><td>本轮均覆盖。</td></tr>
+<tr><td>编号与实体</td><td>3</td><td>3 / 3</td><td>3 / 3</td><td>本轮编号、实体匹配有效，不代表长编号与OCR变体均已验证。</td></tr>
+<tr><td>语义改写</td><td>3</td><td>2 / 3</td><td>2 / 3</td><td>“散会收尾”未召回会议室使用后事项。</td></tr>
+<tr><td>条件与干扰</td><td>3</td><td>3 / 3</td><td>3 / 3</td><td>本轮未检测到预设的错误答案词；仍需人工语义核对。</td></tr>
+<tr><td>跨文档证据</td><td>3</td><td>2 / 3</td><td>2 / 3</td><td>负责人＋预算审批人问题只获得审批人证据。</td></tr>
+<tr><td>表格定位</td><td>3</td><td>1 / 3</td><td>1 / 3</td><td>按资产编号定位有效，设备数量及项目状态问题失败。</td></tr>
+<tr><td>长问题与噪声</td><td>3</td><td>3 / 3</td><td>3 / 3</td><td>本轮有效；小语料与有限干扰不能代替大规模噪声测试。</td></tr>
+<tr><td>无答案与拒答</td><td>3</td><td>不适用</td><td>不适用</td><td>3 / 3正常拒答。</td></tr>
+</tbody></table></div>
+<figure><a href="images/dimensions.png"><img src="images/dimensions.png" alt="实际前端的8维度结果表及执行过程"></a>
+<figcaption><strong>图2｜八维度结果与执行记录。</strong>语义改写、跨文档和表格定位出现缺口；“无答案”列独立统计拒答，未被计入事实召回分母。过程记录可回看资料发布与逐题完成顺序。</figcaption></figure>
+
+<h2>五、失败用例与证据分析</h2>
+<h3>5.1 跨文档：有回答，不等于问题回答完整</h3>
+<p><strong>X01：</strong>“青岚项目负责人是谁，其差旅预算由谁审批？”标注需要两份资料：项目进度表中的“许星澄”，以及差旅规则中的“宋知遥”。混合检索只返回2个片段，来自差旅规则与合作方说明，没有项目进度表；事实召回、回答词面及引用事实覆盖均为50%。</p>
+<figure><a href="images/case.png"><img src="images/case.png" alt="X01跨文档失败详情：四种检索方案均仅覆盖50%，缺少项目负责人的来源"></a>
+<figcaption><strong>图3｜X01的实际失败详情。</strong>页面明确保留answered与“待复核”并存的状态。下方实际来源未包含项目表，不能因有引用或回答状态成功就将整题判为通过。</figcaption></figure>
+
+<h3>5.2 表格：已入库，不等于能用自然语言找到</h3>
+<p><strong>T02：</strong>“高清摄像头当前有多少台可借？”标注为12台。<strong>T03：</strong>“白榆项目的当前状态是什么？”标注为已完成。两题四种检索方案均返回0个命中，最终均为no_evidence。作为对照，按资产编号询问存放地点的T01成功。</p>
+<figure><a href="images/table-failures.png"><img src="images/table-failures.png" alt="T02和T03表格问题均无召回，预期事实分别为12和已完成"></a>
+<figcaption><strong>图4｜两道表格定位失败题。</strong>这是“资料有答案但检索不到”，不同于数据中确实无答案。现有基础集只测表格事实定位，不支持据此声称复杂表格或全量聚合能力通过。</figcaption></figure>
+
+<h3>5.3 语义改写：缺少字面重合时，两路均可能失效</h3>
+<p><strong>S01：</strong>“散会离开场地之前，要做哪些收尾工作？”资料含“清理桌面、关闭投影仪、照明和空调”，但关键词、语义与两种混合配置均为0命中。该例表明当前向量检索没有完全弥补字面匹配的缺陷。</p>
+<div class="table-wrap"><table>
+<thead><tr><th>用例</th><th>预期来源关键词相似度</th><th>阈值</th><th>已验证事实</th></tr></thead>
+<tbody>
+<tr><td>S01</td><td>0</td><td>0.06</td><td>会议室来源被关键词阈值过滤。</td></tr>
+<tr><td>X01</td><td>项目表0.02256；差旅规则0.18605</td><td>0.06</td><td>关键词路保留差旅规则，过滤缺失的项目表。</td></tr>
+<tr><td>T02</td><td>0.04464</td><td>0.06</td><td>设备库存表被关键词阈值过滤。</td></tr>
+<tr><td>T03</td><td>0.01575</td><td>0.06</td><td>项目进度表被关键词阈值过滤。</td></tr>
+</tbody></table></div>
+<p>以上相似度通过对当前自制库的只读SQL核验取得。<strong>关键词路的过滤已经证实；语义路为什么漏掉这些来源，尚未被完全定位。</strong>当前距离上限为0.42，但没有额外计算失败问题到目标片段的原始向量距离，因此不能断言“调整到某个阈值即可解决”。</p>
+
+<h2>六、工程验证与前端使用</h2>
+<p>后端完整检查303项通过，前端单元测试27项通过；静态、类型、迁移、HTTP链路和必要浏览器验收均通过。有1项既有Starlette/httpx弃用警告。工程验证通过不等于检索效果已达标。</p>
+<ol>
+<li>左侧“检索评测”查看过程、四方案对比和分维度结果；可筛选“仅待复核”。</li>
+<li>展开用例查看标注事实与实际命中来源；点击“查看实际问答”打开已存档会话及引用。</li>
+<li>点击“在知识库中复测”进入该知识库的“检索”页签，预填原问题；不会自动追加模型请求。</li>
+<li>报告页本身只读。截图复核只读取现有结果、会话和引用，未重新执行付费问答。</li>
+</ol>
+<figure><a href="images/library-search.png"><img src="images/library-search.png" alt="手动检索已位于知识库的检索页签，问题已预填，范围固定为基础资料库"></a>
+<figcaption><strong>图5｜从失败用例跳转库内复测。</strong>原全局“检索测试”已经迁移到知识库内；范围固定为该库，避免误把含标注答案的报告库加入实验。</figcaption></figure>
+
+<h2>七、下一阶段建议与验收方式</h2>
+<div class="table-wrap"><table>
+<thead><tr><th>优先级</th><th>工作</th><th>验证要求</th></tr></thead>
+<tbody>
+<tr><td>P1</td><td>改进中文关键词候选召回，重点核对短实体、编号、自然语言问题对长片段的匹配。</td><td>固定本轮资料与标注，先检验S01、X01、T02、T03，再检查其余题是否退化；不可仅为个例硬编码答案。</td></tr>
+<tr><td>P1</td><td>独立标定bge-m3的距离门槛，区分过滤损失与候选排序问题。</td><td>单变量对比；同时检查相关召回和无答案误召回，不把一味放宽阈值当改进。</td></tr>
+<tr><td>P2</td><td>检查表头、字段和值的检索表示，以及跨文档问题拆解。</td><td>完整覆盖全部子问题所需来源；保留原文坐标、授权及引用校验，不以普通Top-K冒充全量聚合。</td></tr>
+<tr><td>P2</td><td>召回稳定后再评估重排或问题理解组件。</td><td>复用成熟组件，另设有上限的实验；模型需要的上下文限定为授权资料，不自动读取或外发真实数据。</td></tr>
+</tbody></table></div>
+<div class="warning"><strong>验收边界：</strong>本轮未做人工逐句语义审查、独立留出集评测、复杂跨页表格/OCR验证、全量统计、并发与容量测试。3道拒答题通过不能证明整体抗幻觉能力；改进后的策略也需要另行复验，不能沿用本轮基线数字宣称已修复。</div>
+
+<footer>
+<p><strong>证据索引：</strong><a href="report.json">原始评测JSON</a> · <a href="../../dataset.json">自制资料与标注集</a>。截图均来自本机真实前端，未用示意图替代。</p>
+<p>资料与标注JSON的SHA-256：<span class="hash">bf8d55bb6b8b5ea2244eac22d2a14cb289cfc87c826837c46eed689539b45e44</span>。该摘要不是全部生成Office二进制文件的摘要。</p>
+<p>原库备份：<code>backend/.data/evaluation-backups/20261030T081123Z/</code>。备份含原业务资料，仅限本地保存，不随报告外发。</p>
+<p>本报告为固定版本实验快照，不作为重复维护的设计文档。HTML及images目录须一并保留；可直接用浏览器阅读，或通过浏览器打印另存为PDF。</p>
+</footer>
+</main></body></html>
