@@ -8,6 +8,7 @@ from docx import Document
 from openpyxl import load_workbook
 
 from scripts import retrieval_baseline as baseline
+from scripts.evaluate_public import contained_file
 
 
 def test_dataset_is_bounded_and_labels_exist():
@@ -59,6 +60,54 @@ def test_negative_cases_do_not_receive_fake_perfect_recall():
     assert metrics["fact_recall"] is None
     assert metrics["mrr"] is None
     assert metrics["all_facts_found"] is None
+
+
+def test_pdf_matching_is_explicit_and_requires_physical_page():
+    fact = baseline.Fact(document="a", quote="ＡI 42", aliases=["42"], pdf_pages=[7])
+    assert not baseline.supports_fact(fact, "ai\n42", {"page": 7})
+    fact.normalized = True
+    assert baseline.supports_fact(fact, "ai\n42", {"page": 7})
+    assert not baseline.supports_fact(fact, "ai\n42", {"page": 8})
+    assert not baseline.supports_fact(fact, "ai\n42", {})
+    assert not baseline.supports_fact(fact, "ai\n43", {"page": 7})
+
+
+def test_oversized_experiment_is_rejected_before_client_use():
+    dataset = baseline.Dataset.model_validate_json(baseline.DATASET.read_bytes())
+    runtime = Mock()
+    with pytest.raises(ValueError, match="预算"):
+        baseline.run_experiment(runtime, dataset, spec=baseline.ExperimentSpec(request_limit=119))
+    runtime.client.assert_not_called()
+
+
+def test_public_files_cannot_escape_selected_corpus(tmp_path):
+    root = tmp_path / "corpus"
+    root.mkdir()
+    sample = root / "sample.txt"
+    sample.write_text("synthetic", encoding="utf-8")
+    outside = tmp_path / "outside.txt"
+    outside.write_text("synthetic", encoding="utf-8")
+    assert contained_file(root, "sample.txt") == sample
+    for name in ("../outside.txt", str(outside), "missing.txt"):
+        with pytest.raises(ValueError, match="越界或缺失"):
+            contained_file(root, name)
+
+
+def test_dataset_accepts_48_but_rejects_49_synthetic_cases():
+    from pydantic import ValidationError
+
+    payload = {
+        "revision": "synthetic",
+        "documents": [],
+        "cases": [
+            {"id": str(index), "category": "自制", "question": "自制问题", "facts": []}
+            for index in range(48)
+        ],
+    }
+    assert len(baseline.Dataset.model_validate(payload).cases) == 48
+    payload["cases"].append({"id": "49", "category": "自制", "question": "自制", "facts": []})
+    with pytest.raises(ValidationError):
+        baseline.Dataset.model_validate(payload)
 
 
 def test_summary_separates_errors_from_valid_metric_denominator():

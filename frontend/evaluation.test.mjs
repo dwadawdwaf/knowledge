@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { parseReport, needsReview, VARIANTS } from './evaluation.mjs';
+import { parseReport, needsReview, VARIANTS, REPORT_FILES } from './evaluation.mjs';
 
 function row() {
   return { id: 'E01', category: '自制', question: '<script>not executable</script>', answerable: true,
@@ -38,4 +38,13 @@ test('正常无答案不按缺失事实指标判失败', () => {
   value.qa.lexical_coverage = null; value.qa.citation_fact_coverage = null;
   value.retrieval.hybrid_5.fact_recall = null;
   assert.equal(needsReview(value), false);
+});
+
+test('兼容两轮报告且严格限制48题', () => {
+  assert.equal(REPORT_FILES.length, 2);
+  const value = { ...report(), total_cases: 48, cases: Array.from({ length: 48 }, (_, i) => ({ ...row(), id: String(i), partition: i < 24 ? 'development' : 'holdout' })) };
+  assert.equal(parseReport(JSON.stringify(value)).cases.length, 48);
+  assert.throws(() => parseReport(JSON.stringify({ ...value, total_cases: 49 })));
+  assert.throws(() => parseReport(JSON.stringify({ ...value, cases: [...value.cases, row()] })));
+  assert.throws(() => parseReport(JSON.stringify({ ...value, total_cases: 24 })));
 });

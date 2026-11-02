@@ -3,6 +3,7 @@ import { el, actionButton, emptyState, loading } from './dom.mjs';
 
 export const REPORT_LIBRARY = '检索评测 · 过程与结果';
 export const REPORT_FILE = 'retrieval-evaluation-v1.txt';
+export const REPORT_FILES = [REPORT_FILE, 'retrieval-evaluation-v2-public.txt'];
 export const VARIANTS = [['keyword_5', '关键词 @5'], ['semantic_5', '语义 @5'], ['hybrid_5', '混合 @5'], ['hybrid_20', '混合 @20']];
 const percent = value => Number.isFinite(value) ? `${Math.round(value * 100)}%` : '—';
 
@@ -10,9 +11,10 @@ export function parseReport(text) {
   if (text.length > 1024 * 1024) throw new Error('评测报告过大，未加载。');
   const value = JSON.parse(text);
   if (value?.schema !== 'retrieval-evaluation-v1' || !['running', 'completed', 'interrupted'].includes(value.status)
-      || !Array.isArray(value.cases) || value.cases.length > 24 || !Array.isArray(value.events)
+      || !Array.isArray(value.cases) || value.cases.length > 48 || !Array.isArray(value.events)
       || !Array.isArray(value.sources) || typeof value.knowledge_base_id !== 'string'
-      || !Number.isInteger(value.total_cases) || value.total_cases < 1 || value.total_cases > 24
+      || !Number.isInteger(value.total_cases) || value.total_cases < 1 || value.total_cases > 48
+      || value.cases.length > value.total_cases
       || value.cases.some(row => typeof row.id !== 'string' || typeof row.question !== 'string'
         || typeof row.category !== 'string' || typeof row.answerable !== 'boolean' || !row.retrieval || !row.qa
         || VARIANTS.some(([key]) => !row.retrieval[key]))) {
@@ -35,11 +37,17 @@ export function renderEvaluation(app) {
   const copy = el('div');
   copy.append(el('h1', '', '检索评测'), el('p', '', '先观察，再优化。对比召回方式、证据覆盖与问答表现，保留每次实验的真实结果。'));
   const refresh = actionButton('刷新进度', 'btn ghost', () => load(), 'refresh');
-  head.append(copy, refresh);
+  const runLabel = el('label', 'eval-run');
+  runLabel.append(el('span', 'field-hint', '评测轮次'));
+  const run = el('select', 'input'); run.setAttribute('aria-label', '评测轮次'); run.disabled = true;
+  runLabel.append(run);
+  head.append(copy, runLabel, refresh);
   page.append(head);
   const body = el('div');
   page.append(body);
   let sequence = 0;
+  let selectedReport = '';
+  run.addEventListener('change', () => { selectedReport = run.value; load(); });
   async function load() {
     const current = ++sequence;
     refresh.disabled = true;
@@ -54,7 +62,17 @@ export function renderEvaluation(app) {
         return;
       }
       const documents = await app.api.request(`/knowledge-bases/${library.id}/documents`);
-      const document = documents.items.find(item => item.title === REPORT_FILE && item.current_version_id);
+      if (current !== sequence || !page.isConnected) return;
+      const available = documents.items.filter(item => REPORT_FILES.includes(item.title) && item.current_version_id)
+        .sort((a, b) => b.title.localeCompare(a.title));
+      run.replaceChildren();
+      available.forEach(item => {
+        const option = el('option', '', item.title === REPORT_FILE ? '第一轮 · 自制基础集' : '第二轮 · 真实长文档');
+        option.value = item.id; run.append(option);
+      });
+      if (!available.some(item => item.id === selectedReport)) selectedReport = available[0]?.id || '';
+      run.value = selectedReport; run.disabled = !available.length;
+      const document = available.find(item => item.id === selectedReport);
       if (!document) { body.replaceChildren(emptyState('评测准备中', '正在发布首份过程记录，请稍后刷新。')); return; }
       const response = await app.api.raw(`/documents/${document.id}/file`);
       const report = parseReport(await response.text());
@@ -70,13 +88,16 @@ export function renderEvaluation(app) {
   return page;
 }
 
-function reportView(app, report) {
+function reportView(app, report, selectedPartition = 'all') {
   const view = el('div', 'evaluation-content');
+  const displayCases = report.cases.filter(row => selectedPartition === 'all' || (row.partition || 'development') === selectedPartition);
+  const displaySummary = selectedPartition === 'all' ? report.summary : report.partition_summary?.[selectedPartition];
   const intro = el('section', 'eval-overview');
   const line = el('div', 'eval-status');
   line.append(el('span', 'chip', { running: '实验进行中', completed: '实验已执行', interrupted: '实验已中断' }[report.status]),
     el('span', 'count-note', `${report.revision} · 更新于 ${new Date(report.updated_at).toLocaleString('zh-CN')}`));
   intro.append(line);
+  intro.append(el('p', 'field-label', report.title || '第一轮 · 自制基础集'));
   const metrics = el('div', 'eval-metrics');
   const reviewed = report.cases.filter(needsReview).length;
   for (const [label, value] of [['已完成问题', `${report.cases.length} / ${report.total_cases}`],
@@ -86,7 +107,8 @@ function reportView(app, report) {
     metric.append(el('span', '', label), el('strong', '', String(value)));
     metrics.append(metric);
   }
-  intro.append(metrics, el('p', 'field-hint', `模型：${report.config?.embedding_model || '未知'} / ${report.config?.generator_model || '未知'}。所有资料与标注均为自制，尚未经业务审定。`));
+  const sourceNote = report.preparation?.corpus_kind === 'public' ? '官方公开资料；问题标注为开发者编写，尚未经第三方复核。' : '所有资料与标注均为自制，尚未经业务审定。';
+  intro.append(metrics, el('p', 'field-hint', `模型：${report.config?.embedding_model || '未知'} / ${report.config?.generator_model || '未知'}。${sourceNote}`));
   intro.append(el('p', 'field-hint', `关键词阈值 ${report.config?.similarity_floor ?? '未知'} · 余弦距离上限 ${report.config?.semantic_max_distance ?? '未知'}。请求上限仅含检索/问答；入库与报告发布另需向量调用，费用未统计。`));
   intro.append(actionButton('查看评测资料', 'btn ghost', () => app.openLibraryById(report.knowledge_base_id), 'library'));
   intro.append(actionButton('在评测资料中提问', 'btn ghost', () => {
@@ -96,12 +118,39 @@ function reportView(app, report) {
   intro.append(el('p', 'field-hint', '复测请只选择基础资料库，不要把含标注答案的过程与结果库加入检索范围。'));
   view.append(intro);
   view.append(el('div', 'notice-line warn', '召回覆盖与词面覆盖不等于答案正确率。引用支持仅检查标注事实是否出现在可访问的被引原文中，不代表逐句语义蕴含。无答案题不计算事实召回；接口错误单独计数，不当作正常拒答。'));
+  if (report.preparation?.parsing?.length) {
+    view.append(el('h2', '', '解析预检与发布'));
+    const parseTable = el('table', 'eval-table');
+    parseTable.innerHTML = '<thead><tr><th>资料</th><th>PDF总页 / 有文本页</th><th>本地预检分块</th><th>实际发布分块</th><th>未提取文本页</th></tr></thead>';
+    const parseRows = el('tbody');
+    report.preparation.parsing.forEach(source => {
+      const row = el('tr');
+      const published = report.sources.find(item => item.name.startsWith(source.source_id || ''));
+      [source.title, source.input_pages ? `${source.input_pages} / ${source.parsed_pages}` : 'HTML派生TXT', source.chunks,
+        published?.published_chunks ?? '—', source.unparsed_pages?.join(', ') || '无']
+        .forEach(value => row.append(el('td', '', String(value))));
+      parseRows.append(row);
+    });
+    parseTable.append(parseRows); const parseWrap = el('div', 'table-wrap'); parseWrap.append(parseTable); view.append(parseWrap);
+    view.append(el('p', 'field-hint', `预检方案：${report.preparation.parser_profile || '未知'}；空白/插图页不等于解析故障。未运行不同解析器的配对对照。PDF页码指物理页序，不等于印刷页码。`));
+  }
+  if (report.cases.some(row => row.partition === 'holdout')) {
+    const partitionLabel = el('label', 'eval-run'); partitionLabel.append(el('span', 'field-label', '下方统计范围'));
+    const partition = el('select', 'input'); partition.setAttribute('aria-label', '数据划分');
+    [['all', '全部问题'], ['development', '开发集'], ['holdout', '留出集']].forEach(([value, name]) => {
+      const option = el('option', '', name); option.value = value; partition.append(option);
+    });
+    partition.value = selectedPartition;
+    partition.addEventListener('change', () => view.replaceWith(reportView(app, report, partition.value)));
+    partitionLabel.append(partition); view.append(partitionLabel);
+    view.append(el('p', 'field-hint', report.preparation?.split_note || '问题在实验前固定；开发/留出分开统计。'));
+  }
   view.append(el('h2', '', '实验对比'));
   const table = el('table', 'eval-table');
   table.innerHTML = '<thead><tr><th>检索方案</th><th>平均事实召回</th><th>MRR</th><th>证据完整用例</th><th>有效 / 可答题</th><th>可答题接口错误</th></tr></thead>';
   const rows = el('tbody');
   VARIANTS.forEach(([key, label]) => {
-    const value = report.summary?.[key] || {};
+    const value = displaySummary?.[key] || {};
     const row = el('tr');
     [label, percent(value.mean_fact_recall), Number.isFinite(value.mrr) ? value.mrr.toFixed(3) : '—', value.complete_cases ?? '—', `${value.valid_cases ?? 0} / ${value.positive_cases ?? 0}`, value.errors ?? 0]
       .forEach(text => row.append(el('td', '', String(text))));
@@ -113,8 +162,8 @@ function reportView(app, report) {
   const dimensions = el('table', 'eval-table');
   dimensions.innerHTML = '<thead><tr><th>维度</th><th>问题数</th><th>混合 @5 完整覆盖</th><th>回答词面完整</th><th>正常拒答</th><th>问答错误</th></tr></thead>';
   const dimensionRows = el('tbody');
-  [...new Set(report.cases.map(row => row.category))].forEach(category => {
-    const items = report.cases.filter(row => row.category === category);
+  [...new Set(displayCases.map(row => row.category))].forEach(category => {
+    const items = displayCases.filter(row => row.category === category);
     const positive = items.filter(row => row.answerable);
     const negative = items.filter(row => !row.answerable);
     const row = el('tr');
@@ -134,7 +183,7 @@ function reportView(app, report) {
   view.append(el('h2', '', '分维度结果与问题明细'));
   const tools = el('div', 'shoulder');
   const filter = el('select', 'input eval-filter');
-  [['all', '全部维度'], ...[...new Set(report.cases.map(row => row.category))].map(name => [name, name])]
+  [['all', '全部维度'], ...[...new Set(displayCases.map(row => row.category))].map(name => [name, name])]
     .forEach(([value, label]) => { const option = el('option', '', label); option.value = value; filter.append(option); });
   filter.setAttribute('aria-label', '评测维度');
   const label = el('label', 'eval-check');
@@ -143,7 +192,7 @@ function reportView(app, report) {
   const cases = el('div', 'eval-cases');
   const paint = () => {
     cases.replaceChildren();
-    report.cases.filter(row => (filter.value === 'all' || row.category === filter.value) && (!failures.checked || needsReview(row)))
+    displayCases.filter(row => (filter.value === 'all' || row.category === filter.value) && (!failures.checked || needsReview(row)))
       .forEach(row => cases.append(caseView(app, report, row)));
     if (!cases.children.length) cases.append(emptyState('没有匹配用例', '切换维度或关闭待复核筛选。'));
   };
@@ -158,7 +207,9 @@ function caseView(app, report, row) {
   summary.append(el('span', 'chip', row.id), el('strong', '', row.question),
     el('span', needsReview(row) ? 'chip warn' : 'chip', needsReview(row) ? '待复核' : '自动检查符合标注'));
   details.append(summary);
-  details.append(el('p', 'field-hint', `${row.category} · ${row.answerable ? '可答题' : '无答案题'} · 问答：${row.qa.error || row.qa.status || '未完成'}`));
+  details.append(el('p', 'field-hint', `${row.category} · ${row.partition === 'holdout' ? '留出集' : '开发集'} · ${row.answerable ? '可答题' : '无答案题'} · 问答：${row.qa.error || row.qa.status || '未完成'}`));
+  const presence = report.preparation?.fact_presence?.[row.id];
+  if (presence) details.append(el('p', 'field-hint', `本地解析/分块中可见标注事实：${Object.values(presence).filter(Boolean).length} / ${Object.keys(presence).length}；此项与检索召回分开判断。`));
   const scores = el('div', 'eval-scores');
   VARIANTS.forEach(([key, label]) => scores.append(el('span', 'chip', `${label} 召回 ${row.retrieval[key].error || percent(row.retrieval[key].fact_recall)}`)));
   scores.append(el('span', 'chip', `回答词面覆盖 ${percent(row.qa.lexical_coverage)}`),
@@ -173,7 +224,7 @@ function caseView(app, report, row) {
     } catch { app.notify('暂时无法读取问答历史，请重新连接后重试。'); }
   }, 'chat'));
   const expected = el('ul', 'eval-expected');
-  (row.expected || []).forEach(fact => expected.append(el('li', '', `标注事实：${fact.quote}`)));
+  (row.expected || []).forEach(fact => expected.append(el('li', '', `标注事实：${fact.quote}${fact.pdf_pages?.length ? ` · PDF页序 ${fact.pdf_pages.join(', ')}` : ''}`)));
   if (expected.children.length) details.append(expected);
   const hits = row.retrieval.hybrid_5.hits || [];
   if (hits.length) {

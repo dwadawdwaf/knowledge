@@ -10,11 +10,14 @@ import os
 import subprocess
 import sys
 import time
+import unicodedata
 import uuid
+from collections.abc import Callable
+from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
 from statistics import mean
-from typing import Any
+from typing import Any, Literal
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
@@ -54,6 +57,8 @@ class Fact(BaseModel):
     document: str
     quote: str = Field(min_length=1)
     aliases: list[str] = Field(min_length=1)
+    pdf_pages: list[int] = Field(default_factory=list)
+    normalized: bool = False
 
 
 class Case(BaseModel):
@@ -63,6 +68,7 @@ class Case(BaseModel):
     question: str = Field(min_length=1, max_length=2000)
     facts: list[Fact]
     forbidden: list[str] = Field(default_factory=list)
+    partition: Literal["development", "holdout"] = "development"
 
 
 class Source(BaseModel):
@@ -77,7 +83,7 @@ class Dataset(BaseModel):
     model_config = ConfigDict(extra="forbid")
     revision: str
     documents: list[Source]
-    cases: list[Case] = Field(min_length=1, max_length=24)
+    cases: list[Case] = Field(min_length=1, max_length=48)
 
     @model_validator(mode="after")
     def validate_labels(self) -> Dataset:
@@ -89,11 +95,45 @@ class Dataset(BaseModel):
         for case in self.cases:
             for fact in case.facts:
                 source = sources[fact.document]
-                if fact.quote not in source.text + json.dumps(source.rows, ensure_ascii=False):
+                text = source.text + json.dumps(source.rows, ensure_ascii=False)
+                if not contains_quote(fact, text):
                     raise ValueError("标注证据不在自制资料中")
                 if any(not alias.strip() for alias in fact.aliases):
                     raise ValueError("答案匹配词不能为空")
         return self
+
+
+def normalize_text(text: str) -> str:
+    """公开PDF标注可显式忽略排版空白及Unicode兼容字形，不改业务索引文本。"""
+    return "".join(unicodedata.normalize("NFKC", text).casefold().split())
+
+
+def contains_quote(fact: Fact, text: str) -> bool:
+    if fact.normalized:
+        return normalize_text(fact.quote) in normalize_text(text)
+    return fact.quote in text
+
+
+def supports_fact(fact: Fact, text: str, locator: dict) -> bool:
+    return contains_quote(fact, text) and (
+        not fact.pdf_pages or locator.get("page") in fact.pdf_pages
+    )
+
+
+@dataclass(frozen=True)
+class ExperimentSpec:
+    """单次实验的固定边界；默认值保持第一轮自制基线不变。"""
+
+    kb_name: str = "基础检索评测 · 自制跨领域资料"
+    report_file: str = REPORT_FILE
+    request_limit: int = MAX_REQUESTS
+    add_noise: bool = True
+    publish_every: int = 6
+    upload_timeout: int = 180
+    title: str = "第一轮 · 自制基础集"
+    dataset_sha256: str = ""
+    compact_report: bool = False
+    parser_profile: str = "legacy-v1"
 
 
 def say(message: str) -> None:
@@ -310,7 +350,7 @@ def retrieval_metrics(case: Case, hits: list[Json], sources: Json) -> Json:
                 for rank, hit in enumerate(hits, 1)
                 if hit["document_id"] == sources[fact.document]["document_id"]
                 and hit["build_id"] == sources[fact.document]["build_id"]
-                and fact.quote in hit["excerpt"]
+                and supports_fact(fact, hit["excerpt"], hit.get("locator", {}))
             ),
             None,
         )
@@ -343,16 +383,29 @@ def summarize(cases: list[Json]) -> Json:
 
 
 def run_experiment(
-    runtime: LocalRuntime, dataset: Dataset, *, report_directory: Path | None = None
+    runtime: LocalRuntime,
+    dataset: Dataset,
+    *,
+    report_directory: Path | None = None,
+    spec: ExperimentSpec | None = None,
+    source_loader: Callable[[Source], bytes] = source_bytes,
+    preparation: Json | None = None,
+    resume_ingestion: bool = False,
 ) -> Json:
     """问答经现有会话存档；结果作为独立知识库原件发布，不新增业务表。"""
+    selected = spec or ExperimentSpec()
+    if len(dataset.cases) * (len(VARIANTS) + 1) > selected.request_limit:
+        raise ValueError("问题数超出本次批准的实验请求预算")
     report: Json = {
         "schema": "retrieval-evaluation-v1",
         "revision": dataset.revision,
-        "dataset_sha256": hashlib.sha256(DATASET.read_bytes()).hexdigest(),
+        "dataset_sha256": selected.dataset_sha256
+        or hashlib.sha256(DATASET.read_bytes()).hexdigest(),
+        "title": selected.title,
+        "preparation": preparation or {},
         "label_status": "developer_authored_pending_review",
         "status": "running",
-        "request_limit": MAX_REQUESTS,
+        "request_limit": selected.request_limit,
         "requests": 0,
         "total_cases": len(dataset.cases),
         "cases": [],
@@ -370,11 +423,27 @@ def run_experiment(
         },
     }
     with runtime.client() as client:
-        kb = expect(
-            client.post("/api/v1/knowledge-bases", json={"name": "基础检索评测 · 自制跨领域资料"}),
-            201,
-        )
-        reports = expect(client.post("/api/v1/knowledge-bases", json={"name": REPORT_LIBRARY}), 201)
+        libraries = expect(client.get("/api/v1/knowledge-bases"), 200)["items"]
+        if resume_ingestion:
+            matches = [item for item in libraries if item["name"] == selected.kb_name]
+            if len(matches) != 1:
+                raise ValueError("恢复入库要求唯一的原评测库")
+            kb = matches[0]
+        else:
+            kb = expect(
+                client.post("/api/v1/knowledge-bases", json={"name": selected.kb_name}), 201
+            )
+        reports = next((kb for kb in libraries if kb["name"] == REPORT_LIBRARY), None)
+        if reports is None:
+            reports = expect(
+                client.post("/api/v1/knowledge-bases", json={"name": REPORT_LIBRARY}), 201
+            )
+        if resume_ingestion:
+            prior_reports = expect(
+                client.get(f"/api/v1/knowledge-bases/{reports['id']}/documents"), 200
+            )["items"]
+            if any(item["title"] == selected.report_file for item in prior_reports):
+                raise ValueError("已有本轮报告，禁止从零重跑问答")
         report["knowledge_base_id"] = kb["id"]
         sources: Json = {}
         report_document: Json = {}
@@ -391,49 +460,96 @@ def run_experiment(
                 if document
                 else f"/api/v1/knowledge-bases/{kb_id}/documents"
             )
-            result = expect(
-                client.post(
-                    endpoint, data={"parser_profile": "legacy-v1"}, files={"file": (name, data)}
-                ),
-                202,
+            response = client.post(
+                endpoint,
+                data={"parser_profile": selected.parser_profile},
+                files={"file": (name, data)},
             )
-            wait_job(client, result["job_id"], progress=runtime.say, timeout=180)
+            if resume_ingestion and document is None and response.status_code == 200:
+                result = expect(response, 200)
+                if result["parser_profile"] != selected.parser_profile:
+                    raise ValueError("原资料解析策略不一致，拒绝恢复")
+                info = expect(client.get(f"/api/v1/documents/{result['document_id']}"), 200)
+                if (info.get("job") or {}).get("state") in {"queued", "running"}:
+                    raise ValueError("原资料仍有未结束任务，请先核对状态")
+                if info["active_build_id"]:
+                    result["build_id"] = info["active_build_id"]
+                    result["version_id"] = info["current_version_id"]
+                    runtime.say("[入库恢复] 复用已发布构建，不新增版本或任务")
+                    return result
+                result = expect(
+                    client.post(
+                        f"/api/v1/documents/{result['document_id']}/reindex",
+                        json={
+                            "version_id": result["version_id"],
+                            "expected_generation": info["generation"],
+                        },
+                    ),
+                    202,
+                )
+                runtime.say("[入库恢复] 失败资料通过新build恢复，原版本不变")
+            else:
+                result = expect(response, 202)
+            wait_job(
+                client, result["job_id"], progress=runtime.say, timeout=selected.upload_timeout
+            )
             return result
 
         def publish() -> None:
             nonlocal report_document
             report["updated_at"] = datetime.now(UTC).isoformat()
             report["summary"] = summarize(report["cases"])
-            payload = json.dumps(report, ensure_ascii=False, indent=2).encode("utf-8")
-            report_document = upload(reports["id"], REPORT_FILE, payload, report_document or None)
+            report["partition_summary"] = {
+                partition: summarize(
+                    [row for row in report["cases"] if row["partition"] == partition]
+                )
+                for partition in ("development", "holdout")
+            }
+            payload = json.dumps(
+                report, ensure_ascii=False, indent=None if selected.compact_report else 2
+            ).encode("utf-8")
+            report_document = upload(
+                reports["id"], selected.report_file, payload, report_document or None
+            )
             directory = report_directory or BACKEND / ".data" / "retrieval-baseline"
             directory.mkdir(parents=True, exist_ok=True)
             (directory / "report.json").write_bytes(payload)
 
         def post(path: str, body: Json) -> httpx.Response:
-            if report["requests"] >= MAX_REQUESTS:
+            if report["requests"] >= selected.request_limit:
                 raise ValueError("达到评测请求上限，不再调用")
             report["requests"] += 1
             return client.post(path, json=body)
 
-        event("导入自制资料", 0)
+        event("导入固定资料", 0)
         for number, source in enumerate(dataset.documents, 1):
             runtime.say(f"[资料 {number}/{len(dataset.documents)}] 格式={Path(source.name).suffix}")
-            sources[source.key] = upload(kb["id"], source.name, source_bytes(source))
+            sources[source.key] = upload(kb["id"], source.name, source_loader(source))
+            published = expect(
+                client.get(
+                    f"/api/v1/documents/{sources[source.key]['document_id']}/chunks",
+                    params={"limit": 1},
+                ),
+                200,
+            )
             report["sources"].append(
                 {
                     "name": source.name,
                     "document_id": sources[source.key]["document_id"],
                     "build_id": sources[source.key]["build_id"],
+                    "published_chunks": published["total"],
                 }
             )
         # 干扰文档不对应任何金标事实，用于检验长段落、重复词和相近业务说明。
         noise = "本段为虚构的检索干扰资料，不包含评测问题的答案。" * 20
-        for number, topic in enumerate(
-            ("会议设施与办公采购", "设备更新与平台巡检", "差旅调研与资料归档"), 1
-        ):
+        noise_topics = (
+            ("会议设施与办公采购", "设备更新与平台巡检", "差旅调研与资料归档")
+            if selected.add_noise
+            else ()
+        )
+        for number, topic in enumerate(noise_topics, 1):
             upload(kb["id"], f"干扰资料-{number}.md", (f"# {topic}\n" + noise).encode())
-        event("资料发布完成", len(dataset.documents) + 3)
+        event("资料发布完成", len(dataset.documents) + len(noise_topics))
         publish()
         open_workbench(runtime)
         conversations: Json = {}
@@ -446,6 +562,7 @@ def run_experiment(
                     "category": case.category,
                     "question": case.question,
                     "answerable": bool(case.facts),
+                    "partition": case.partition,
                     "expected": [fact.model_dump() for fact in case.facts],
                     "retrieval": {},
                     "qa": {},
@@ -482,7 +599,8 @@ def run_experiment(
                 if case.category not in conversations:
                     conversations[case.category] = expect(
                         client.post(
-                            "/api/v1/conversations", json={"title": "评测 · " + case.category}
+                            "/api/v1/conversations",
+                            json={"title": selected.title + " · " + case.category},
                         ),
                         201,
                     )["id"]
@@ -526,7 +644,12 @@ def run_experiment(
                         "status_matches_label": data["answer_status"]
                         == ("answered" if case.facts else "no_evidence"),
                         "lexical_coverage": mean(
-                            any(alias in data["answer"] for alias in fact.aliases)
+                            any(
+                                normalize_text(alias) in normalize_text(data["answer"])
+                                if fact.normalized
+                                else alias in data["answer"]
+                                for alias in fact.aliases
+                            )
                             for fact in case.facts
                         )
                         if case.facts
@@ -535,7 +658,7 @@ def run_experiment(
                             any(
                                 chunk["document_id"] == sources[fact.document]["document_id"]
                                 and chunk["build_id"] == sources[fact.document]["build_id"]
-                                and fact.quote in chunk["text"]
+                                and supports_fact(fact, chunk["text"], chunk["locator"])
                                 for chunk in cited
                             )
                             for fact in case.facts
@@ -555,7 +678,7 @@ def run_experiment(
                 runtime.say(
                     f"[结果 {case.id}] hybrid@5覆盖={row['retrieval']['hybrid_5'].get('fact_recall')}；问答={row['qa'].get('status', row['qa'].get('error'))}"
                 )
-                if number % 6 == 0:
+                if number % selected.publish_every == 0:
                     publish()
             report["status"] = "completed"
             event("实验完成", report["requests"])

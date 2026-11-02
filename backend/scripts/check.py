@@ -26,6 +26,7 @@ SCRIPTS = (
     "workbench",
     "browser_smoke",
     "retrieval_baseline",
+    "evaluate_public",
 )
 
 

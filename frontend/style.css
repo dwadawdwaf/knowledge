@@ -2408,7 +2408,8 @@ html[data-theme="dark"] .modal-mark { color: #06202a; }
 
 /* 评测入口沿用现有卡片、表格与颜色，只补充指标和过程布局。 */
 .embedded-search { padding: 0; }
-.evaluation-content { display: grid; gap: 20px; }
+.evaluation-content { display: grid; grid-template-columns: minmax(0, 1fr); gap: 20px; }
+.evaluation-content > .table-wrap { overflow-x: auto; }
 .evaluation-content h2 { margin: 8px 0 0; font-size: 18px; }
 .eval-overview, .eval-case { border: 1px solid var(--border); border-radius: var(--r-lg, 12px); background: var(--surface); padding: 20px; }
 .eval-status, .eval-scores { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; }
@@ -2420,6 +2421,8 @@ html[data-theme="dark"] .modal-mark { color: #06202a; }
 .eval-table th { color: var(--text-3); font-size: 13px; }
 .eval-timeline { max-height: 210px; overflow: auto; margin: 0; padding: 0 0 0 24px; color: var(--text-3); line-height: 1.9; }
 .eval-filter { width: auto; max-width: 220px; }
+.eval-run { display: grid; gap: 4px; max-width: 340px; }
+.eval-run .input { width: auto; }
 .eval-check { display: flex; align-items: center; gap: 8px; font-size: 14px; }
 .eval-cases { display: grid; gap: 12px; }
 .eval-case summary { display: flex; align-items: baseline; gap: 12px; cursor: pointer; }

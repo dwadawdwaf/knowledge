@@ -6,7 +6,8 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
-const output = path.join(root, 'backend/.data/workbench/evaluation-preview');
+const publicRound = process.env.KS_UI_ROUND === '2';
+const output = path.join(root, 'backend/.data/workbench', publicRound ? 'public-round2-preview' : 'evaluation-preview');
 await mkdir(output, { recursive: true });
 assert.ok(process.env.KS_UI_BROWSER && process.env.KS_UI_URL);
 const browser = spawn(process.env.KS_UI_BROWSER, ['--headless=new', '--remote-debugging-port=0',
@@ -46,6 +47,41 @@ try {
   await send('Emulation.setEmulatedMedia', { features: [{ name: 'prefers-reduced-motion', value: 'reduce' }] });
   await until(() => js(`document.querySelector('#connection-label')?.textContent.startsWith('已连接')`));
   await js(`document.querySelector('[data-page=search]').click()`);
+  if (publicRound) {
+    await until(() => js(`document.querySelectorAll('.eval-case').length===48`));
+    assert.equal(await js(`document.querySelector('[aria-label="评测轮次"]').options.length`), 2);
+    assert.equal(await js(`document.querySelectorAll('.eval-table')[0].querySelectorAll('tbody tr').length`), 6);
+    await until(() => js(`document.querySelector('#notice').hidden`));
+    await shot('overview');
+    await js(`[...document.querySelectorAll('.evaluation-content h2')].find(item=>item.textContent==='实验对比').scrollIntoView()`);
+    await shot('comparison');
+    for (const partition of ['development', 'holdout']) {
+      await js(`document.querySelector('[aria-label="数据划分"]').value='${partition}';document.querySelector('[aria-label="数据划分"]').dispatchEvent(new Event('change'))`);
+      assert.equal(await js(`document.querySelectorAll('.eval-case').length`), 24);
+      await js(`[...document.querySelectorAll('.evaluation-content h2')].find(item=>item.textContent==='实验对比').scrollIntoView()`);
+      await shot(partition);
+    }
+    await js(`document.querySelector('[aria-label="评测轮次"]').selectedIndex=1;document.querySelector('[aria-label="评测轮次"]').dispatchEvent(new Event('change'))`);
+    await until(() => js(`document.querySelectorAll('.eval-case').length===24 && !document.querySelector('[aria-label="数据划分"]')`));
+    await js(`document.querySelector('[aria-label="评测轮次"]').selectedIndex=0;document.querySelector('[aria-label="评测轮次"]').dispatchEvent(new Event('change'))`);
+    await until(() => js(`document.querySelectorAll('.eval-case').length===48`));
+    await js(`document.querySelector('.eval-filter').value='表格与单位';document.querySelector('.eval-filter').dispatchEvent(new Event('change'));document.querySelector('.eval-case').open=true;document.querySelector('.eval-case').scrollIntoView()`);
+    assert.equal(await js(`document.querySelectorAll('.eval-case').length`), 6);
+    await shot('table-case');
+    await js(`[...document.querySelectorAll('.eval-case button')].find(item=>item.textContent.includes('查看实际问答')).click()`);
+    await until(() => js(`document.querySelectorAll('.answer-message').length===6`));
+    assert.ok(await js(`document.querySelectorAll('.citation-chip').length>0`));
+    await js(`document.querySelector('.citation-chip').click()`);
+    await until(() => js(`document.querySelector('#source-dialog').open`));
+    await shot('citation');
+    await js(`document.querySelector('#source-dialog').close();document.querySelector('[data-page=search]').click()`);
+    await until(() => js(`document.querySelectorAll('.eval-case').length===48`));
+    await send('Emulation.setDeviceMetricsOverride', { width: 390, height: 844, deviceScaleFactor: 1, mobile: true });
+    await until(() => js(`document.querySelector('.sidebar').getBoundingClientRect().right<=1`));
+    assert.ok(await js(`document.documentElement.scrollWidth<=innerWidth`));
+    await shot('mobile');
+    console.log(`PASS: 第二轮48题、轮次切换、开发/留出各24题、真实问答引用及移动布局；无新增模型调用。截图：${output}`);
+  } else {
   await until(() => js(`document.querySelectorAll('.eval-case').length===24`));
   assert.equal(await js(`document.querySelectorAll('.eval-table')[0].querySelectorAll('tbody tr').length`), 4);
   assert.equal(await js(`document.querySelectorAll('.eval-table')[1].querySelectorAll('tbody tr').length`), 8);
@@ -88,6 +124,7 @@ try {
   assert.ok(await js(`document.documentElement.scrollWidth<=innerWidth`));
   await shot('mobile');
   console.log(`PASS: 24题、8维度、4方案、维度筛选、知识库复测入口及移动布局；无新增模型调用。截图：${output}`);
+  }
 } finally {
   socket?.close(); browser.kill();
 }
