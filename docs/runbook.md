@@ -22,7 +22,8 @@ py -3.12不保证补丁版本。脚本从源码运行，不要求editable安装�
 | KS_DATABASE_URL | 显式数据库；根启动器未设置时自动用本机内置库 |
 | KS_WORKBENCH_OBJECTS | 根启动器持久原件目录，默认backend/.data/objects |
 | KS_STORAGE_ROOT | 手动运行API/Worker的原件目录，不等同根启动器的卷配置 |
-| KS_DOCUMENT_PARSER_PROFILE | legacy-v1或deepdoc-v0.22.0-v1，只影响新构建 |
+| KS_DOCUMENT_PARSER_PROFILE | 非PDF的默认解析策略，只影响新上传/新版本 |
+| KS_PDF_PARSER_PROFILE | PDF默认mineru-api4.1-v1，显式选择优先；重建保留原策略 |
 | KS_TOKEN_SECRET | 本地开发身份桩签名密钥，正式接入替换验证器 |
 
 模型配置可能向外部服务发送内容，真实资料须另授权。换向量模型必须离线迁移索引、重建和重标阈值，不在现有索引混写。
@@ -149,7 +150,7 @@ Compose命令需同会话令牌；工作台退出不停止边车。health只证�
 ### 解析器三选一与MinerU
 
 上传区选择“沿用服务默认 / 基础解析 / DeepDoc / MinerU”，该选择也用于上传新版本。
-API在multipart中传parser_profile；选项与冻结语义见设计“显式可选解析器”。默认可配KS_DOCUMENT_PARSER_PROFILE，
+API在multipart中传parser_profile；选项与冻结语义见设计“显式可选解析器”。PDF默认MinerU，可配KS_PDF_PARSER_PROFILE；其他格式默认可配KS_DOCUMENT_PARSER_PROFILE，
 两端须重启到同一版本。重试/普通重建不换策略，同字节去重提示实际已有方案，不把选择当作已切换。
 TXT/MD直接读取并告警，不依赖OCR服务；基础模式没有图片OCR，选基础上传图片仍报不支持。
 DeepDoc v2支持Office原生路径，须重建并重启已有边车，新客户端不能假定旧镜像已支持v2。
@@ -206,6 +207,32 @@ CI定义在.github/workflows/backend.yml，文件存在不等于远端已实跑�
 真实模式使用固定自制资料及临时库/API/Worker，48次检索/问答API请求、上限60，不自动重跑。
 上传向量化和轮询是额外调用，不据此推断供应商token或费用。报告在backend/.data/evaluation，
 只存指纹、配置名、指标与耗时，不存正文/密钥/端点。词面覆盖、结构引用有效均不等于事实正确。
+
+### 持久库第二轮公开长文档评测
+
+仅限已批准的六份官方公开资料和已冻结的48题；不清空旧库，不重新下载语料。
+原件、来源清单和标注位于`backend/.data/public-corpus-v1`，不提交；不能替换成私人或甲方资料。
+
+本机16GiB内存的本轮配置：启动MinerU前设置`$env:MINERU_PROCESSING_WINDOW_SIZE='8'`，
+再运行`./start-mineru.ps1`；只缩小批处理窗口，不减少页数或关闭识别功能。已运行服务需核对其启动环境，
+复用服务不会使新环境变量生效。实验进程设置`$env:KS_PARSE_OUTPUT_BYTES='134217728'`（128MiB），
+预检与后台Worker使用同一有界预算，实际值记入预检报告；不修改服务默认16MiB或放开ZIP成员校验。
+
+```powershell
+.\backend\.venv\Scripts\python.exe -X utf8 -u backend/scripts/evaluate_public.py --prepare-only
+.\backend\.venv\Scripts\python.exe -X utf8 -u backend/scripts/evaluate_public.py --confirm-public --serve --port 8013
+```
+
+第一条复用生产解析器做本地预检，不入库或调用模型。第二条保留现有库，新增第二轮资料库，
+发布过程与结果并打开工作台；在“检索评测”选择轮次、开发集或留出集，也可查看实际问答与引用。
+本轮改用MinerU和现有bge-m3/deepseek-flash配置，不做解析器配对对照或调参；检索/问答最多240次，
+入库与报告发布的向量调用另计。`--confirm-public`不替代用户授权。
+本次已批准的入库恢复使用`--resume-ingestion --confirm-public --serve --port 8010`；须先停止同库旧工作台/Worker，
+保留run-started.json，不能删标记重跑。只允许尚无本轮报告的恢复一次，已有报告时停止并核对请求记录。
+`backend/.data/public-round2-mineru`保存预检、启动标记及报告；之前未进入问答的基础解析尝试保留在`backend/.data/public-round2`。
+启动标记存在时拒绝再次执行，
+中断后先核对已有结果，不删标记碰运气重跑。关闭终端会停止本轮工作台，数据库和原件继续保留。
+日常只看结果时用普通启动器，不重新执行评测；报告中词面命中和引用覆盖不等同于答案事实正确率。
 
 ## 6. 排障
 
