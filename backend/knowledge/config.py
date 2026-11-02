@@ -47,6 +47,7 @@ class Settings(BaseSettings):
     xlsx_max_rows: int = 5000
     xlsx_rows_per_block: int = 40
     document_parser_profile: ParserProfile = "legacy-v1"
+    pdf_parser_profile: ParserProfile = "mineru-api4.1-v1"
     mineru_url: str = "http://127.0.0.1:8003"
     mineru_token: str | None = None
     mineru_timeout_seconds: float = 330.0

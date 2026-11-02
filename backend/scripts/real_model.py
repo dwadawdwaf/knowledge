@@ -143,12 +143,14 @@ def real_model_environment(settings: Settings) -> dict[str, str]:
         "heartbeat_seconds",
         "max_attempts",
         "document_parser_profile",
+        "pdf_parser_profile",
         "deepdoc_url",
         "deepdoc_token",
         "deepdoc_timeout_seconds",
         "mineru_url",
         "mineru_token",
         "mineru_timeout_seconds",
+        "parse_output_bytes",
     )
     # 不透传业务库、文件卷或身份密钥，避免演示配置意外触及现有数据。
     return {

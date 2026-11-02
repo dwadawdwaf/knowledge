@@ -102,6 +102,21 @@ def test_plain_comparison_is_not_mistaken_for_html():
     assert "mineru_table_linearized" not in result[0].warnings
 
 
+@pytest.mark.parametrize("kind,value", [("text", "甲\x00乙"), ("table", "<p>甲\x00乙</p>")])
+def test_nul_replacement_preserves_offsets_and_marks_loss(kind, value):
+    def change(p):
+        p["pages"][0]["blocks"] = [{"type": kind, "content": value}]
+
+    result = normalize_archive(archive(mutate=change), "application/pdf", 100000)
+    assert result[0].text == "甲\ufffd乙"
+    assert result[0].locator.char_end == 3
+    assert "mineru_nul_replaced" in result[0].warnings
+    assert (
+        "mineru_nul_replaced"
+        not in normalize_archive(archive(), "application/pdf", 100000)[0].warnings
+    )
+
+
 @pytest.mark.parametrize(
     "url",
     [

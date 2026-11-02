@@ -104,6 +104,7 @@ test('块内偏移不被说成文档字符位置', () => {
 });
 test('未知警告码原样显示，不隐藏', () => {
   assert.equal(warningLabel('deepdoc_table_linearized'), '表格已线性化');
+  assert.match(warningLabel('mineru_nul_replaced'), /NUL.*需复核/);
   assert.equal(warningLabel('something_new'), 'something_new');
 });
 

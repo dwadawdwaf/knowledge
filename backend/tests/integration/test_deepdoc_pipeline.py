@@ -72,6 +72,7 @@ def setup_deepdoc(settings, deps, url):
     configured = settings.model_copy(
         update={
             "document_parser_profile": "deepdoc-v0.22.0-v1",
+            "pdf_parser_profile": "deepdoc-v0.22.0-v1",
             "deepdoc_url": url,
             "deepdoc_token": "test-only",
         }

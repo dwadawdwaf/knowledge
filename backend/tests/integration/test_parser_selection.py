@@ -37,7 +37,7 @@ pytestmark = [
 
 @contextmanager
 def parser_server():
-    state = {"fail": False, "calls": 0}
+    state = {"fail": False, "calls": 0, "nul": False}
 
     class Handler(BaseHTTPRequestHandler):
         def log_message(self, *args):
@@ -51,6 +51,8 @@ def parser_server():
             if state["fail"]:
                 return
             block = "合成设备保修期限为18个月。"
+            if state["nul"]:
+                block += "备注甲\x00乙"
             if self.path == "/v1/parse":
                 self.wfile.write(
                     json.dumps(
@@ -204,6 +206,44 @@ def test_selected_parser_publish_dedup_rebuild_failure_and_authorization(
             document.chunks(session, actor, result.document_id)
 
 
+def test_mineru_nul_publishes_with_warning_without_changing_original(
+    session, actor, settings, deps
+):
+    with parser_server() as (url, state):
+        state["nul"] = True
+        settings = settings.model_copy(update={"mineru_url": url})
+        registry = build_parser_registry(settings)
+        deps = replace(deps, settings=settings, registry=registry)
+        kb = knowledge.create(session, actor, "合成无效字符")
+        original = b"%PDF-synthetic-nul-output"
+        result = document.upload(
+            session,
+            actor,
+            settings,
+            deps.storage,
+            registry,
+            kb_id=kb.id,
+            filename="synthetic.pdf",
+            data=original,
+            parser_profile="mineru-api4.1-v1",
+            embedder_model=deps.embedder.model,
+            embedder_dim=1024,
+        )
+        assert process_next(session, deps)
+        session.expire_all()
+        blocks = document.chunks(session, actor, result.document_id)
+        assert "\x00" not in blocks["items"][0]["text"]
+        assert "备注甲\ufffd乙" in blocks["items"][0]["text"]
+        assert "mineru_nul_replaced" in session.get(IndexBuild, result.build_id).warnings
+        assert document.source(session, actor, result.document_id, deps.storage)["data"] == original
+        stranger = Actor(subject_id="other", tenant_id=actor.tenant_id)
+        with pytest.raises(NotFound):
+            document.chunks(session, stranger, result.document_id)
+        document.delete(session, actor, result.document_id, settings.max_attempts)
+        with pytest.raises(NotFound):
+            document.chunks(session, actor, result.document_id)
+
+
 def test_upload_form_optional_profile_is_strict_and_returned(session, actor, settings, deps):
     app = create_app()
 
@@ -237,3 +277,52 @@ def test_upload_form_optional_profile_is_strict_and_returned(session, actor, set
     )
     assert response.status_code == 422
     assert client.get("/openapi.json").status_code == 200
+
+
+def test_pdf_default_is_frozen_for_upload_and_new_version(session, actor, settings, deps):
+    with parser_server() as (url, state):
+        settings = settings.model_copy(
+            update={"pdf_parser_profile": "mineru-api4.1-v1", "mineru_url": url}
+        )
+        registry = build_parser_registry(settings)
+        deps = replace(deps, settings=settings, registry=registry)
+        kb = knowledge.create(session, actor, "合成PDF默认")
+        common = {
+            "filename": "synthetic.pdf",
+            "embedder_model": deps.embedder.model,
+            "embedder_dim": 1024,
+        }
+        result = document.upload(
+            session,
+            actor,
+            settings,
+            deps.storage,
+            registry,
+            kb_id=kb.id,
+            data=b"%PDF-1.7 synthetic v1",
+            **common,
+        )
+        assert result.parser_profile == "mineru-api4.1-v1"
+        assert process_next(session, deps)
+        session.expire_all()
+        info = document.detail(session, actor, result.document_id)
+        assert info["parser_profile"] == "mineru-api4.1-v1"
+        updated = document.add_version(
+            session,
+            actor,
+            settings,
+            deps.storage,
+            registry,
+            document_id=result.document_id,
+            expected_generation=info["generation"],
+            data=b"%PDF-1.7 synthetic v2",
+            **common,
+        )
+        assert updated.parser_profile == "mineru-api4.1-v1"
+        assert process_next(session, deps)
+        session.expire_all()
+        assert state["calls"] == 2
+        assert (
+            session.get(IndexBuild, result.build_id).chunk_config["parser_profile"]
+            == "mineru-api4.1-v1"
+        )

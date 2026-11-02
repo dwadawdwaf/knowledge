@@ -104,6 +104,10 @@ def normalize_archive(data: bytes, media: str, limit: int) -> list[ParsedBlock]:
             if not value.strip():
                 skipped = True
                 continue
+            if "\x00" in value:
+                # 等长替换，保留块内码点偏移；原件不变，不能静默丢弃异常字符。
+                value = value.replace("\x00", "\ufffd")
+                warnings.add("mineru_nul_replaced")
             result.append(
                 ParsedBlock(
                     value,

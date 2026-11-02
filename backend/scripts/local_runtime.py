@@ -120,7 +120,7 @@ class LocalRuntime:
                     "[mode] Synthetic data + deterministic fixtures; NOT real-model evaluation"
                 )
             else:
-                self.say("[mode] 真实模型 + 自制资料；问题和证据将发送到已配置端点")
+                self.say("[mode] 真实模型；仅使用本次已批准资料，问题和证据将发送到已配置端点")
             external_database = self.database_url is not None
             if not external_database:
                 self.database_url = self.stack.enter_context(isolated_database(self.say))
@@ -145,6 +145,7 @@ class LocalRuntime:
                     "KS_EMBEDDING_BASE_URL": self.embedding_url,
                     "KS_GENERATOR_BASE_URL": self.generator_url,
                     "KS_GENERATOR_MODEL": "fixture",
+                    "KS_PDF_PARSER_PROFILE": "legacy-v1",
                     "KS_LEASE_SECONDS": str(lease),
                     "KS_HEARTBEAT_SECONDS": str(heartbeat),
                     "KS_WORKER_POLL_SECONDS": "0.2",

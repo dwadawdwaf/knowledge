@@ -115,6 +115,7 @@ const WARNING_LABELS = {
   mineru_native_location_unavailable: 'MinerU 原生结果无可靠原文件页码/行列',
   mineru_table_linearized: 'MinerU 表格/HTML已转纯文本',
   mineru_content_skipped: 'MinerU存在未提取的非文本或不支持块，内容可能不完整',
+  mineru_nul_replaced: 'MinerU 无效 NUL 字符已替换为 �，对应文字需复核',
   deepdoc_ocr_requires_review: 'OCR 识别，需复核',
   deepdoc_table_linearized: '表格已线性化',
   deepdoc_figures_not_described: '含未描述的图片',

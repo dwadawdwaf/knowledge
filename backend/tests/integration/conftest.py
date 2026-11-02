@@ -57,6 +57,7 @@ def settings(tmp_path) -> Settings:
     # 解析策略不跟随 .env：否则开发机开了 DeepDoc，集成测试就要依赖边车在跑。
     # 需要 DeepDoc 的用例（test_deepdoc_pipeline）自行覆盖 profile 与端点。
     overrides["document_parser_profile"] = "legacy-v1"
+    overrides["pdf_parser_profile"] = "legacy-v1"
     return Settings(**overrides)
 
 

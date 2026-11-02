@@ -121,11 +121,15 @@ def _validate(data: bytes, settings: Settings, registry, filename: str, profile:
         raise FileTooLarge("文件超过大小上限")
 
     media_type = detect_media_type(data, filename)
-    selected = profile or settings.document_parser_profile
+    selected = profile or (
+        settings.pdf_parser_profile
+        if media_type == "application/pdf"
+        else settings.document_parser_profile
+    )
     if selected not in get_args(ParserProfile):
         raise ValidationFailed("未知解析方案")
     registry.for_file(media_type, filename, profile=selected)
-    return media_type
+    return media_type, selected
 
 
 def _existing_profile(session: Session, document: Document, *, pending_first: bool = False) -> str:
@@ -156,7 +160,7 @@ def upload(
     if kb.status != Lifecycle.ACTIVE:
         raise NotFound("知识库不存在")
 
-    media_type = _validate(data, settings, registry, filename, parser_profile)
+    media_type, selected = _validate(data, settings, registry, filename, parser_profile)
     sha256 = hashlib.sha256(data).hexdigest()
     title = filename.rsplit("/", 1)[-1][:300]
 
@@ -186,7 +190,7 @@ def upload(
         media_type=media_type,
         byte_size=len(data),
     )
-    build = _new_build(session, version.id, settings, embedder_model, embedder_dim, parser_profile)
+    build = _new_build(session, version.id, settings, embedder_model, embedder_dim, selected)
     job = job_repo.create(
         session,
         JobKind.INGEST,
@@ -229,7 +233,7 @@ def add_version(
     if expected_generation is not None and expected_generation != document.generation:
         raise VersionConflict("文档已被修改，请刷新后重试")
 
-    media_type = _validate(data, settings, registry, filename, parser_profile)
+    media_type, selected = _validate(data, settings, registry, filename, parser_profile)
     sha256 = hashlib.sha256(data).hexdigest()
 
     existing = doc_repo.find_version_by_sha(session, document.kb_id, sha256)
@@ -255,7 +259,7 @@ def add_version(
         media_type=media_type,
         byte_size=len(data),
     )
-    build = _new_build(session, version.id, settings, embedder_model, embedder_dim, parser_profile)
+    build = _new_build(session, version.id, settings, embedder_model, embedder_dim, selected)
     job = job_repo.create(
         session,
         JobKind.INGEST,

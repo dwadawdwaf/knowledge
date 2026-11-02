@@ -54,6 +54,13 @@ def test_real_environment_does_not_forward_database_storage_or_identity():
     assert not {"KS_DATABASE_URL", "KS_STORAGE_ROOT", "KS_TOKEN_SECRET"} & env.keys()
 
 
+def test_real_environment_preserves_parser_output_budget():
+    settings = configured_settings().model_copy(update={"parse_output_bytes": 128 * 1024 * 1024})
+    env = real_model_environment(settings)
+    assert env["KS_PARSE_OUTPUT_BYTES"] == "134217728"
+    assert int(env["KS_PARSE_OUTPUT_BYTES"]) == settings.parse_output_bytes
+
+
 def test_console_displays_answer_and_server_citation():
     data = {
         "answer_status": "answered",

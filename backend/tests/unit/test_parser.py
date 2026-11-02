@@ -12,6 +12,33 @@ from knowledge.adapters.parser import (
 from knowledge.domain.errors import UnsupportedFormat
 
 
+def test_pdf_upload_default_and_explicit_override():
+    from unittest.mock import Mock
+
+    from knowledge.config import Settings
+    from knowledge.services.document import _validate
+
+    settings = Settings(_env_file=None)
+    registry = Mock()
+    assert settings.pdf_parser_profile == "mineru-api4.1-v1"
+    assert _validate(b"%PDF-1.7 synthetic", settings, registry, "disguised.txt") == (
+        APPLICATION_PDF,
+        "mineru-api4.1-v1",
+    )
+    registry.for_file.assert_called_with(
+        APPLICATION_PDF, "disguised.txt", profile="mineru-api4.1-v1"
+    )
+    for explicit in ("legacy-v1", "deepdoc-v0.22.0-v2"):
+        assert (
+            _validate(b"%PDF-1.7 synthetic", settings, registry, "sample.pdf", explicit)[1]
+            == explicit
+        )
+    assert (
+        _validate(b"synthetic", settings, registry, "sample.txt")[1]
+        == settings.document_parser_profile
+    )
+
+
 def test_detect_by_extension_for_text():
     assert detect_media_type("正文".encode(), "制度.md") == TEXT_MARKDOWN
     assert detect_media_type("正文".encode(), "制度.txt") == TEXT_PLAIN
@@ -28,8 +55,8 @@ def test_unknown_binary_not_text():
 
 def test_text_parser_blocks_keep_offsets():
     content = "第一段规定。\n\n第二段规定。\n".encode()
-    blocks = build_parser_registry().for_file(TEXT_PLAIN, "a.txt").parse(
-        content, TEXT_PLAIN, "a.txt"
+    blocks = (
+        build_parser_registry().for_file(TEXT_PLAIN, "a.txt").parse(content, TEXT_PLAIN, "a.txt")
     )
     assert len(blocks) == 2
     assert blocks[0].locator.char_start == 0
@@ -127,8 +154,8 @@ def test_csv_is_detected_and_keeps_real_row_numbers():
     content = "部门,负责人\n网络部,陈建工\n\n行政部,李静\n".encode("gb18030")
     assert detect_media_type(content, "名单.csv") == TEXT_CSV
 
-    blocks = build_parser_registry().for_file(TEXT_CSV, "名单.csv").parse(
-        content, TEXT_CSV, "名单.csv"
+    blocks = (
+        build_parser_registry().for_file(TEXT_CSV, "名单.csv").parse(content, TEXT_CSV, "名单.csv")
     )
 
     assert len(blocks) == 1
@@ -148,9 +175,7 @@ def _pptx_bytes(slides: list[list[str]]) -> bytes:
     buffer = BytesIO()
     with zipfile.ZipFile(buffer, "w") as archive:
         for index, paragraphs in enumerate(slides, start=1):
-            body = "".join(
-                f"<a:p><a:r><a:t>{text}</a:t></a:r></a:p>" for text in paragraphs
-            )
+            body = "".join(f"<a:p><a:r><a:t>{text}</a:t></a:r></a:p>" for text in paragraphs)
             xml = (
                 '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
                 '<p:sld xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main" '
