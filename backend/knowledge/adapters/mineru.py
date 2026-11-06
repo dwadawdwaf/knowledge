@@ -13,7 +13,6 @@ import zipfile
 from html.parser import HTMLParser
 from urllib.parse import urlsplit
 
-from knowledge.adapters.deepdoc import _open
 from knowledge.config import Settings
 from knowledge.domain.entities import Locator, ParsedBlock
 from knowledge.domain.errors import ParseFailed
@@ -29,6 +28,17 @@ EXTENSIONS = {
     "application/vnd.openxmlformats-officedocument.presentationml.presentation": ".pptx",
     "text/csv": ".csv",
 }
+
+
+class _NoRedirect(urllib.request.HTTPRedirectHandler):
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        return None
+
+
+def _open(request: urllib.request.Request, *, timeout: float):
+    return urllib.request.build_opener(urllib.request.ProxyHandler({}), _NoRedirect()).open(
+        request, timeout=timeout
+    )
 
 
 class HtmlText(HTMLParser):
@@ -61,13 +71,17 @@ class HtmlText(HTMLParser):
 def normalize_archive(data: bytes, media: str, limit: int) -> list[ParsedBlock]:
     with zipfile.ZipFile(io.BytesIO(data)) as archive:
         entries = archive.infolist()
-        if len(entries) > 2048 or sum(e.file_size for e in entries) > limit:
+        if len(entries) > 2048:
             raise ValueError("解压预算超限")
         names = [e.filename for e in entries]
         if len(names) != len(set(names)) or names.count("structured_content.json") != 1:
             raise ValueError("结构结果缺失或重复")
-        # 不extract，也不读取images、其他成员或任何磁盘路径。
-        content = json.loads(archive.read("structured_content.json"))
+        # 只解压 structured_content.json；图片等未读成员不计入预算，
+        # 但 JSON 本身仍受上限约束，防止解压炸弹。
+        content_entry = next(e for e in entries if e.filename == "structured_content.json")
+        if content_entry.file_size > limit:
+            raise ValueError("解压预算超限")
+        content = json.loads(archive.read(content_entry))
     if content.get("is_full_document") is not True or not isinstance(content.get("pages"), list):
         raise ValueError("不接受截断文档")
     producer = content.get("metadata", {}).get("producer", {})
@@ -156,7 +170,8 @@ class MinerUParser:
         self.url = settings.mineru_url.rstrip("/")
         self.token = settings.mineru_token
         self.timeout = settings.mineru_timeout_seconds
-        self.limit = settings.parse_output_bytes
+        self.limit = settings.mineru_output_bytes
+        self.json_limit = settings.parse_output_bytes
 
     def supports(self, media_type: str, filename: str) -> bool:
         return media_type in EXTENSIONS
@@ -201,7 +216,7 @@ class MinerUParser:
                     if len(raw) > self.limit or time.monotonic() >= deadline:
                         raise ValueError("输出超限")
                     if raw.startswith(b"PK"):
-                        return normalize_archive(raw, media_type, self.limit)
+                        return normalize_archive(raw, media_type, self.json_limit)
                     if request.full_url.endswith("/result"):
                         raise ValueError("结果不是ZIP")
                     status = json.loads(raw)

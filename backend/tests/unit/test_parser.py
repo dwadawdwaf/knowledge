@@ -28,7 +28,7 @@ def test_pdf_upload_default_and_explicit_override():
     registry.for_file.assert_called_with(
         APPLICATION_PDF, "disguised.txt", profile="mineru-api4.1-v1"
     )
-    for explicit in ("legacy-v1", "deepdoc-v0.22.0-v2"):
+    for explicit in ("legacy-v1", "mineru-api4.1-v1"):
         assert (
             _validate(b"%PDF-1.7 synthetic", settings, registry, "sample.pdf", explicit)[1]
             == explicit

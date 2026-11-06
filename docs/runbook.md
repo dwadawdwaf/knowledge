@@ -45,7 +45,7 @@ py -3.12不保证补丁版本。脚本从源码运行，不要求editable安装�
 
 启动器输出阶段、端口、/workbench/与/docs地址；终端可提问，/token显示开发令牌，/quit退出。
 令牌属本次启动桩，服务重启后重新连接，不写进报告或提交。
-依赖失败停止，不静默切模型桩；-PullMissing才允许拉取缺失向量模型，-NoDeepDoc显式关闭本次DeepDoc。
+依赖失败停止，不静默切模型桩；-PullMissing才允许拉取缺失向量模型。
 Real模式自动调用start-mineru.ps1启动或复用已安装的MinerU；-MinerURoot可指定D盘环境目录（默认D:\MinerU），
 -NoMinerU仅跳过自动启动，不切换默认或已有文件的解析方案。Demo不启动MinerU；CheckOnly也会准备该依赖。
 未安装时明确提示且不自动安装；已安装但模型/接口检查失败则停止启动，不静默回退。
@@ -115,51 +115,23 @@ manifest.json记录版本和计数，迁移源码副本用于恢复演练。含�
 202后查新job，409刷新详情与已有任务，不盲目重发。重建复用原件/版本和冻结配置，旧发布继续服务直到成功切换。
 不支持在线换向量、历史回滚或表格/语义策略升级；原样重传去重不能代替恢复。
 
-## 4. DeepDoc与D盘Docker
+## 4. 已移除的DeepDoc与Docker依赖
 
-需要Linux容器引擎及Compose，初次安装/拉镜像需要授权。项目机器Docker程序用D:\Docker\Desktop，
-数据用D:\Docker\wsl，下载与临时文件也在D盘；少量Windows系统配置不等于完全零C盘写入。
-install-docker.ps1只处理指定安装路径；用start-docker.ps1启动以指定D盘用户配置，避免原C盘配置改名失败。
-不要擅自移动现有WSL盘或改其他发行版，也不要绕过该脚本使用普通快捷方式。
-
-```powershell
-.\start-docker.ps1
-.\start-deepdoc.ps1 -CheckOnly
-.\start-deepdoc.ps1 -LaunchWorkbench
-```
-
-仅启动边车可不加LaunchWorkbench，再在同一PowerShell运行start.cmd。
-脚本生成共享令牌但不打印；API/Worker配置KS_DOCUMENT_PARSER_PROFILE、KS_DEEPDOC_URL、KS_DEEPDOC_TOKEN，
-与边车DEEPDOC_TOKEN一致且至少32字符，换令牌后两端一起重启。KS_DEEPDOC_TIMEOUT_SECONDS是等待上限而非性能目标。
-
-```powershell
-Invoke-RestMethod http://127.0.0.1:9381/health
-docker compose -p ks-deepdoc -f deploy/deepdoc/compose.yaml logs -f
-docker compose -p ks-deepdoc -f deploy/deepdoc/compose.yaml exec deepdoc /opt/ks-sidecar-venv/bin/python -m deepdoc_sidecar.smoke
-docker compose -p ks-deepdoc -f deploy/deepdoc/compose.yaml down
-```
-
-Compose命令需同会话令牌；工作台退出不停止边车。health只证明存活，smoke是自制样本，不代表复杂业务验收。
-真实启动器未显式配置DeepDoc令牌时，可只读复用本项目ks-deepdoc/deepdoc正在运行容器的令牌，
-在内存中传给API与Worker，不打印、不落盘；显式令牌不覆盖，其他容器/地址不读取。更新后重启项目才生效。
-保持解析器内部网络禁外连，网关只转发固定目标；缺模型/非法输出失败，不改用旧解析器兜底。
-镜像可用RAGFLOW_IMAGE固定同release digest，许可保留在deploy/deepdoc/LICENSE.ragflow，传递依赖另遵守自身许可。
+2026-11-06按用户要求移除DeepDoc解析功能；一键启动不再检查、启动或依赖Docker Desktop。
+历史DeepDoc构建只读保留，不再新增；新上传只支持基础解析或MinerU。
+MinerU为本机独立Python环境，不通过容器运行，启动方式见§5。
 
 ## 5. 验证与评测
 
-### 解析器三选一与MinerU
+### 解析器选择与MinerU
 
-上传区选择“沿用服务默认 / 基础解析 / DeepDoc / MinerU”，该选择也用于上传新版本。
+上传区选择“沿用服务默认 / 基础解析 / MinerU”，该选择也用于上传新版本。
 API在multipart中传parser_profile；选项与冻结语义见设计“显式可选解析器”。PDF默认MinerU，可配KS_PDF_PARSER_PROFILE；其他格式默认可配KS_DOCUMENT_PARSER_PROFILE，
 两端须重启到同一版本。重试/普通重建不换策略，同字节去重提示实际已有方案，不把选择当作已切换。
 TXT/MD直接读取并告警，不依赖OCR服务；基础模式没有图片OCR，选基础上传图片仍报不支持。
-DeepDoc v2支持Office原生路径，须重建并重启已有边车，新客户端不能假定旧镜像已支持v2。
-在已设置DEEPDOC_TOKEN的会话执行：`docker compose -p ks-deepdoc -f deploy/deepdoc/compose.yaml up -d --build`；
-没有本地镜像或模型缓存时可能联网，先确认下载安排，再执行。
-若只有镜像站不可达且已有可信v0.22.0边车镜像，可用deploy/deepdoc/Dockerfile.refresh制作离线代码更新层：
-`docker build --pull=false --network=none -f deploy/deepdoc/Dockerfile.refresh -t ks-deepdoc-local:deepdoc-v0.22.0-v2 .`。
-旧Docker在BuildKit仍请求镜像站时，可在该会话临时设DOCKER_BUILDKIT=0，完成后恢复；没有旧镜像时不能使用此路径。
-随后在有DEEPDOC_TOKEN的会话执行Compose up -d --no-build --pull never；不使用docker cp制作无法复现的运行态补丁。
+MinerU结果ZIP读取上限`KS_MINERU_OUTPUT_BYTES`（默认64MB，含未读取的图片）；
+正文`structured_content.json`仍受`parse_output_bytes`（默认16MB）限制，图片等未读取成员不计入。
+避免大文档因整包体积被误判为解析失败。
 
 MinerU固定本机4.1.2独立环境，主环境不安装其重依赖。用户已批准本次在D盘安装与下载basic模型；
 后续启动默认MINERU_MODEL_SOURCE=local，缺模型明确失败，不自动联网下载。
@@ -179,7 +151,7 @@ MinerU固定本机4.1.2独立环境，主环境不安装其重依赖。用户已
 确认API未被配置为外部Router/SaaS；wrapper本身不加载模型，不代表上游不会转发。
 主项目配置KS_MINERU_URL=http://127.0.0.1:8003，可选KS_MINERU_TOKEN供本机认证代理，
 KS_MINERU_TIMEOUT_SECONDS为总等待预算（默认330秒），而非性能承诺。代理必须是本机origin；不接外网地址或任意响应URL。
-请求固定basic/auto/all，不对长文档只取前10页；超时或异常明确失败，不回退DeepDoc或基础解析。
+请求固定basic/auto/all，不对长文档只取前10页；超时或异常明确失败，不回退基础解析。
 上游可能在超时/断连后继续工作，本项目不自动重提同次HTTP请求；须按本机服务的保留/清理规则处理其缓存。
 4.1 ZIP要求structured_content.json与完整标记，限制压缩/解压预算，不解压任意路径或获取图片。
 当前客户端以页/块定位，不承诺字框、Office物理分页或完整表格语义，相关warnings需人工核对。
@@ -243,7 +215,7 @@ CI定义在.github/workflows/backend.yml，文件存在不等于远端已实跑�
 | running停滞 | Worker、stage/attempt、租约、模型等待，不手改任务状态 |
 | 模型故障 | 端点、认证、余额、名称、1024维及索引模型兼容性，不把故障记成无资料 |
 | Ollama绑定失败/10013 | 检查Windows保留端口：`netsh interface ipv4 show excludedportrange protocol=tcp`；不要删系统规则。若11434被保留，将backend/.env的KS_EMBEDDING_BASE_URL改为经检查可用的本机端口（如http://127.0.0.1:21434/v1）。启动器为serve/pull同步设置OLLAMA_HOST，不改系统环境，不更换模型或下载资料；手动启动时也需在该终端设置同一OLLAMA_HOST。 |
-| PARSE_FAILED | 格式/加密/资源限制、DeepDoc网络/令牌/模型，不循环重传相同内容 |
+| PARSE_FAILED | 格式/加密/资源限制、MinerU网络/接口/模型，不循环重传相同内容 |
 | no_evidence | 范围、发布状态、阈值及原文是否支持，不用降低门槛制造答案 |
 | 409 | 刷新文档/任务，不重复旧代次 |
 | 原文404但分块在 | 数据库与持久原件卷是否配对，是否曾误用临时目录 |

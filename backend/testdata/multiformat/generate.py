@@ -1,4 +1,4 @@
-"""生成多种格式的自制样本，用于验证 DeepDoc 的版面、表格与 OCR 能力。
+"""生成多种格式的自制样本，用于验证 MinerU 的版面、表格与 OCR 能力。
 
 全部内容为自撰示例，不含真实单位信息，也不引用受版权保护的文本。
 用法：`python testdata/multiformat/generate.py`

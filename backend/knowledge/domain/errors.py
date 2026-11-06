@@ -116,10 +116,6 @@ _PARSE_MESSAGES = frozenset(
     {
         "MinerU服务未就绪，请先启动本机解析服务",
         "MinerU接口不匹配，需要4.1文件解析服务",
-        "DeepDoc未配置访问令牌，请使用 start-deepdoc.ps1 -LaunchWorkbench 启动",
-        "DeepDoc访问令牌不匹配，请从启动DeepDoc的同一终端启动项目",
-        "DeepDoc服务版本不匹配，请更新解析容器",
-        "DeepDoc服务未就绪，请先启动本机解析服务",
     }
 )
 

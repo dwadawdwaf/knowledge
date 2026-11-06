@@ -7,7 +7,7 @@
 
 主系统内的个人知识服务：建库、文档上传、异步处理、混合检索、证据问答、引用、版本更新/重建/删除。
 工作台同源托管在/workbench/，提供文件、知识库、检索、问答与原件/提取正文浏览；不做Office保真编辑。
-支持TXT/MD/CSV、文本PDF、DOCX、XLSX、PPTX；扫描件与图片须选DeepDoc或MinerU。
+支持TXT/MD/CSV、文本PDF、DOCX、XLSX、PPTX；扫描件与图片须选MinerU。
 不做账号体系、共享授权、网页连接器、通用Agent平台、复杂表格自动理解或token流式输出。
 
 ## 2. 技术选型
@@ -16,32 +16,19 @@
 原件放文件目录。当前向量索引固定1024维，同一物理索引不混写不同模型或维度，换模型须离线迁移和重标阈值。
 基础解析复用pypdf、python-docx、openpyxl与标准库CSV/OOXML，不支持旧版XLS/PPT。
 
-### 2.1 可选DeepDoc
+### 2.1 已移除的DeepDoc
 
-复用RAGFlow v0.22.0的RAGFlowPdfParser.parse_into_bboxes，只搬解析能力，不接入其账号、队列和向量库。
-主后端不装OCR/ONNX等重依赖，适配位于backend/deepdoc_sidecar，依赖和模型放独立容器。
-历史缺省legacy-v1；deepdoc-v0.22.0-v1处理PDF及PNG/JPEG/TIFF，图片先本地转PDF，多帧保留顺序。
-
-- 受信任Worker经令牌提交字节，仅同机回环HTTP，不接受路径、URL或自述身份。
-- 固定目标入口代理连接入口/内部网络，解析器仅内部网络、禁外连，不挂业务存储；运行时不下载模型。
-- 保留positions中的所有页/坐标，页码1起、precision=block；字符偏移仅指提取块，不冒充原文件精确偏移。
-- 表格HTML转换为不可执行文本，不保证合并单元格语义；图形不自动描述。阅读顺序/短块归一不保证复杂多栏正确。
-- parser_profile随build冻结，重试/普通重建不偷换策略。新策略用新库导入，同版本跨策略迁移另评审。
-- 超时、缺模型、忙碌和非法输出使用既有PARSE_FAILED，不静默回退。health仅代表HTTP存活，不等于推理或业务验收。
-
-上游固定依据：[PDF解析器](https://github.com/infiniflow/ragflow/blob/v0.22.0/deepdoc/parser/pdf_parser.py)。许可原文保留在deploy/deepdoc/LICENSE.ragflow；模型及传递依赖另遵守自身许可。
+2026-11-06按用户要求移除DeepDoc解析与Docker依赖，保留MinerU；历史DeepDoc构建只读保留，不再新增。
+新上传/新版本只接受`legacy-v1`与`mineru-api4.1-v1`，接口与冻结语义见“显式可选解析器”。
 
 ## 3. 架构与代码
 
 ### 显式可选解析器（本次增量）
 
-上传及新版本multipart新增可选parser_profile：legacy-v1、deepdoc-v0.22.0-v2、mineru-api4.1-v1；
+上传及新版本multipart新增可选parser_profile：legacy-v1、mineru-api4.1-v1；
 省略时按检测出的实际类型选择服务默认：PDF使用MinerU（KS_PDF_PARSER_PROFILE），其他格式使用KS_DOCUMENT_PARSER_PROFILE。
-显式parser_profile优先；历史deepdoc-v0.22.0-v1继续兼容。所有已支持文档均可选择三种方案；
-基础解析本来不具备图片OCR，选用时仍明确报不支持，不伪造正文。TXT/MD在三个方案中均直接读取文本并明确标记，不声称经过OCR。
-DeepDoc v2的PDF/图片沿用版面解析，Office/CSV使用固定RAGFlow原生解析器，定位不足明确告警；v1行为不改。
-v2图片版面结果全空时复用同版DeepDoc OCR提取文字，保留原始像素坐标并标记deepdoc_layout_unavailable；
-不声称恢复版式或表格，仍为空则失败，不调用其他解析器。v1不启用该恢复路径。
+显式parser_profile优先；所有已支持文档均可选择两种方案；
+基础解析本来不具备图片OCR，选用时仍明确报不支持，不伪造正文。TXT/MD在两种方案中均直接读取文本并明确标记，不声称经过OCR。
 MinerU接本机4.1 file-parse API，除TXT/MD外均提交原件，固定tier=basic、ocr_mode=auto、page_range=all，
 从默认ZIP内structured_content.json读取全量结果，不安装其SDK/模型到主环境，不使用云端。
 只允许回环origin，无代理/重定向，生成无业务文件名的上传名；不跟随响应中的URL，202仅按本次request_id构造本机轮询/下载路径，限制总等待/响应/解压预算。
@@ -52,9 +39,10 @@ MinerU输出正文中的NUL等长替换为U+FFFD，块及build标记mineru_nul_r
 界面上传及新版本明确选择；默认与两端配置需一致，高级服务故障不回退基础解析。
 文档详情的parser_profile优先显示已发布方案，尚未首次发布时显示待构建方案，避免失败文件隐藏原选择。
 解析失败仍使用PARSE_FAILED；服务未启动、令牌缺失/不匹配、版本不匹配仅返回固定白名单操作提示，不透传上游异常。
+MinerU结果ZIP读取上限为KS_MINERU_OUTPUT_BYTES，正文JSON仍受parse_output_bytes限制。
 工作台只有显式选择历史会话才高亮该历史项；点击对话/文件等页面入口清除历史高亮，不删除会话内容。
 
-运行单元：API、Worker、PostgreSQL、原件目录，DeepDoc与MinerU按需启用。
+运行单元：API、Worker、PostgreSQL、原件目录，MinerU按需启用。
 依赖方向：`entrypoints → {api, mcp, worker} → services → domain ← repositories / adapters`。
 API/MCP/Worker并列不互相依赖；services编排事务，repositories只访问数据库，adapters访问文件、模型与解析器。
 domain不依赖框架。命名、类型、日志与验证纪律唯一见根目录AGENTS，不在此重复。
@@ -76,7 +64,7 @@ domain不依赖框架。命名、类型、日志与验证纪律唯一见根目�
 
 locator页码1起，字符偏移为Unicode码点左闭右开；无法精确定位明确降级block/page。
 DOCX用paragraph，不伪造分页；CSV/XLSX用sheet和真实1起行区间（两端包含），跳空行不压缩原坐标。
-DeepDoc的块内偏移不当作文档级偏移，跨页位置不裁成假的单页。警告按块保存，build保存并集。
+解析器的块内偏移不当作文档级偏移，跨页位置不裁成假的单页。警告按块保存，build保存并集。
 
 ### 不变量
 
@@ -136,7 +124,7 @@ RRF只是排名分，不能替代相关性阈值。哈希向量阈值不能直�
 公开PDF可显式按NFKC及排版空白归一化匹配金标；有页码标注时还要求命中对应物理页序，
 匹配规则只用于评测、不修改索引。用户随后批准第二轮改用MinerU；先前基础解析导入未进入问答，保留但不纳入本轮范围。
 预检复用本轮生产解析/分块，金标仍按原件冻结，不因OCR输出改变答案；分别展示原始页数、文本页、发布块数和金标可见性；
-预检通过不代替逐页版面验收。当前轮不做基础解析/DeepDoc/MinerU配对对照，不调参；语料变化不能解释为算法改善。
+预检通过不代替逐页版面验收。当前轮不做基础解析/MinerU配对对照，不调参；语料变化不能解释为算法改善。
 仅入库阶段失败且尚无本轮报告时，可经明确批准恢复一次：保留启动标记，核对原指纹，复用已发布构建，
 失败原件经重建创建新build，未上传资料正常导入；已有报告即拒绝从零执行，不能重跑已开始的问答。
 

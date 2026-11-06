@@ -352,148 +352,6 @@ def verify_generator(
         raise DependencyError("生成服务响应缺少 choices，模型可能不可用。")
 
 
-DEEPDOC_PROFILE = "deepdoc-v0.22.0-v1"
-COMPOSE_FILE = BACKEND.parent / "deploy" / "deepdoc" / "compose.yaml"
-DEEPDOC_READY_SECONDS = 180.0
-
-
-DOCKER_FALLBACK_DIRS = (
-    pathlib.Path("D:/Docker/Desktop/resources/bin"),
-    pathlib.Path(r"C:/Program Files/Docker/Docker/resources/bin"),
-)
-DOCKER_DESKTOP_EXES = (
-    pathlib.Path("D:/Docker/Desktop/Docker Desktop.exe"),
-    pathlib.Path(r"C:/Program Files/Docker/Docker/Docker Desktop.exe"),
-)
-DOCKER_START_SECONDS = 180.0
-
-
-def find_docker() -> str | None:
-    """docker 通常在 PATH；本机 Docker Desktop 装在 D 盘，需要补一个候选目录。"""
-    found = shutil.which("docker")
-    if found:
-        return found
-    for directory in DOCKER_FALLBACK_DIRS:
-        for name in ("docker.exe", "docker"):
-            candidate = directory / name
-            if candidate.is_file():
-                return str(candidate)
-    return None
-
-
-def _docker_engine_running(docker: str) -> bool:
-    try:
-        completed = subprocess.run(
-            [docker, "info", "--format", "{{.OSType}}"],
-            check=False,  # 退出码自行判断，不用异常表达
-            creationflags=_NO_WINDOW,
-            capture_output=True,
-            text=True,
-            encoding="utf-8",
-            errors="replace",
-            timeout=20,
-        )
-    except (OSError, subprocess.TimeoutExpired):
-        return False
-    return completed.returncode == 0
-
-
-def start_docker_engine(docker: str, *, progress: Callable[[str], None] = _say) -> bool:
-    """引擎未运行时尝试拉起 Docker Desktop；返回是否就绪。"""
-    exe = next((path for path in DOCKER_DESKTOP_EXES if path.is_file()), None)
-    if exe is None:
-        return False
-    progress(f"[依赖] 启动 Docker Desktop：{exe}")
-    creationflags = 0
-    if os.name == "nt":
-        creationflags = subprocess.CREATE_NEW_PROCESS_GROUP | subprocess.DETACHED_PROCESS
-    try:
-        subprocess.Popen(
-            [str(exe)],
-            stdin=subprocess.DEVNULL,
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
-            creationflags=creationflags,
-        )
-    except OSError:
-        return False
-    deadline = time.monotonic() + DOCKER_START_SECONDS
-    while time.monotonic() < deadline:
-        if _docker_engine_running(docker):
-            progress("[依赖] Docker 引擎已就绪")
-            return True
-        time.sleep(3)
-    return False
-
-
-def _deepdoc_healthy(url: str) -> bool:
-    try:
-        request = urllib.request.Request(url.rstrip("/") + "/health")
-        with _opener_for(request.full_url).open(request, timeout=3) as response:
-            return json.loads(response.read().decode("utf-8")).get("status") == "alive"
-    except Exception:  # noqa: BLE001 - 探活失败一律按未就绪处理
-        return False
-
-
-def ensure_deepdoc(settings, *, progress: Callable[[str], None] = _say) -> None:
-    """使用 DeepDoc 解析时，边车同样是前置依赖，未运行则拉起容器。"""
-    profile = getattr(settings, "document_parser_profile", "legacy-v1")
-    if profile not in {DEEPDOC_PROFILE, "deepdoc-v0.22.0-v2"}:
-        return
-    url = getattr(settings, "deepdoc_url", "") or ""
-    if not url:
-        raise DependencyError("选择了 DeepDoc 解析但缺少 KS_DEEPDOC_URL。")
-    if not getattr(settings, "deepdoc_token", None):
-        raise DependencyError("选择了 DeepDoc 解析但缺少 KS_DEEPDOC_TOKEN。")
-    if _deepdoc_healthy(url):
-        progress(f"[依赖] DeepDoc 边车已就绪：{url}")
-        return
-
-    docker = find_docker()
-    if docker is None:
-        raise DependencyError(
-            "选择了 DeepDoc 解析，但边车未运行且未找到 docker。"
-            "请先运行 start-deepdoc.ps1，或把 backend/.env 的 KS_DOCUMENT_PARSER_PROFILE 改回 legacy-v1。"
-        )
-    if not _docker_engine_running(docker) and not start_docker_engine(docker, progress=progress):
-        raise DependencyError(
-            "选择了 DeepDoc 解析，但 Docker 引擎未能启动。请手动启动 Docker Desktop 后重试；"
-            "不打算用 DeepDoc 时，把 backend/.env 的 KS_DOCUMENT_PARSER_PROFILE 改回 legacy-v1。"
-        )
-    if not COMPOSE_FILE.is_file():
-        raise DependencyError(f"缺少边车编排文件：{COMPOSE_FILE}")
-    progress(f"[依赖] 启动 DeepDoc 边车：{COMPOSE_FILE.name}（首次启动较慢）")
-    env = {**os.environ, "DEEPDOC_TOKEN": str(settings.deepdoc_token)}
-    try:
-        completed = subprocess.run(
-            [docker, "compose", "-p", "ks-deepdoc", "-f", str(COMPOSE_FILE), "up", "-d"],
-            check=False,  # 退出码自行判断，不用异常表达
-            creationflags=_NO_WINDOW,
-            cwd=str(BACKEND.parent),
-            env=env,
-            capture_output=True,
-            text=True,
-            encoding="utf-8",
-            errors="replace",
-            timeout=600,
-        )
-    except subprocess.TimeoutExpired as exc:
-        raise DependencyError("启动 DeepDoc 边车超时，请查看 docker compose 日志。") from exc
-    if completed.returncode != 0:
-        tail = (completed.stderr or completed.stdout or "").strip().splitlines()[-1:]
-        raise DependencyError(
-            "启动 DeepDoc 边车失败：" + (tail[0] if tail else "docker compose 返回非零")
-        )
-
-    deadline = time.monotonic() + DEEPDOC_READY_SECONDS
-    while time.monotonic() < deadline:
-        if _deepdoc_healthy(url):
-            progress(f"[依赖] DeepDoc 边车就绪：{url}")
-            return
-        time.sleep(2)
-    raise DependencyError(f"DeepDoc 边车在 {DEEPDOC_READY_SECONDS:.0f}s 内未就绪，请查看容器日志。")
-
-
 def ensure_database(settings, *, progress: Callable[[str], None] = _say) -> str:
     """确定本次运行使用的数据库，返回可直接使用的 URL。
 
@@ -559,7 +417,6 @@ def ensure_dependencies(
 ) -> None:
     """启动本机依赖并验证两个模型端点；失败抛 DependencyError。"""
     ensure_database(settings, progress=progress)
-    ensure_deepdoc(settings, progress=progress)
     # 代理开着又退出是这台机器的常态；明确说出来，不靠看日志才发现走了直连。
     from knowledge.adapters.outbound import dead_local_proxy
 
@@ -606,7 +463,7 @@ def main() -> int:
     )
     args = parser.parse_args()
     try:
-        settings = load_real_settings(resolve_local_parsers=True)
+        settings = load_real_settings()
         ensure_dependencies(
             settings,
             pull_missing=args.pull_missing,

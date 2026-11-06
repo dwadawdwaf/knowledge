@@ -13,7 +13,7 @@ test('上传和新版本显式选择解析器，默认请求不偷偷改策略',
   }
   assert.throws(() => uploadForm(file, 'unknown'));
   assert.equal(parserLabel('mineru-api4.1-v1', 'text/csv'), 'MinerU 文档解析');
-  assert.equal(parserLabel('deepdoc-v0.22.0-v2', 'text/plain'), 'DeepDoc 文档解析');
+  assert.equal(parserLabel('legacy-v1', 'application/pdf'), '');
 });
 
 test('无令牌也发起请求，由服务端决定是否放行', async () => {
@@ -95,15 +95,15 @@ test('空分块不产生除零或假装有内容', () => {
 });
 
 test('块内偏移不被说成文档字符位置', () => {
-  const deepdoc = locatorText({ page: 2, char_start: 0, char_end: 20, precision: 'block' });
-  assert.equal(deepdoc, '第 2 页 · 块内 [0, 20)');
+  const block = locatorText({ page: 2, char_start: 0, char_end: 20, precision: 'block' });
+  assert.equal(block, '第 2 页 · 块内 [0, 20)');
   const markdown = locatorText({ char_start: 76, char_end: 119, precision: 'char' });
   assert.equal(markdown, '字符 [76, 119)');
   const docx = locatorText({ paragraph: 0, char_start: 0, char_end: 8, precision: 'block' });
   assert.equal(docx, '段落索引 0 · 段落内 [0, 8)');
 });
 test('未知警告码原样显示，不隐藏', () => {
-  assert.equal(warningLabel('deepdoc_table_linearized'), '表格已线性化');
+  assert.equal(warningLabel('mineru_table_linearized'), 'MinerU 表格/HTML已转纯文本');
   assert.match(warningLabel('mineru_nul_replaced'), /NUL.*需复核/);
   assert.equal(warningLabel('something_new'), 'something_new');
 });
@@ -129,8 +129,7 @@ test('体积与格式标签按人读的单位呈现', () => {
   assert.equal(mediaLabel('application/vnd.openxmlformats-officedocument.presentationml.presentation'), 'PPTX');
   assert.equal(mediaLabel('text/csv'), 'CSV');
   assert.equal(mediaLabel(null), '未知格式');
-  assert.equal(parserLabel('deepdoc-v0.22.0-v1', 'application/pdf'), 'DeepDoc 版面解析');
-  assert.equal(parserLabel('deepdoc-v0.22.0-v1', 'application/vnd.openxmlformats-officedocument.wordprocessingml.document'), '');
+  assert.equal(parserLabel('mineru-api4.1-v1', 'application/pdf'), 'MinerU 文档解析');
   assert.equal(parserLabel('legacy-v1', 'application/pdf'), '');
   assert.equal(parserLabel(null), '');
 });
@@ -160,11 +159,11 @@ test('关键词切片不返回 HTML，且大小写不敏感', () => {
 
 test('共有警告只上提一次，块内保留特有条目', () => {
   const shared = sharedWarnings([
-    { warnings: ['deepdoc_ocr_requires_review', 'deepdoc_table_linearized'] },
-    { warnings: ['deepdoc_ocr_requires_review'] },
-    { warnings: ['deepdoc_ocr_requires_review'] },
+    { warnings: ['mineru_requires_review', 'mineru_table_linearized'] },
+    { warnings: ['mineru_requires_review'] },
+    { warnings: ['mineru_requires_review'] },
   ]);
-  assert.deepEqual(shared, ['deepdoc_ocr_requires_review']);
+  assert.deepEqual(shared, ['mineru_requires_review']);
   assert.deepEqual(sharedWarnings([{ warnings: [] }, { warnings: ['x'] }]), []);
   assert.deepEqual(sharedWarnings([]), []);
 });

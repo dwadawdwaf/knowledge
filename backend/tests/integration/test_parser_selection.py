@@ -53,39 +53,21 @@ def parser_server():
             block = "合成设备保修期限为18个月。"
             if state["nul"]:
                 block += "备注甲\x00乙"
-            if self.path == "/v1/parse":
-                self.wfile.write(
+            stream = io.BytesIO()
+            with zipfile.ZipFile(stream, "w") as archive:
+                archive.writestr(
+                    "structured_content.json",
                     json.dumps(
                         {
-                            "profile": "deepdoc-v0.22.0-v2",
-                            "warnings": [],
-                            "blocks": [
-                                {
-                                    "text": block,
-                                    "page": None,
-                                    "positions": [],
-                                    "warnings": ["deepdoc_native_location_unavailable"],
-                                }
+                            "metadata": {"producer": {"name": "mineru", "version": "4.1.0"}},
+                            "is_full_document": True,
+                            "pages": [
+                                {"page_idx": 0, "blocks": [{"type": "text", "content": block}]}
                             ],
                         }
-                    ).encode()
+                    ),
                 )
-            else:
-                stream = io.BytesIO()
-                with zipfile.ZipFile(stream, "w") as archive:
-                    archive.writestr(
-                        "structured_content.json",
-                        json.dumps(
-                            {
-                                "metadata": {"producer": {"name": "mineru", "version": "4.1.0"}},
-                                "is_full_document": True,
-                                "pages": [
-                                    {"page_idx": 0, "blocks": [{"type": "text", "content": block}]}
-                                ],
-                            }
-                        ),
-                    )
-                self.wfile.write(stream.getvalue())
+            self.wfile.write(stream.getvalue())
 
     server = HTTPServer(("127.0.0.1", 0), Handler)
     thread = threading.Thread(target=server.serve_forever, daemon=True)
@@ -98,14 +80,12 @@ def parser_server():
         thread.join()
 
 
-@pytest.mark.parametrize("profile", ["deepdoc-v0.22.0-v2", "mineru-api4.1-v1"])
 def test_selected_parser_publish_dedup_rebuild_failure_and_authorization(
-    session, actor, settings, deps, profile
+    session, actor, settings, deps
 ):
+    profile = "mineru-api4.1-v1"
     with parser_server() as (url, state):
-        settings = settings.model_copy(
-            update={"mineru_url": url, "deepdoc_url": url, "deepdoc_token": "synthetic"}
-        )
+        settings = settings.model_copy(update={"mineru_url": url})
         registry = build_parser_registry(settings)
         deps = replace(deps, settings=settings, registry=registry)
         kb = knowledge.create(session, actor, "合成解析选择")

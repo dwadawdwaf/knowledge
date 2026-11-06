@@ -22,7 +22,12 @@ from knowledge.repositories import jobs as job_repo
 from knowledge.repositories.session import new_session
 from knowledge.services import cleanup, ingest
 
-NON_RETRYABLE = {"UNSUPPORTED_FORMAT", "EMPTY_CONTENT", "PASSWORD_PROTECTED", "PARSE_FAILED"}
+NON_RETRYABLE = {
+    "UNSUPPORTED_FORMAT",
+    "EMPTY_CONTENT",
+    "PASSWORD_PROTECTED",
+    "PARSE_FAILED",
+}
 BACKOFF_BASE_SECONDS = 5
 
 log = get_logger("worker")

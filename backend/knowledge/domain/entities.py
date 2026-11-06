@@ -6,7 +6,7 @@ import enum
 from dataclasses import dataclass, field
 from typing import Any, Literal
 
-ParserProfile = Literal["legacy-v1", "deepdoc-v0.22.0-v1", "deepdoc-v0.22.0-v2", "mineru-api4.1-v1"]
+ParserProfile = Literal["legacy-v1", "mineru-api4.1-v1"]
 
 
 class Lifecycle(str, enum.Enum):
@@ -68,7 +68,7 @@ class Locator:
     sheet: str | None = None
     row_start: int | None = None
     row_end: int | None = None
-    # DeepDoc 原始块位置：[页码, 左, 右, 上, 下]；不代表子片段精确字框。
+    # 解析器原始块位置：[页码, 左, 右, 上, 下]；不代表子片段精确字框。
     positions: tuple[tuple[int, float, float, float, float], ...] = ()
 
     def to_dict(self) -> dict[str, Any]:

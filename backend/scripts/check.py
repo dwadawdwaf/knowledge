@@ -60,9 +60,8 @@ def main() -> int:
         return 1
     started = time.monotonic()
     steps = [
-        ("lint", ["-m", "ruff", "check", "knowledge", "deepdoc_sidecar", "tests", "scripts"]),
+        ("lint", ["-m", "ruff", "check", "knowledge", "tests", "scripts"]),
         ("业务类型检查", ["-m", "mypy", "knowledge"]),
-        ("DeepDoc 边车类型检查", ["-m", "mypy", "-p", "deepdoc_sidecar"]),
         (
             "运行脚本类型检查",
             ["-m", "mypy", "--explicit-package-bases", *(f"scripts/{name}.py" for name in SCRIPTS)],

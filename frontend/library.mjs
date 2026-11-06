@@ -224,7 +224,7 @@ function uploadZone(app, kb) {
   const mark = el('span', 'upload-mark');
   mark.append(icon('upload'));
   const text = el('div');
-  text.append(el('strong', '', '添加知识资料'), el('p', '', 'PDF 默认使用 MinerU；所有文档均可显式选择其他方案。图片需 DeepDoc / MinerU 服务，纯文本直接读取。单文件不超过 50 MB；上传新版本使用当前选择，重建保留原方案。'));
+  text.append(el('strong', '', '添加知识资料'), el('p', '', 'PDF 默认使用 MinerU；也可选择基础解析。图片需 MinerU 服务，纯文本直接读取。单文件不超过 50 MB；上传新版本使用当前选择，重建保留原方案。'));
   copy.append(mark, text);
 
   const input = el('input');
@@ -237,7 +237,7 @@ function uploadZone(app, kb) {
   const actions = el('div', 'upload-actions');
   const select = el('select', 'input parser-choice');
   select.setAttribute('aria-label', '文档解析方案');
-  select.title = 'DeepDoc / MinerU 须先配置并启动本机服务；故障不回退';
+  select.title = 'MinerU 须先配置并启动本机服务；故障不回退';
   for (const [value, label] of PARSER_OPTIONS) {
     const option = el('option', '', label);
     option.value = value;

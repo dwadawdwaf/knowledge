@@ -51,7 +51,7 @@ try {
   await wait(`document.querySelector('#notice').hidden`); await shot('knowledge');
   console.log('[浏览器 2/9] 打开知识库，通过文件输入上传实际自制文档');
   await clickText('行政制度 · 自制样本'); await wait(`document.querySelector('.document-table')`);
-  assert.equal(await js(`document.querySelectorAll('.parser-choice option').length`), 4);
+  assert.equal(await js(`document.querySelectorAll('.parser-choice option').length`), 3);
   assert.equal(await js(`getComputedStyle(document.querySelector('.parser-choice')).height`), '38px');
   // 用纯文本验证显式选择的请求/冻结，不要求本机实际安装MinerU。
   await js(`document.querySelector('.parser-choice').value='mineru-api4.1-v1'`);

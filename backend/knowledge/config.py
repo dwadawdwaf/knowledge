@@ -51,9 +51,8 @@ class Settings(BaseSettings):
     mineru_url: str = "http://127.0.0.1:8003"
     mineru_token: str | None = None
     mineru_timeout_seconds: float = 330.0
-    deepdoc_url: str = "http://127.0.0.1:9381"
-    deepdoc_token: str | None = None
-    deepdoc_timeout_seconds: float = 330.0
+    # MinerU 结果 ZIP 体积上限（含未读取的图片）；JSON 正文仍受 parse_output_bytes 限制。
+    mineru_output_bytes: int = 64 * 1024 * 1024
     query_max_chars: int = 2000
     top_k_default: int = 5
     top_k_max: int = 20

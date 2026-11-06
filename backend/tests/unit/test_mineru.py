@@ -83,6 +83,19 @@ def test_duplicate_member_and_decompression_budget_are_rejected():
         normalize_archive(archive(), "application/pdf", 2)
 
 
+def test_large_unused_members_do_not_count_against_json_budget():
+    stream = io.BytesIO()
+    with zipfile.ZipFile(stream, "w") as target:
+        target.writestr("structured_content.json", json.dumps({
+            "metadata": {"producer": {"name": "mineru", "version": "4.1.0"}},
+            "is_full_document": True,
+            "pages": [{"page_idx": 0, "blocks": [{"type": "text", "content": "合成正文"}]}],
+        }))
+        target.writestr("images/page-1.png", b"\x00" * 200000)
+    result = normalize_archive(stream.getvalue(), "application/pdf", 100000)
+    assert result[0].text == "合成正文"
+
+
 def test_nontext_is_explicitly_skipped_and_html_does_not_execute():
     def change(p):
         p["pages"][0]["blocks"].append({"type": "image", "content": {"url": "https://untrusted"}})
@@ -168,7 +181,7 @@ def test_multipart_poll_and_download_never_follow_returned_url():
 
 
 def test_mineru_outage_and_oversize_do_not_fallback_or_leak_errors():
-    model = MinerUParser(Settings(parse_output_bytes=8))
+    model = MinerUParser(Settings(parse_output_bytes=8, mineru_output_bytes=8))
     for response in (OSError("private-secret"), io.BytesIO(b"x" * 9)):
         with (
             patch(
@@ -185,8 +198,8 @@ def test_mineru_outage_and_oversize_do_not_fallback_or_leak_errors():
         assert "private-secret" not in str(error.value)
 
 
-@pytest.mark.parametrize("profile", ["deepdoc-v0.22.0-v2", PROFILE])
-def test_all_native_document_routes_are_explicit(profile):
+def test_all_native_document_routes_are_explicit():
+    profile = PROFILE
     registry = build_parser_registry(Settings(document_parser_profile="legacy-v1"))
     for mime in (
         "application/pdf",
@@ -196,9 +209,7 @@ def test_all_native_document_routes_are_explicit(profile):
         "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
         "application/vnd.openxmlformats-officedocument.presentationml.presentation",
     ):
-        assert registry.for_file(mime, "input", profile=profile).name == (
-            "deepdoc" if profile.startswith("deepdoc") else "mineru"
-        )
+        assert registry.for_file(mime, "input", profile=profile).name == "mineru"
     for mime in ("text/plain", "text/markdown"):
         assert registry.for_file(mime, "input", profile=profile).name == "direct-text"
     assert (

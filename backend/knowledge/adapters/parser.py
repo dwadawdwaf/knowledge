@@ -467,41 +467,25 @@ class ParserRegistry:
         self,
         parsers: list,
         *,
-        deepdoc: Parser | None = None,
         profile: str = "legacy-v1",
-        deepdoc_native: Parser | None = None,
         mineru: Parser | None = None,
         direct_text: Parser | None = None,
     ) -> None:
         self._parsers = parsers
-        self._deepdoc = deepdoc
         self.profile = profile
-        self._deepdoc_native = deepdoc_native
         self._mineru = mineru
         self._direct_text = direct_text or DirectTextParser()
 
     def for_file(self, media_type: str, filename: str, *, profile: str | None = None):
         selected = profile or self.profile
-        if selected not in {
-            "legacy-v1",
-            "deepdoc-v0.22.0-v1",
-            "deepdoc-v0.22.0-v2",
-            "mineru-api4.1-v1",
-        }:
+        if selected not in {"legacy-v1", "mineru-api4.1-v1"}:
             raise ParseFailed("处理策略版本不受支持")
-        if selected in {"deepdoc-v0.22.0-v2", "mineru-api4.1-v1"}:
+        if selected == "mineru-api4.1-v1":
             if media_type in {TEXT_PLAIN, TEXT_MARKDOWN}:
                 return self._direct_text
-            parser = self._deepdoc_native if selected.startswith("deepdoc") else self._mineru
-            if parser is None or not parser.supports(media_type, filename):
+            if self._mineru is None or not self._mineru.supports(media_type, filename):
                 raise UnsupportedFormat("所选解析器未配置或不支持该文件")
-            return parser
-        if (
-            selected == "deepdoc-v0.22.0-v1"
-            and self._deepdoc is not None
-            and self._deepdoc.supports(media_type, filename)
-        ):
-            return self._deepdoc
+            return self._mineru
         for parser in self._parsers:
             if parser.supports(media_type, filename):
                 return parser
@@ -519,7 +503,6 @@ class DirectTextParser(TextParser):
 
 
 def build_parser_registry(settings: Settings | None = None) -> ParserRegistry:
-    from knowledge.adapters.deepdoc import DeepDocParser
     from knowledge.adapters.mineru import MinerUParser
     from knowledge.adapters.parse_process import BoundedParser
 
@@ -535,9 +518,7 @@ def build_parser_registry(settings: Settings | None = None) -> ParserRegistry:
     # 远端调用自身有超时；服务端负责可终止的重型解析，不受本地 512MiB 上限误杀。
     return ParserRegistry(
         [BoundedParser(parser, resolved) for parser in parsers],
-        deepdoc=DeepDocParser(resolved),
         profile=resolved.document_parser_profile,
-        deepdoc_native=DeepDocParser(resolved, profile="deepdoc-v0.22.0-v2"),
         mineru=MinerUParser(resolved),
         direct_text=BoundedParser(DirectTextParser(), resolved),
     )

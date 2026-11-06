@@ -98,7 +98,7 @@ export function locatorText(locator = {}) {
   // 表格按工作表与行定位，块内字符偏移没有阅读意义，不展示。
   if (locator.char_start != null && locator.precision !== 'sheet') {
     const range = `[${locator.char_start}, ${locator.char_end})`;
-    // DeepDoc 与 DOCX 只给块/段内偏移，标成“字符”会被误读成文档级位置。
+    // 解析器与 DOCX 只给块/段内偏移，标成“字符”会被误读成文档级位置。
     const scope = locator.precision !== 'block' ? '字符'
       : locator.paragraph != null ? '段落内' : '块内';
     parts.push(`${scope} ${range}`);
@@ -108,19 +108,12 @@ export function locatorText(locator = {}) {
 
 const WARNING_LABELS = {
   parser_direct_text: '所选方案对纯文本直接读取，未使用 OCR',
-  deepdoc_native_location_unavailable: 'DeepDoc 原生解析：仅块级定位，无可靠页码/行列',
-  deepdoc_native_content_requires_review: 'DeepDoc 原生结果需复核，图形/公式及表格顺序可能不完整',
   mineru_requires_review: 'MinerU 结果需复核',
   mineru_geometry_unavailable: 'MinerU 未使用精确字框定位',
   mineru_native_location_unavailable: 'MinerU 原生结果无可靠原文件页码/行列',
   mineru_table_linearized: 'MinerU 表格/HTML已转纯文本',
   mineru_content_skipped: 'MinerU存在未提取的非文本或不支持块，内容可能不完整',
   mineru_nul_replaced: 'MinerU 无效 NUL 字符已替换为 �，对应文字需复核',
-  deepdoc_ocr_requires_review: 'OCR 识别，需复核',
-  deepdoc_table_linearized: '表格已线性化',
-  deepdoc_figures_not_described: '含未描述的图片',
-  deepdoc_empty_page: '存在空白页',
-  deepdoc_layout_unavailable: '版面识别为空，已用 DeepDoc OCR 提取文字；未恢复版式和表格结构',
   xlsx_rows_truncated: '表格行数超上限，仅索引前若干行',
   csv_rows_truncated: '表格行数超上限，仅索引前若干行',
 };
@@ -137,7 +130,7 @@ export function chunkMetrics(items = []) {
     return { ordinal: item.ordinal, chars: (item.text || '').length, start, end, page: locator.page ?? null };
   });
   const chars = spans.reduce((sum, span) => sum + span.chars, 0);
-  // 块内偏移（DeepDoc）每块都从 0 开始，按比例画会得出错误的覆盖关系；
+  // 块内偏移（部分解析器）每块都从 0 开始，按比例画会得出错误的覆盖关系；
   // 只有偏移在文档内单调递增时才认为可以等比例排列。
   const starts = spans.map(span => span.start);
   const monotonic = spans.every((span, index) => index === 0 || starts[index] > starts[index - 1]);
@@ -191,25 +184,16 @@ export function mediaLabel(mediaType) {
   return mediaType.split('/').pop().toUpperCase();
 }
 
-const DEEPDOC_MEDIA = ['application/pdf', 'image/png', 'image/jpeg', 'image/tiff'];
-
 /**
- * 解析器标签。只有真正走 DeepDoc 的 PDF/图片才显示；DOCX、表格与 PPTX 走
- * 各自的常规解析器，不贴「旧解析器」这类会让人误以为质量降级的标签。
+ * 解析器标签。只有显式走 MinerU 的文档才显示；基础解析不贴质量标签。
  */
-export function parserLabel(profile, mediaType) {
+export function parserLabel(profile) {
   if (profile === 'mineru-api4.1-v1') return 'MinerU 文档解析';
-  if (profile === 'deepdoc-v0.22.0-v2') return 'DeepDoc 文档解析';
-  if (!profile || !profile.startsWith('deepdoc')) return '';
-  if (!mediaType || DEEPDOC_MEDIA.some(prefix => mediaType.startsWith(prefix))) {
-    return 'DeepDoc 版面解析';
-  }
   return '';
 }
 
 export const PARSER_OPTIONS = [
-  ['', '沿用服务默认'], ['legacy-v1', '基础解析'],
-  ['deepdoc-v0.22.0-v2', 'DeepDoc'], ['mineru-api4.1-v1', 'MinerU'],
+  ['', '沿用服务默认'], ['legacy-v1', '基础解析'], ['mineru-api4.1-v1', 'MinerU'],
 ];
 
 export function uploadForm(file, profile = '') {

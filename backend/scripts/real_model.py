@@ -2,11 +2,7 @@
 
 from __future__ import annotations
 
-import json
-import os
 import pathlib
-import shutil
-import subprocess
 from urllib.parse import urlsplit
 
 from pydantic import ValidationError
@@ -47,51 +43,7 @@ def validate_real_settings(settings: Settings) -> None:
         raise ValueError(f"当前数据库要求 {EMBEDDING_DIM} 维向量，不允许混用维度")
 
 
-def attach_running_deepdoc(settings: Settings) -> Settings:
-    """启动入口可复用本项目在跑的边车令牌，仅在内存中传给API/Worker。"""
-    if settings.deepdoc_token or settings.deepdoc_url.rstrip("/") not in {
-        "http://127.0.0.1:9381",
-        "http://localhost:9381",
-    }:
-        return settings
-    docker = shutil.which("docker")
-    if not docker:
-        return settings
-    try:
-        result = subprocess.run(
-            [docker, "inspect", "--type", "container", "ks-deepdoc-deepdoc-1"],
-            check=False,
-            capture_output=True,
-            text=True,
-            timeout=5,
-            creationflags=subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0,
-        )
-        if result.returncode:
-            return settings
-        info = json.loads(result.stdout)[0]
-        labels = info["Config"]["Labels"]
-        if (
-            not info["State"]["Running"]
-            or labels.get("com.docker.compose.project") != "ks-deepdoc"
-            or labels.get("com.docker.compose.service") != "deepdoc"
-        ):
-            return settings
-        token = next(
-            (
-                item.split("=", 1)[1]
-                for item in info["Config"]["Env"]
-                if item.startswith("DEEPDOC_TOKEN=")
-            ),
-            "",
-        )
-        return (
-            settings.model_copy(update={"deepdoc_token": token}) if len(token) >= 32 else settings
-        )
-    except (OSError, subprocess.TimeoutExpired, ValueError, KeyError, IndexError, TypeError):
-        return settings
-
-
-def load_real_settings(*, resolve_local_parsers: bool = False) -> Settings:
+def load_real_settings() -> Settings:
     try:
         settings = _RealSettings()
     except ValidationError as exc:
@@ -99,7 +51,7 @@ def load_real_settings(*, resolve_local_parsers: bool = False) -> Settings:
             "backend/.env 配置格式不正确，请检查字段类型；不输出可能包含密钥的错误详情"
         ) from exc
     validate_real_settings(settings)
-    return attach_running_deepdoc(settings) if resolve_local_parsers else settings
+    return settings
 
 
 def external_database_url(settings: Settings) -> str | None:
@@ -144,12 +96,10 @@ def real_model_environment(settings: Settings) -> dict[str, str]:
         "max_attempts",
         "document_parser_profile",
         "pdf_parser_profile",
-        "deepdoc_url",
-        "deepdoc_token",
-        "deepdoc_timeout_seconds",
         "mineru_url",
         "mineru_token",
         "mineru_timeout_seconds",
+        "mineru_output_bytes",
         "parse_output_bytes",
     )
     # 不透传业务库、文件卷或身份密钥，避免演示配置意外触及现有数据。

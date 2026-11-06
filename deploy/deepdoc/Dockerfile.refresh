@@ -1,5 +1,0 @@
-# 已有固定RAGFlow v0.22.0边车时，离线只更新适配代码；不替代首次完整构建。
-ARG EXISTING_IMAGE=ks-deepdoc-local:deepdoc-v0.22.0-v1
-FROM ${EXISTING_IMAGE}
-COPY backend/knowledge /opt/ks/knowledge
-COPY backend/deepdoc_sidecar /opt/ks/deepdoc_sidecar
