@@ -14,19 +14,80 @@ import time
 import uuid
 from collections.abc import Callable, Iterator
 from contextlib import ExitStack, contextmanager
+from importlib.util import find_spec
 from typing import BinaryIO, Self
 
 import httpx
+import psycopg
 
 from knowledge.config import Settings
 from knowledge.security import issue_token
-from scripts.local_db import prepare_embedded_env
+from scripts.local_db import database_url, prepare_embedded_env
 from scripts.real_model import real_model_environment
 
 BACKEND = pathlib.Path(__file__).resolve().parents[1]
 
 # 持久库配套的对象卷：同一套库重复启动必须落在同一个目录，否则原文全部 404。
 WORKBENCH_OBJECTS = pathlib.Path(os.environ.get("KS_WORKBENCH_OBJECTS") or BACKEND / ".data" / "objects")
+
+
+@contextmanager
+def _windows_isolated_database(directory: pathlib.Path, progress: Callable[[str], None]) -> Iterator[str]:
+    """直接管理本次临时库的 postgres 进程，兼容 pg_ctl 无法执行的 Windows 环境。"""
+    package = find_spec("embedded_postgres")
+    if package is None or package.origin is None:
+        raise RuntimeError("请先安装锁定版本的 embedded-postgres")
+    binaries = pathlib.Path(package.origin).parent / "pginstall" / "bin"
+    data = directory / "data"
+    env = {**os.environ, "LC_ALL": "C", "LANG": "C"}
+    # 保持原 initdb 参数，Windows 显式 --locale=C 会丢掉 pg_trgm 的中文三元组。
+    completed = subprocess.run(
+        [str(binaries / "initdb.exe"), "-D", str(data), "--auth=trust", "--auth-local=trust",
+         "--encoding=utf8", "-U", "postgres"],
+        check=False, capture_output=True, encoding="utf-8", errors="replace", env=env,
+        creationflags=subprocess.CREATE_NO_WINDOW, timeout=90,
+    )
+    if completed.returncode:
+        raise RuntimeError(f"临时 PostgreSQL 初始化失败：{completed.stderr.strip()}")
+    with socket.socket() as listener:
+        listener.bind(("127.0.0.1", 0))
+        port = listener.getsockname()[1]
+    dsn = database_url(port, "postgres")
+    log_path = directory / "postgres.log"
+    with log_path.open("wb") as log:
+        process = subprocess.Popen(
+            [str(binaries / "postgres.exe"), "-D", str(data), "-h", "127.0.0.1", "-p", str(port)],
+            stdout=log, stderr=subprocess.STDOUT, creationflags=subprocess.CREATE_NO_WINDOW, env=env,
+        )
+        try:
+            deadline = time.monotonic() + 20
+            while process.poll() is None and time.monotonic() < deadline:
+                try:
+                    with psycopg.connect(
+                        dsn.replace("postgresql+psycopg://", "postgresql://"), connect_timeout=1,
+                    ) as connection:
+                        row = connection.execute("SHOW data_directory").fetchone()
+                except psycopg.OperationalError:
+                    time.sleep(0.1)
+                    continue
+                if row is None or pathlib.Path(row[0]).resolve() != data.resolve():
+                    raise RuntimeError("临时 PostgreSQL 端口被其他实例占用")
+                break
+            else:
+                detail = log_path.read_text(encoding="utf-8", errors="replace")[-1800:]
+                raise RuntimeError(f"临时 PostgreSQL 未就绪：{detail}")
+            progress("[database] PostgreSQL ready (Windows postgres process)")
+            yield dsn
+        finally:
+            if process.poll() is None:
+                # 该进程树只管理本次临时目录，所有客户端在退出本上下文前已关闭。
+                subprocess.run(
+                    ["taskkill.exe", "/PID", str(process.pid), "/T", "/F"],
+                    capture_output=True, check=True, timeout=10,
+                    creationflags=subprocess.CREATE_NO_WINDOW,
+                )
+                process.wait(timeout=10)
+            progress("[database] PostgreSQL stopped")
 
 
 @contextmanager
@@ -38,6 +99,10 @@ def isolated_database(progress: Callable[[str], None]) -> Iterator[str]:
         directory = pathlib.Path(temporary).resolve()
         if not directory.is_relative_to(pathlib.Path(tempfile.gettempdir()).resolve()):
             raise RuntimeError("Unexpected temporary database directory")
+        if sys.platform == "win32":
+            with _windows_isolated_database(directory, progress) as dsn:
+                yield dsn
+            return
         prepare_embedded_env(directory)
         import embedded_postgres as ep
         import embedded_postgres._commands as commands

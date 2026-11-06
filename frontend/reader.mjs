@@ -16,6 +16,11 @@ export async function openSource(app, chunkId) {
     const meta = el('div', 'source-meta');
     meta.append(el('span', 'tag gray', locatorText(chunk.locator)));
     content.append(meta);
+    if (chunk.locator?.precision === 'composite') {
+      (chunk.locator.sources || []).forEach(source => {
+        content.append(el('p', 'source-location', locatorText(source.locator)));
+      });
+    }
     content.append(el('div', 'source-text', chunk.text || '该片段没有可展示的正文。'));
     // 从引用直接跳到该文件正文并定位到这一段，省去在长文档里翻找。
     const openFile = el('button', 'btn ghost source-open-file');

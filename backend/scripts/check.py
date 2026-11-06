@@ -27,6 +27,7 @@ SCRIPTS = (
     "browser_smoke",
     "retrieval_baseline",
     "evaluate_public",
+    "retrieval_compare",
 )
 
 

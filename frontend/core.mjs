@@ -83,10 +83,20 @@ export function jobLabel(document) {
 }
 export function locatorText(locator = {}) {
   const parts = [];
+  if (locator.precision === 'composite' && Array.isArray(locator.sources)) {
+    const pages = [...new Set(locator.sources.map(source => source.locator?.page).filter(Number.isInteger))].sort((a, b) => a - b);
+    return pages.length ? `第 ${pages.join('、')} 页 · ${locator.sources.length} 处原文`
+      : `${locator.sources.length} 处原文 · 分段定位`;
+  }
   if (locator.type === 'pptx' && locator.page != null) {
     parts.push(`第 ${locator.page} 张幻灯片`);
   } else if (locator.page != null) {
     parts.push(`第 ${locator.page} 页`);
+  }
+  if (locator.type === 'pdf') {
+    if (locator.pdf_column === 'left') parts.push('左栏');
+    if (locator.pdf_column === 'right') parts.push('右栏');
+    if (locator.pdf_column === 'full') parts.push('通栏');
   }
   if (locator.paragraph != null) parts.push(`段落索引 ${locator.paragraph}`);
   if (locator.sheet) {
@@ -99,7 +109,7 @@ export function locatorText(locator = {}) {
   if (locator.char_start != null && locator.precision !== 'sheet') {
     const range = `[${locator.char_start}, ${locator.char_end})`;
     // 解析器与 DOCX 只给块/段内偏移，标成“字符”会被误读成文档级位置。
-    const scope = locator.precision !== 'block' ? '字符'
+    const scope = !['block', 'page'].includes(locator.precision) ? '字符'
       : locator.paragraph != null ? '段落内' : '块内';
     parts.push(`${scope} ${range}`);
   }
@@ -116,6 +126,12 @@ const WARNING_LABELS = {
   mineru_nul_replaced: 'MinerU 无效 NUL 字符已替换为 �，对应文字需复核',
   xlsx_rows_truncated: '表格行数超上限，仅索引前若干行',
   csv_rows_truncated: '表格行数超上限，仅索引前若干行',
+  table_header_candidate: '按首行关联候选表头，需核对列名与单位',
+  cross_page_continuation_candidate: '按章节和续句线索关联跨页内容，需核对阅读顺序',
+  cross_column_continuation_candidate: '跨栏续接，需核对阅读顺序',
+  pdf_layout_uncertain: 'PDF 版面无法确认，已保留解析顺序',
+  pdf_ocr_requires_review: 'PDF 使用了文字识别，需核对原页',
+  running_matter_omitted: '检索已排除解析器明确标注的页眉页脚，原件保留',
 };
 
 export function warningLabel(code) {
@@ -141,7 +157,7 @@ export function chunkMetrics(items = []) {
   for (let index = 1; index < spans.length; index += 1) {
     if (usable && spans[index].start < spans[index - 1].end) overlaps += spans[index - 1].end - spans[index].start;
   }
-  const pages = [...new Set(spans.map(span => span.page).filter(page => page != null))].sort((left, right) => left - right);
+  const pages = [...new Set(items.flatMap(item => item.locator?.pages || [item.locator?.page]).filter(page => page != null))].sort((left, right) => left - right);
   const step = spans.length ? 100 / spans.length : 0;
   const segments = spans.map((span, index) => {
     if (!usable) return { ordinal: span.ordinal, left: index * step, width: Math.max(step - 0.5, 1), start: null, end: null, chars: span.chars, page: span.page };

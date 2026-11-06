@@ -25,6 +25,12 @@ class Embedder(Protocol):
     def embed(self, texts: Sequence[str]) -> list[list[float]]: ...
 
 
+class Reranker(Protocol):
+    """返回与候选顺序一致的相关性分数；分数不表示事实支持概率。"""
+
+    def rank(self, query: str, texts: Sequence[str]) -> list[float]: ...
+
+
 class Generator(Protocol):
     revision: str
 

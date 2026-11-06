@@ -103,6 +103,14 @@ class Dataset(BaseModel):
         return self
 
 
+def noise_documents() -> dict[str, bytes]:
+    """基础对照与后续优化实验共用同一批自制干扰资料。"""
+    noise = "本段为虚构的检索干扰资料，不包含评测问题的答案。" * 20
+    topics = ("会议设施与办公采购", "设备更新与平台巡检", "差旅调研与资料归档")
+    return {f"干扰资料-{number}.md": (f"# {topic}\n" + noise).encode()
+            for number, topic in enumerate(topics, 1)}
+
+
 def normalize_text(text: str) -> str:
     """公开PDF标注可显式忽略排版空白及Unicode兼容字形，不改业务索引文本。"""
     return "".join(unicodedata.normalize("NFKC", text).casefold().split())
@@ -342,7 +350,13 @@ def source_bytes(source: Source) -> bytes:
 Json = dict[str, Any]
 
 
-def retrieval_metrics(case: Case, hits: list[Json], sources: Json) -> Json:
+def retrieval_metrics(
+    case: Case,
+    hits: list[Json],
+    sources: Json,
+    *,
+    supports: Callable[[Fact, str, dict], bool] = supports_fact,
+) -> Json:
     ranks = [
         next(
             (
@@ -350,7 +364,7 @@ def retrieval_metrics(case: Case, hits: list[Json], sources: Json) -> Json:
                 for rank, hit in enumerate(hits, 1)
                 if hit["document_id"] == sources[fact.document]["document_id"]
                 and hit["build_id"] == sources[fact.document]["build_id"]
-                and supports_fact(fact, hit["excerpt"], hit.get("locator", {}))
+                and supports(fact, hit["excerpt"], hit.get("locator", {}))
             ),
             None,
         )
@@ -541,15 +555,10 @@ def run_experiment(
                 }
             )
         # 干扰文档不对应任何金标事实，用于检验长段落、重复词和相近业务说明。
-        noise = "本段为虚构的检索干扰资料，不包含评测问题的答案。" * 20
-        noise_topics = (
-            ("会议设施与办公采购", "设备更新与平台巡检", "差旅调研与资料归档")
-            if selected.add_noise
-            else ()
-        )
-        for number, topic in enumerate(noise_topics, 1):
-            upload(kb["id"], f"干扰资料-{number}.md", (f"# {topic}\n" + noise).encode())
-        event("资料发布完成", len(dataset.documents) + len(noise_topics))
+        noise_payloads = noise_documents() if selected.add_noise else {}
+        for filename, noise_data in noise_payloads.items():
+            upload(kb["id"], filename, noise_data)
+        event("资料发布完成", len(dataset.documents) + len(noise_payloads))
         publish()
         open_workbench(runtime)
         conversations: Json = {}

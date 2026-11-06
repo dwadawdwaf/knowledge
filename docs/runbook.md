@@ -165,6 +165,7 @@ node --test frontend/core.test.mjs
 ```
 
 后端按预检、lint、类型、独立数据库回归/迁移/HTTP验收执行，不调用真实模型、不修改业务库。
+Windows 的隔离验收使用锁定包中的 `initdb.exe` 和 `postgres.exe`，沿用原初始化区域设置，在回环地址启动临时库。测试结束后回收本次进程树。
 跳过/xfail/排除用例不能算完整通过。非Windows中文PDF测试需KS_TEST_FONT_PATH指定已有字体。
 浏览器检查仅在相关前端改动收尾运行，需要已有Node/测试浏览器，不自动安装。
 CI定义在.github/workflows/backend.yml，文件存在不等于远端已实跑。
@@ -205,6 +206,51 @@ CI定义在.github/workflows/backend.yml，文件存在不等于远端已实跑�
 启动标记存在时拒绝再次执行，
 中断后先核对已有结果，不删标记碰运气重跑。关闭终端会停止本轮工作台，数据库和原件继续保留。
 日常只看结果时用普通启动器，不重新执行评测；报告中词面命中和引用覆盖不等同于答案事实正确率。
+
+### 5.4 分块与检索优化对照
+
+默认保留基线配置。先执行数据库迁移至head（当前代码为0004_chunk_structure），再在独立知识库导入自制资料验证新策略；不要清空现有库。
+普通重建保留原分块策略，同库同字节重传仍去重，因此它们不能用于策略升级。
+
+```powershell
+$env:KS_CHUNK_STRATEGY = 'structure-v2'
+$env:KS_RETRIEVAL_PROFILE = 'optimized-v2'
+.\start.cmd
+```
+
+只改变检索时可保留KS_CHUNK_STRATEGY=legacy-v1，在原索引上比较；上述环境变量只作用于当前终端。
+
+测试期刊 PDF 时，可在启动 API 和 Worker 的终端额外设置 `$env:KS_PDF_CHUNK_STRATEGY = 'pdf-layout-v1'`，然后在独立知识库上传同一份原件做对照。解析器选择沿用上传配置。检查分块定位中的 `pdf_layout`、`pdf_column` 和跨栏、跨页片段的 `sources`，再用有原文页码标注的问题验收 Top-5 和引用。普通重建沿用既有构建的分块策略，同库重复上传也会去重；对照请用新库或不同内容的新版本。
+恢复时将策略分别设回legacy-v1和baseline-v1；历史构建仍使用各自冻结策略。
+默认每路50候选、关键词权重0.5/语义权重1、内部候选20、最多6份证据/6000字符、最多预留2个关联槽，都是待真实标定的候选参数。
+局部关键词匹配用KS_KEYWORD_LOCAL_FLOOR（默认0.3），与全文相似度下限分别标定；不能直接把全文0.06套到局部匹配。
+现有真实向量模型的距离阈值沿用该轮冻结配置，不能套用代码为哈希向量设置的0.85。
+
+可选本机重排服务设置KS_RERANKER_URL为完整HTTP /rerank地址，并设置KS_RERANKER_MODEL；项目不自动安装或下载模型。
+请求为model/query/documents，响应为results数组，每项有唯一index和有限数值relevance_score。
+只允许回环地址，不跟随重定向；配置后服务故障明确报模型错误。未配置时不使用重排。
+
+不读取.env、不接触业务库的离线三组对照：
+
+```powershell
+.\backend\.venv\Scripts\python.exe -X utf8 -u backend/scripts/retrieval_compare.py
+```
+
+它复用一次解析输出，使用同一自制问题集、相同哈希向量、相同证据预算，对比旧策略、仅检索优化和结构分块+检索优化。
+结果默认在backend/.data/retrieval-optimization/comparison.json；输出存在时拒绝覆盖，用--output指定新文件。
+报告含历史报告可用性/摘要、配置和实现指纹、严格召回与单列来源匹配指标、候选分数/排名、证据大小及耗时。
+这是工程对照，不是bge-m3/deepseek-flash效果复验。真实实验须恢复配套原件/冻结标注和原模型配置，另行确定调用预算；不删除旧实验启动标记。
+旧留出集作为回归，新验收题须在参数选择前冻结。发布门槛同时检查事实召回、证据完整、无答案误答、原文定位和耗时，不能只比较块数或回答长度。
+
+### 5.5 Windows 单次检索对照
+
+本机实验目录为 `backend/.data/windows-retrieval-v1/`。使用 OpenSearch Windows 发行包、既有 BGE-M3 权重和隔离 PostgreSQL，数据使用完整 SciFact、原 SQuAD 抽样及自制兼容性夹具。按摘要和按片段分别建索引。
+
+```powershell
+& ./backend/.data/windows-retrieval-v1/run-local.ps1 compare
+```
+
+`document-bm25.json` 保存摘要级公开对照。`report.json` 保存分块对照的逐题结果、配置和验收判定。SciFact 的排名覆盖 300 道测试题。延迟取固定 36 道题的串行预热 P95，实际入口结果用于核对排名计算。结果见 [优化与实验汇总](../issues.md#检索优化汇总)。
 
 ## 6. 排障
 

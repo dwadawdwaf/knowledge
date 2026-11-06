@@ -11,6 +11,7 @@ from knowledge.api.deps import (
     get_actor,
     get_embedder,
     get_generator,
+    get_reranker,
     get_session,
     get_settings_dep,
     request_id,
@@ -21,7 +22,7 @@ from knowledge.api.v1.schemas.responses import AnswerOut, CitationOut
 from knowledge.config import Settings
 from knowledge.domain.entities import Actor
 from knowledge.domain.errors import NotImplementedYet
-from knowledge.domain.ports import Embedder, Generator
+from knowledge.domain.ports import Embedder, Generator, Reranker
 from knowledge.services import conversations as conversation_service
 from knowledge.services import qa
 
@@ -37,6 +38,7 @@ def ask(
     settings: Settings = Depends(get_settings_dep),
     embedder: Embedder = Depends(get_embedder),
     generator: Generator = Depends(get_generator),
+    reranker: Reranker | None = Depends(get_reranker),
 ) -> dict:
     if payload.stream:
         raise NotImplementedYet("当前版本不支持流式输出")
@@ -51,6 +53,7 @@ def ask(
         kb_ids=payload.knowledge_base_ids,
         top_k=payload.top_k,
         conversation_id=payload.conversation_id,
+        reranker=reranker,
     )
 
     body = AnswerOut(

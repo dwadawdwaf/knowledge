@@ -6,6 +6,7 @@ import csv
 import io
 import re
 import zipfile
+from dataclasses import replace
 from datetime import datetime, time
 
 from knowledge.config import Settings
@@ -82,27 +83,17 @@ def detect_media_type(data: bytes, filename: str) -> str:
 
 def _split_paragraphs(text: str) -> list[tuple[int, int]]:
     """按空行切块，返回原文偏移区间。"""
+    # 不先替换换行：偏移必须仍能切回原始解码文本，包括 CRLF 中的两个码点。
     spans: list[tuple[int, int]] = []
-    start: int | None = None
-    i = 0
-    length = len(text)
-
-    while i < length:
-        char = text[i]
-        if char in " \t\r\n":
-            if start is not None and char == "\n" and text[i : i + 2] == "\n\n":
-                spans.append((start, i))
-                start = None
-                i += 2
-                continue
-            i += 1
-            continue
-        if start is None:
-            start = i
-        i += 1
-
-    if start is not None:
-        spans.append((start, length))
+    cursor = 0
+    for separator in re.finditer(r"\r?\n[ \t]*\r?\n(?:[ \t]*\r?\n)*", text):
+        start = cursor + len(text[cursor:separator.start()]) - len(text[cursor:separator.start()].lstrip(" \t\r\n"))
+        if text[start:separator.start()].strip():
+            spans.append((start, separator.start()))
+        cursor = separator.end()
+    start = cursor + len(text[cursor:]) - len(text[cursor:].lstrip(" \t\r\n"))
+    if text[start:].strip():
+        spans.append((start, len(text)))
     return spans
 
 
@@ -193,6 +184,7 @@ class DocxParser:
             ):
                 raise ParseFailed("DOCX 解压资源超限")
         document = docx.Document(io.BytesIO(data))
+        order = {element._element: index for index, element in enumerate(document.iter_inner_content())}
         blocks: list[ParsedBlock] = []
         for index, paragraph in enumerate(document.paragraphs):
             text = paragraph.text
@@ -201,6 +193,10 @@ class DocxParser:
             blocks.append(
                 ParsedBlock(
                     text=text,
+                    kind="heading" if paragraph.style and paragraph.style.name.startswith("Heading ") else "text",
+                    heading_level=int(paragraph.style.name.split()[-1])
+                    if paragraph.style and re.fullmatch(r"Heading [1-6]", paragraph.style.name) else None,
+                    metadata={"order": order.get(paragraph._element, index)},
                     locator=Locator(
                         type="docx",
                         paragraph=index,
@@ -221,6 +217,9 @@ class DocxParser:
                 blocks.append(
                     ParsedBlock(
                         text=text,
+                        kind="table_row",
+                        table_id=f"docx-table-{table_index}",
+                        metadata={"order": order.get(table._element, len(order)), "row": row_index},
                         locator=Locator(
                             type="docx",
                             block=table_index,
@@ -267,6 +266,7 @@ class XlsxParser:
             for sheet in workbook.worksheets:
                 title = sheet.title or "Sheet"
                 batch: list[str] = []
+                row_numbers: list[int] = []
                 batch_start = 0
                 row_number = 0
                 for row in sheet.iter_rows(values_only=True):
@@ -281,11 +281,13 @@ class XlsxParser:
                     if not batch:
                         batch_start = row_number
                     batch.append("\t".join(cells).rstrip())
+                    row_numbers.append(row_number)
                     if len(batch) >= self.rows_per_block:
-                        blocks.append(_sheet_block(title, batch_start, row_number, batch))
+                        blocks.append(_sheet_block(title, batch_start, row_number, batch, row_numbers))
                         batch = []
+                        row_numbers = []
                 if batch:
-                    blocks.append(_sheet_block(title, batch_start, row_number, batch))
+                    blocks.append(_sheet_block(title, batch_start, row_number, batch, row_numbers))
                 if truncated:
                     break
         finally:
@@ -295,9 +297,7 @@ class XlsxParser:
             raise ParseFailed("表格中没有可提取的内容")
         if truncated:
             last = blocks[-1]
-            blocks[-1] = ParsedBlock(
-                last.text, last.locator, tuple(sorted({*last.warnings, XLSX_TRUNCATED}))
-            )
+            blocks[-1] = replace(last, warnings=tuple(sorted({*last.warnings, XLSX_TRUNCATED})))
         return blocks
 
 
@@ -332,6 +332,7 @@ class CsvParser:
             raise ParseFailed("表格文本编码无法识别")
         blocks: list[ParsedBlock] = []
         batch: list[str] = []
+        row_numbers: list[int] = []
         batch_start = 0
         row_number = 0
         read_rows = 0
@@ -348,25 +349,28 @@ class CsvParser:
             if not batch:
                 batch_start = row_number
             batch.append("\t".join(cells).rstrip())
+            row_numbers.append(row_number)
             if len(batch) >= self.rows_per_block:
-                blocks.append(_csv_block(batch_start, row_number, batch))
+                blocks.append(_csv_block(batch_start, row_number, batch, row_numbers))
                 batch = []
+                row_numbers = []
         if batch:
-            blocks.append(_csv_block(batch_start, row_number, batch))
+            blocks.append(_csv_block(batch_start, row_number, batch, row_numbers))
         if not blocks:
             raise ParseFailed("表格中没有可提取的内容")
         if truncated:
             last = blocks[-1]
-            blocks[-1] = ParsedBlock(
-                last.text, last.locator, tuple(sorted({*last.warnings, CSV_TRUNCATED}))
-            )
+            blocks[-1] = replace(last, warnings=tuple(sorted({*last.warnings, CSV_TRUNCATED})))
         return blocks
 
 
-def _csv_block(start: int, end: int, rows: list[str]) -> ParsedBlock:
+def _csv_block(start: int, end: int, rows: list[str], row_numbers: list[int] | None = None) -> ParsedBlock:
     text = f"CSV 第{start}-{end}行\n" + "\n".join(rows)
     return ParsedBlock(
         text=text,
+        kind="table",
+        table_id="CSV",
+        metadata={"row_numbers": row_numbers or []},
         locator=Locator(
             type="csv",
             sheet="CSV",
@@ -445,11 +449,16 @@ class PptxParser:
         return blocks
 
 
-def _sheet_block(sheet: str, start: int, end: int, rows: list[str]) -> ParsedBlock:
+def _sheet_block(
+    sheet: str, start: int, end: int, rows: list[str], row_numbers: list[int] | None = None,
+) -> ParsedBlock:
     header = f"工作表《{sheet}》第{start}-{end}行"
     text = header + "\n" + "\n".join(rows)
     return ParsedBlock(
         text=text,
+        kind="table",
+        table_id=sheet,
+        metadata={"row_numbers": row_numbers or []},
         locator=Locator(
             type="xlsx",
             sheet=sheet,

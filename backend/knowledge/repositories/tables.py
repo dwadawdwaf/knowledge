@@ -20,6 +20,7 @@ from sqlalchemy import (
 from sqlalchemy import (
     Enum as SAEnum,
 )
+from sqlalchemy import text as sql_text
 from sqlalchemy.dialects.postgresql import JSONB, UUID
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
 
@@ -144,6 +145,9 @@ class Chunk(Base):
     )
     embedding: Mapped[list[float]] = mapped_column(Vector(EMBEDDING_DIM), nullable=False)
     tsv: Mapped[str] = mapped_column(Text, nullable=False)
+    structure: Mapped[dict] = mapped_column(
+        JSONB, nullable=False, default=dict, server_default="{}"
+    )
 
     __table_args__ = (
         UniqueConstraint("build_id", "ordinal", name="uq_chunk_ordinal"),
@@ -152,6 +156,11 @@ class Chunk(Base):
             "tsv",
             postgresql_using="gin",
             postgresql_ops={"tsv": "gin_trgm_ops"},
+        ),
+        Index(
+            "ix_chunks_tsv_english_fts",
+            sql_text("to_tsvector('pg_catalog.english'::regconfig, tsv)"),
+            postgresql_using="gin",
         ),
         Index(
             "ix_chunks_embedding_hnsw",

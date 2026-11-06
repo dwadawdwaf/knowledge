@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 from functools import lru_cache
+from typing import Literal
 
+from pydantic import Field, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 from knowledge.domain.entities import ParserProfile
@@ -60,6 +62,20 @@ class Settings(BaseSettings):
 
     recall_limit: int = 50
     rrf_k: int = 60
+    retrieval_profile: Literal["baseline-v1", "optimized-v2", "fts-v1"] = "baseline-v1"
+    evidence_coverage: bool = False
+    structured_context: bool = False
+    keyword_weight: float = Field(default=0.5, ge=0, le=2)
+    # 局部匹配与全文相似度尺度不同，独立设门槛，不能共用0.06。
+    keyword_local_floor: float = Field(default=0.3, ge=0, le=1)
+    semantic_weight: float = Field(default=1.0, gt=0, le=2)
+    query_variants_max: int = Field(default=3, ge=1, le=4)
+    evidence_candidate_limit: int = Field(default=20, ge=1, le=100)
+    evidence_max_chars: int = Field(default=6000, ge=800, le=32000)
+    evidence_neighbor_limit: int = Field(default=2, ge=0, le=6)
+    reranker_url: str | None = None
+    reranker_model: str = ""
+    reranker_timeout_seconds: float = Field(default=20, gt=0, le=120)
     # 关键词相似度下限：低于视为不相关。0.06 按自制评测语料（含 5 部抓取法律法规、
     # ~490 分块）标定：语料外问题关键词路最高 0.059，真实命中最低 0.058——两者在
     # 关键词路接近重叠，靠语义路兜底（见 tests/integration/test_effectiveness.py）；
@@ -79,6 +95,14 @@ class Settings(BaseSettings):
 
     chunk_max_chars: int = 800
     chunk_overlap_chars: int = 100
+    chunk_strategy: Literal["legacy-v1", "structure-v2"] = "legacy-v1"
+    pdf_chunk_strategy: Literal["pdf-layout-v1"] | None = None
+
+    @model_validator(mode="after")
+    def validate_chunking(self) -> Settings:
+        if self.chunk_max_chars < 16 or not 0 <= self.chunk_overlap_chars < self.chunk_max_chars:
+            raise ValueError("分块长度须至少16，重叠须非负且小于分块长度")
+        return self
 
 
 @lru_cache

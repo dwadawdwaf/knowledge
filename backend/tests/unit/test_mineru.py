@@ -24,7 +24,7 @@ def test_missing_service_is_not_reported_as_document_damage():
     assert "SECRET" not in str(error.value) and "private" not in str(error.value)
 
 
-def archive(*, mutate=None, duplicate=False):
+def archive(*, mutate=None, duplicate=False, middle=None):
     content = {
         "metadata": {"producer": {"name": "mineru", "version": "4.1.0"}},
         "is_full_document": True,
@@ -43,6 +43,8 @@ def archive(*, mutate=None, duplicate=False):
     stream = io.BytesIO()
     with zipfile.ZipFile(stream, "w") as target:
         target.writestr("structured_content.json", json.dumps(content))
+        if middle is not None:
+            target.writestr("middle_json.json", json.dumps(middle))
         if duplicate:
             target.writestr("structured_content.json", "{}")
         target.writestr("../../must-not-be-written.txt", "not extracted")
@@ -58,6 +60,26 @@ def test_archive_keeps_source_pages_and_explicit_loss_of_geometry():
     csv = normalize_archive(archive(), "text/csv", 100000)
     assert csv[0].locator.type == "csv" and csv[0].locator.page is None
     assert "mineru_native_location_unavailable" in csv[0].warnings
+
+
+@pytest.mark.parametrize("variant", ["valid", "wrong_type", "missing_box", "wrong_version"])
+def test_pdf_geometry_is_optional_and_tied_to_the_structured_page(variant):
+    middle = {
+        "schema": "docvortex.middle", "schema_version": "2.0", "is_full_document": True,
+        "metadata": {"producer": {"name": "mineru", "version": "4.1.0"}},
+        "extensions": {"mineru": {"parse_mode": "ocr"}},
+        "pages": [{"page_idx": 0, "blocks": [
+            {"type": "figure" if variant == "wrong_type" else "text",
+             "bbox": [0.1, 0.2, 0.45, 0.4] if variant != "missing_box" else [0.7, 0.2, 0.45, 0.4]},
+            {"type": "table", "bbox": [0.5, 0.2, 0.9, 0.4]},
+        ]}],
+    }
+    if variant == "wrong_version":
+        middle["metadata"]["producer"]["version"] = "4.1.1"
+    blocks = normalize_archive(archive(middle=middle), "application/pdf", 100000)
+    assert blocks[0].metadata["pdf_bbox"] == ((0.1, 0.2, 0.45, 0.4) if variant == "valid" else None)
+    assert blocks[0].locator.positions == ()
+    assert blocks[0].metadata["pdf_ocr"] is (variant != "wrong_version")
 
 
 @pytest.mark.parametrize(
