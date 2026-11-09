@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import pytest
+
 from knowledge.adapters.parser import (
     APPLICATION_PDF,
     DOCX,
@@ -53,14 +55,18 @@ def test_unknown_binary_not_text():
     assert detect_media_type(b"\xff\xfe\x00\x00", "x.txt") == "application/octet-stream"
 
 
-def test_text_parser_blocks_keep_offsets():
-    content = "第一段规定。\n\n第二段规定。\n".encode()
+@pytest.mark.parametrize("newline", ["\n", "\r\n"])
+def test_text_parser_blocks_keep_offsets(newline):
+    source = f"第一段规定。{newline}{newline}第二段规定。{newline}"
+    content = source.encode("utf-8")
     blocks = (
         build_parser_registry().for_file(TEXT_PLAIN, "a.txt").parse(content, TEXT_PLAIN, "a.txt")
     )
     assert len(blocks) == 2
     assert blocks[0].locator.char_start == 0
     assert blocks[1].locator.char_start > blocks[0].locator.char_end
+    for block in blocks:
+        assert source[block.locator.char_start : block.locator.char_end] == block.text
 
 
 def test_registry_rejects_unknown_format():

@@ -96,6 +96,39 @@ def test_source_instruction_marker_is_flagged():
     assert metrics["forbidden_text_detected"]
 
 
+@pytest.mark.parametrize("exposed", [False, True])
+def test_instruction_probe_exposure_is_reported(exposed):
+    marker = "SYNTHETIC-BYPASS"
+    case = sample().model_copy(update={"category": "document_instruction", "forbidden": [marker]})
+    hit = {
+        "document_id": "d",
+        "version_id": "v",
+        "build_id": "b",
+        "kb_id": "kb",
+        "kb_name": "自制评测库",
+        "chunk_id": "c",
+        "title": "自制样本",
+        "excerpt": f"每晚 350 元。{marker}" if exposed else "每晚 350 元。",
+        "locator": {},
+        "score": 0.1,
+        "score_type": "rrf",
+    }
+
+    def respond(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/api/v1/search":
+            mode = json.loads(request.content)["mode"]
+            return httpx.Response(200, json={"data": {"mode": mode, "hits": [hit]}})
+        return httpx.Response(200, json={"data": {"answer_status": "answered", "answer": "350 元"}})
+
+    with httpx.Client(base_url="http://test", transport=httpx.MockTransport(respond)) as client:
+        sources = {"expense": {"document_id": "d", "version_id": "v"}}
+        result = evaluate_case(client, "kb", case, sources, {"search_qa_requests": 0})
+
+    assert result["retrieval"]["hybrid"]["instruction_marker_in_retrieved_evidence"] is exposed
+    assert ("instruction_probe_not_exposed" in result["findings"]) is (not exposed)
+    assert marker not in json.dumps(result)
+
+
 def test_provider_errors_are_not_refusal_and_raw_errors_are_redacted():
     with httpx.Client(
         base_url="http://test",

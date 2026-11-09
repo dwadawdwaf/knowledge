@@ -32,6 +32,7 @@ _EXT_MAP = {
     ".xlsx": XLSX,
     ".pptx": PPTX,
 }
+_PARAGRAPH_BREAK = re.compile(r"\r?\n\r?\n")
 
 
 def decode_table_text(data: bytes) -> str | None:
@@ -81,7 +82,7 @@ def detect_media_type(data: bytes, filename: str) -> str:
 
 
 def _split_paragraphs(text: str) -> list[tuple[int, int]]:
-    """按空行切块，返回原文偏移区间。"""
+    """按 LF 或 CRLF 空行切块，保留原文偏移区间。"""
     spans: list[tuple[int, int]] = []
     start: int | None = None
     i = 0
@@ -90,10 +91,10 @@ def _split_paragraphs(text: str) -> list[tuple[int, int]]:
     while i < length:
         char = text[i]
         if char in " \t\r\n":
-            if start is not None and char == "\n" and text[i : i + 2] == "\n\n":
+            if start is not None and (boundary := _PARAGRAPH_BREAK.match(text, i)):
                 spans.append((start, i))
                 start = None
-                i += 2
+                i = boundary.end()
                 continue
             i += 1
             continue

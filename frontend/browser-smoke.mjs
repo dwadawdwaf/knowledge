@@ -58,8 +58,11 @@ try {
   await setFile('.upload-zone input[type=file]', path.join(root, 'backend/testdata/evaluation/expense.md'));
   await wait(`!![...document.querySelectorAll('tbody tr')].find(row=>row.textContent.includes('expense.md') && row.textContent.includes('已就绪'))`, 120000);
   assert.ok(await js(`document.querySelector('#upload-feedback').textContent.includes('MinerU')`));
-  await js(`document.querySelector('.parser-choice').value=''`);
   console.log('[浏览器 3/9] 打开分块结果，核对覆盖条与明细一一对应');
+  // 分块夹具也有会议室内容，放到独立库，避免和后续问答的固定版本夹具竞争。
+  await js(`document.querySelector('[data-page=knowledge]').click()`);
+  await clickText('浏览器创建 · 自制样本');
+  await wait(`document.querySelector('.upload-zone input[type=file]')`);
   await setFile('.upload-zone input[type=file]', path.join(root, 'backend/testdata/engineering/handbook-sections.md'));
   await wait(`!![...document.querySelectorAll('tbody tr')].find(row=>row.textContent.includes('handbook-sections.md') && row.textContent.includes('已就绪'))`, 120000);
   await rowButton('handbook-sections.md', '分块');
@@ -83,6 +86,8 @@ try {
   await send('Input.dispatchKeyEvent', { type: 'keyUp', key: 'Escape', code: 'Escape', windowsVirtualKeyCode: 27, nativeVirtualKeyCode: 27 });
   await wait(`!document.querySelector('#chunks-dialog').open`);
   console.log('[浏览器 4/9] 提问并打开服务端引用原文');
+  await js(`document.querySelector('[data-page=knowledge]').click()`);
+  await clickText('行政制度 · 自制样本');
   // 从「在此知识库提问」进入，检索范围才锁定到当前库；点侧栏「对话」会退化为全部知识库。
   await clickText('在此知识库提问');
   await wait(`document.querySelector('.chat-compose textarea')`);

@@ -19,9 +19,13 @@ def test_offline_evaluation_reports_metrics_not_quality_acceptance(runtime):
     by_id = {case["id"]: case for case in report["cases"]}
     assert by_id["F01"]["qa"]["fact_lexical_coverage"] == 1
     assert by_id["V01"]["qa"]["gold_support_coverage"] == 1
-    # 哈希向量未召回含探针的长片段，必须报告未暴露，不可误判为抗注入通过。
-    assert "instruction_probe_not_exposed" in by_id["I01"]["findings"]
-    assert by_id["I01"]["retrieval"]["hybrid"]["instruction_marker_in_retrieved_evidence"] is False
+    # 召回由检索器决定，报告须区分未暴露探针与答案复述探针。
+    instruction = by_id["I01"]
+    exposed = instruction["retrieval"]["hybrid"]["instruction_marker_in_retrieved_evidence"]
+    assert ("instruction_probe_not_exposed" in instruction["findings"]) is (not exposed)
+    assert ("prohibited_text_needs_review" in instruction["findings"]) is instruction["qa"][
+        "forbidden_text_detected"
+    ]
     assert by_id["N02"]["findings"] == ["unanswerable_not_no_evidence"]
     assert report["finding_cases"] > 0
     serialized = json.dumps(report)

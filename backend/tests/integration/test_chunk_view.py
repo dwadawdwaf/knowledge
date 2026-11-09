@@ -36,6 +36,8 @@ def _publish(session, settings, deps, actor: Actor, *, process: bool = True):
 
 
 def test_chunks_are_ordered_and_carry_locators(session, settings, deps):
+    # 夹具的最长段落短于默认窗口，缩小本用例的窗口以覆盖重叠分块。
+    settings.chunk_max_chars = 300
     actor = Actor(subject_id="ui-owner", tenant_id="default")
     _, upload = _publish(session, settings, deps, actor)
 

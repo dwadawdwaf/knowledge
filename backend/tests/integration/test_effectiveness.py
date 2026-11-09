@@ -194,7 +194,7 @@ def test_md_locator_offsets_match_source(session, corpus, settings, deps):
     assert "清理现场" in citation.excerpt
 
     chunk = chunk_repo.get_owned(session, corpus.actor, uuid.UUID(citation.chunk_id))
-    source = (CORPUS_ROOT / CORPUS_FILES["meeting"]).read_text(encoding="utf-8")
+    source = (CORPUS_ROOT / CORPUS_FILES["meeting"]).read_bytes().decode("utf-8")
     start = chunk["locator"]["char_start"]
     end = chunk["locator"]["char_end"]
     assert source[start:end].strip() == chunk["text"].strip(), "locator 偏移与原文不一致"

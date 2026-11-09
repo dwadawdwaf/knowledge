@@ -7,6 +7,7 @@ import os
 import pathlib
 import subprocess
 import sys
+import tempfile
 import time
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[1]))
@@ -25,7 +26,11 @@ def main() -> int:
         print(f"[{time.monotonic() - started:6.1f}s] {message}", flush=True)
 
     progress("[tests] Preparing isolated databases; no external model calls")
-    with isolated_database(progress) as dsn:
+    # 每轮回归独占 pytest 夹具目录，避免复用系统临时目录中的共享 pytest-of-*。
+    with (
+        isolated_database(progress) as dsn,
+        tempfile.TemporaryDirectory(prefix="ks_pytest_", ignore_cleanup_errors=True) as test_dir,
+    ):
         import psycopg
 
         with psycopg.connect(
@@ -65,6 +70,8 @@ def main() -> int:
                 "backend/tests",
                 "-v",
                 "--capture=sys",
+                "--basetemp",
+                str(pathlib.Path(test_dir) / "fixtures"),
                 *sys.argv[1:],
             ],
             cwd=root,
