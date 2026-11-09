@@ -130,7 +130,7 @@ RRF只是排名分，不能替代相关性阈值。哈希向量阈值不能直�
 
 ### 6.1.2 可选结构分块与检索优化
 
-默认仍为legacy-v1分块与baseline-v1检索。新策略分别由KS_CHUNK_STRATEGY=structure-v2及
+通用服务的默认配置为legacy-v1分块与baseline-v1检索。新策略分别由KS_CHUNK_STRATEGY=structure-v2及
 KS_RETRIEVAL_PROFILE=optimized-v2启用，真实效果验收前不全局替换默认。历史两轮报告不改写，旧留出集只作回归。
 
 - 新build在chunk_config冻结strategy；旧build缺失该项按legacy-v1，普通重建仍复制原配置。对照使用独立库导入相同字节，不绕过同库去重。
@@ -156,6 +156,10 @@ KS_RETRIEVAL_PROFILE=optimized-v2启用，真实效果验收前不全局替换�
 后者只改变送入问答的关联证据。先选择直接证据，再在剩余预算内按原始表头定位、相邻页续句或同原始块连续窗口补全。补全沿用同一当前构建的授权查询，片段单独引用。检索接口的直接结果不受上下文开关影响。现有结构缺失或关系无法核验时不补全。
 
 实验配置 `KS_RETRIEVAL_PROFILE=fts-v1` 使用一条原查询。英文关键词召回由 PostgreSQL 英文词项并集和 `ts_rank_cd` 排序，GIN 表达式索引复用 `chunks.tsv` 文本。含汉字、编号或无有效词项的查询走同一条 SQL 检索路径中的既有关键词排序。语义召回、加权 RRF、授权、当前构建和引用校验沿用现有规则。
+
+真实工作台默认使用 `bm25-v1` 和 `structure-v2`（800 字符，重叠 100）。关键词路径用本机 OpenSearch 的英文分析器和 Lucene BM25（k1=1.2，b=0.75），语义路径沿用 PostgreSQL/pgvector，混合用加权 RRF（k=60，关键词 0.5、向量 1.0）。只用一条原始查询，问答从直接命中中按现有预算选证据。
+
+PostgreSQL 先查出当前有权访问的已发布构建，OpenSearch 按这些构建过滤后取 Top K，再由 PostgreSQL 校验候选的权限与发布版本，提供原文及定位。缺失构建首次使用时由 PostgreSQL 的检索文本批量同步，写入完成才标记，支持重复同步。倒排索引禁用原文回读，文档删除提交后立即阻断检索，清理任务移除该文档的倒排记录。OpenSearch 不可用返回可重试的服务错误。
 
 ### 6.1.3 PDF 版面分块
 

@@ -55,11 +55,22 @@ def dead_local_proxy() -> str | None:
     return None
 
 
+class _NoRedirect(urllib.request.HTTPRedirectHandler):
+    def redirect_request(
+        self, req: urllib.request.Request, fp: object, code: int, msg: str,
+        headers: object, newurl: str,
+    ) -> None:
+        return None
+
+
 @lru_cache(maxsize=8)
-def _build(direct: bool) -> urllib.request.OpenerDirector:
+def _build(direct: bool, follow_redirects: bool = True) -> urllib.request.OpenerDirector:
+    handlers: list[urllib.request.BaseHandler] = []
     if direct:
-        return urllib.request.build_opener(urllib.request.ProxyHandler({}))
-    return urllib.request.build_opener()
+        handlers.append(urllib.request.ProxyHandler({}))
+    if not follow_redirects:
+        handlers.append(_NoRedirect())
+    return urllib.request.build_opener(*handlers)
 
 
 def uses_direct_connection(base_url: str) -> bool:
@@ -80,6 +91,10 @@ def opener_for(base_url: str) -> urllib.request.OpenerDirector:
     return _build(False)
 
 
-def open_request(request: urllib.request.Request, *, timeout: float):
+def open_request(request: urllib.request.Request, *, timeout: float, follow_redirects: bool = True):
     """唯一出口：适配器都经这里发请求，便于替换与代理策略集中管理。"""
-    return opener_for(request.full_url).open(request, timeout=timeout)
+    opener = (
+        opener_for(request.full_url) if follow_redirects
+        else _build(uses_direct_connection(request.full_url), False)
+    )
+    return opener.open(request, timeout=timeout)

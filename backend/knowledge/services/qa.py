@@ -18,7 +18,7 @@ from knowledge.domain.entities import (
     SearchHit,
 )
 from knowledge.domain.errors import CitationValidationFailed, SourceChanged
-from knowledge.domain.ports import Embedder, Generator, Reranker
+from knowledge.domain.ports import Embedder, Generator, KeywordIndex, Reranker
 from knowledge.logging import get_logger
 from knowledge.repositories import conversations as conversation_repo
 from knowledge.services import retrieval
@@ -122,6 +122,7 @@ def answer(
     top_k: int | None = None,
     conversation_id: uuid.UUID | None = None,
     reranker: Reranker | None = None,
+    keyword_index: KeywordIndex | None = None,
 ) -> Answer:
     hits = retrieval.search(
         session,
@@ -134,6 +135,7 @@ def answer(
         top_k=top_k,
         reranker=reranker,
         candidate_limit=settings.evidence_candidate_limit,
+        keyword_index=keyword_index,
     )
 
     best = float(hits[0].diagnostics.get("fusion_score", hits[0].score)) if hits else 0.0

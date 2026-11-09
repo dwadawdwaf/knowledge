@@ -11,9 +11,9 @@ from sqlalchemy.orm import Session
 
 from knowledge.config import Settings
 from knowledge.domain.entities import Actor, SearchHit
-from knowledge.domain.errors import ModelUnavailable, ValidationFailed
+from knowledge.domain.errors import KeywordIndexUnavailable, ModelUnavailable, ValidationFailed
 from knowledge.domain.evidence import coverage_order, structured_neighbors
-from knowledge.domain.ports import Embedder, Reranker
+from knowledge.domain.ports import Embedder, KeywordIndex, Reranker
 from knowledge.domain.querying import evidence_requirements, plan_query
 from knowledge.repositories import chunks as chunk_repo
 from knowledge.repositories import knowledge_bases as kb_repo
@@ -30,6 +30,24 @@ def validate_query(query: str, settings: Settings) -> str:
     return text
 
 
+def _bm25_candidates(
+    session: Session, actor: Actor, kb_ids: list[uuid.UUID], index: KeywordIndex,
+    query: str, limit: int,
+) -> list[tuple[uuid.UUID, float]]:
+    builds = chunk_repo.visible_builds(session, actor, kb_ids)
+    missing = index.missing_builds(list(builds))
+    for offset in range(0, len(missing), 50):
+        batch = missing[offset:offset + 50]
+        # 使用独立短事务，索引同步结束即释放文档锁，生成器不会持有这些锁。
+        with Session(session.get_bind()) as sync_session:
+            current = chunk_repo.visible_builds(sync_session, actor, kb_ids, lock_builds=batch)
+            if current:
+                index.index_builds(current, chunk_repo.keyword_rows(sync_session, list(current)))
+            for build_id in set(batch) - current.keys():
+                builds.pop(build_id, None)
+    return index.search(query, list(builds), limit)
+
+
 def search(
     session: Session,
     actor: Actor,
@@ -42,6 +60,7 @@ def search(
     top_k: int | None = None,
     reranker: Reranker | None = None,
     candidate_limit: int | None = None,
+    keyword_index: KeywordIndex | None = None,
 ) -> list[SearchHit]:
     text = validate_query(query, settings)
 
@@ -59,11 +78,13 @@ def search(
         raise ValidationFailed(f"top_k 必须在 1~{settings.top_k_max} 之间")
 
     fts_profile = settings.retrieval_profile == "fts-v1"
+    bm25_profile = settings.retrieval_profile == "bm25-v1"
+    single_query = fts_profile or bm25_profile
     optimized = settings.retrieval_profile != "baseline-v1"
     output_limit = max(limit, min(candidate_limit or limit, settings.evidence_candidate_limit))
     if not optimized:
         output_limit = limit
-    plan = plan_query(text, 1 if fts_profile else settings.query_variants_max)
+    plan = plan_query(text, 1 if single_query else settings.query_variants_max)
     use_fts = fts_profile and mode != "semantic" and not plan.exact_terms and not any(
         unicodedata.name(char, "").startswith(("CJK UNIFIED IDEOGRAPH", "CJK COMPATIBILITY IDEOGRAPH"))
         for char in text
@@ -72,10 +93,18 @@ def search(
     requirements = (
         tuple(dict.fromkeys(part for part in evidence_requirements(text)
                             if len(part) <= settings.query_max_chars))
-        if optimized and not fts_profile and mode == "hybrid" and settings.evidence_coverage else ()
+        if optimized and not single_query and mode == "hybrid" and settings.evidence_coverage else ()
     )
     if len(requirements) < 2:
         requirements = ()
+
+    bm25_candidates = None
+    if bm25_profile and mode != "semantic":
+        if keyword_index is None:
+            raise KeywordIndexUnavailable("关键词索引未配置")
+        bm25_candidates = _bm25_candidates(
+            session, actor, kb_ids, keyword_index, text, settings.recall_limit,
+        )
 
     vectors: dict[str, list[float]] = {}
     if mode in ("semantic", "hybrid"):
@@ -97,7 +126,14 @@ def search(
             keyword_local_floor=settings.keyword_local_floor,
             keyword_weight=settings.keyword_weight if optimized else 1.0,
             semantic_weight=settings.semantic_weight if optimized else 1.0,
+            bm25_candidates=bm25_candidates,
         )
+
+    if bm25_profile:
+        hits = recall(text, max(output_limit, settings.recall_limit), ())
+        if mode == "hybrid":
+            hits.sort(key=lambda hit: (-hit.score, hit.chunk_id))
+        return hits[:output_limit]
 
     combined: dict[str, SearchHit] = {}
     original_has_hits = False
@@ -167,6 +203,8 @@ def select_evidence(
     selected: list[SearchHit] = []
     used = 0
     neighbor_limit = min(settings.evidence_neighbor_limit, max(0, settings.evidence_max_items - 1))
+    if settings.retrieval_profile == "bm25-v1":
+        neighbor_limit = 0
     coverage_count = sum(bool(hit.diagnostics.get("coverage_priority")) for hit in hits)
     anchor_limit = min(settings.evidence_max_items, max(
         1, settings.evidence_max_items - neighbor_limit, coverage_count,

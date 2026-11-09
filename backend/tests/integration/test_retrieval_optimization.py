@@ -13,7 +13,12 @@ from sqlalchemy import text
 
 from knowledge.adapters.generator import StubGenerator
 from knowledge.domain.entities import Actor
-from knowledge.domain.errors import ModelUnavailable, NotFound, ValidationFailed
+from knowledge.domain.errors import (
+    KeywordIndexUnavailable,
+    ModelUnavailable,
+    NotFound,
+    ValidationFailed,
+)
 from knowledge.repositories import chunks as chunk_repo
 from knowledge.repositories.tables import IndexBuild
 from knowledge.services import document as document_service
@@ -231,6 +236,93 @@ def test_fts_stems_terms_and_preserves_published_scope(session, settings, deps, 
     assert [hit.build_id for hit in search("antennas")] == [str(updated.build_id)]
     document_service.delete(session, actor, original.document_id, settings.max_attempts)
     assert not search("antennas")
+
+
+def test_bm25_uses_one_query_and_checks_scope_before_and_after_recall(session, settings, deps, actor):
+    bm25 = settings.model_copy(update={
+        "retrieval_profile": "bm25-v1", "query_variants_max": 3, "evidence_coverage": True,
+        "structured_context": True, "reranker_url": "http://127.0.0.1:1",
+    })
+    query = "Where is the telescope and when was it installed?"
+    kb, original = ingest(session, settings, deps, actor, "Telescope", query)
+    other_kb, private = ingest(session, settings, deps, Actor("other", "default"), "Private", query)
+
+    def chunk(build_id):
+        return session.execute(
+            text("SELECT id FROM chunks WHERE build_id = :id"), {"id": build_id},
+        ).scalar_one()
+
+    indexed = {}
+    calls = []
+    leaked = [chunk(private.build_id)]
+    encoded = []
+
+    class Embedder:
+        model = deps.embedder.model
+        dimension = deps.embedder.dimension
+
+        def embed(self, texts):
+            encoded.append(list(texts))
+            return deps.embedder.embed(texts)
+
+    class Index:
+        def missing_builds(self, builds):
+            assert private.build_id not in builds
+            return [build for build in builds if build not in indexed]
+
+        def index_builds(self, builds, chunks):
+            for build_id, chunk_id, content in chunks:
+                assert build_id in builds and content
+                indexed[build_id] = chunk_id
+
+        def search(self, text, builds, limit):
+            calls.append((text, list(builds)))
+            assert private.build_id not in builds
+            return [(key, 100.0) for key in leaked] + [(indexed[build], 5.0) for build in builds]
+
+        def delete_document(self, document_id):
+            assert document_id == original.document_id
+            indexed.clear()
+
+    index = Index()
+
+    def search(mode="hybrid", scope=None):
+        return retrieval.search(
+            session, actor, bm25, Embedder(), query=query, kb_ids=scope or [kb.id],
+            mode=mode, keyword_index=index,
+        )
+
+    with pytest.raises(NotFound):
+        search(scope=[other_kb.id])
+    assert calls == []
+    hit, = search()
+    assert hit.build_id == str(original.build_id)
+    assert hit.score_type == "bm25_rrf"
+    assert hit.diagnostics["keyword_rank"] == 1
+    assert hit.diagnostics["semantic_rank"] == 1
+    assert hit.score == pytest.approx(1.5 / 61)
+    assert encoded == [[query]]
+    assert calls == [(query, [original.build_id])]
+    assert search("keyword")[0].score == 5.0
+    assert search("semantic")[0].score_type == "cosine_rank"
+    assert len(calls) == 2
+    with pytest.raises(KeywordIndexUnavailable):
+        retrieval.search(session, actor, bm25, deps.embedder, query=query, kb_ids=[kb.id], mode="keyword")
+
+    updated = document_service.add_version(
+        session, actor, settings, deps.storage, deps.registry, document_id=original.document_id,
+        filename="Telescope.md", data=b"The radio antenna records solar pulses.", expected_generation=None,
+        embedder_model=deps.embedder.model, embedder_dim=deps.embedder.dimension,
+    )
+    while process_next(session, deps):
+        pass
+    leaked.append(chunk(original.build_id))
+    assert [item.build_id for item in search("keyword")] == [str(updated.build_id)]
+    assert calls[-1][1] == [updated.build_id]
+    document_service.delete(session, actor, original.document_id, settings.max_attempts)
+    assert search("keyword") == []
+    assert process_next(session, replace(deps, keyword_index=index))
+    assert not indexed
 
 
 def test_structure_headers_related_are_authorized_and_blocked_after_delete(

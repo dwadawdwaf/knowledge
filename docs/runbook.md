@@ -252,6 +252,14 @@ $env:KS_RETRIEVAL_PROFILE = 'optimized-v2'
 
 `document-bm25.json` 保存摘要级公开对照。`report.json` 保存分块对照的逐题结果、配置和验收判定。SciFact 的排名覆盖 300 道测试题。延迟取固定 36 道题的串行预热 P95，实际入口结果用于核对排名计算。结果见 [优化与实验汇总](../issues.md#检索优化汇总)。
 
+### 5.6 工作台使用 BM25 混合检索
+
+Windows 上将 [OpenSearch Windows 发行包](https://docs.opensearch.org/latest/install-and-configure/install-opensearch/windows/)解压到 `backend/.data/opensearch-3.9.0/`，或复用本项目实验目录里的同版发行包。运行 `start.cmd` 时会检查或启动回环端口 19277 的本机服务，业务倒排索引存放在 `backend/.data/workbench-opensearch/`。不同 PostgreSQL 实例使用不同的 `KS_OPENSEARCH_INDEX`，实验使用独立索引。
+
+在 `backend/.env` 配置 1024 维 BGE-M3 和生成模型端点。向量模型名需与已有发布索引一致。已有分块和向量可直接使用，首次检索某范围时会同步尚未进入倒排索引的分块。新文档默认按 800 字符、100 字符重叠进行结构分块。页面在知识库的「检索」页签选择「混合检索」，命中会显示「BM25 + 向量融合」。问答使用同一召回路径。
+
+直接启动 API 和 Worker 时两边都配置 `KS_RETRIEVAL_PROFILE=bm25-v1`、`KS_OPENSEARCH_URL=http://127.0.0.1:19277`、`KS_CHUNK_STRATEGY=structure-v2` 和 `KS_SEMANTIC_MAX_DISTANCE=0.42`。需要切回之前的混合方案时设 `KS_RETRIEVAL_PROFILE=optimized-v2`，保留同一倒排服务配置供删除任务清理索引。
+
 ## 6. 排障
 
 | 现象 | 先检查 |
@@ -260,6 +268,7 @@ $env:KS_RETRIEVAL_PROFILE = 'optimized-v2'
 | 401/404 | 本次令牌、资源归属、删除状态；UUID不是凭证 |
 | running停滞 | Worker、stage/attempt、租约、模型等待，不手改任务状态 |
 | 模型故障 | 端点、认证、余额、名称、1024维及索引模型兼容性，不把故障记成无资料 |
+| KEYWORD_INDEX_UNAVAILABLE | 检查本机 OpenSearch 是否已就绪及索引名称，启动日志在 `backend/.data/workbench-opensearch/` |
 | Ollama绑定失败/10013 | 检查Windows保留端口：`netsh interface ipv4 show excludedportrange protocol=tcp`；不要删系统规则。若11434被保留，将backend/.env的KS_EMBEDDING_BASE_URL改为经检查可用的本机端口（如http://127.0.0.1:21434/v1）。启动器为serve/pull同步设置OLLAMA_HOST，不改系统环境，不更换模型或下载资料；手动启动时也需在该终端设置同一OLLAMA_HOST。 |
 | PARSE_FAILED | 格式/加密/资源限制、MinerU网络/接口/模型，不循环重传相同内容 |
 | no_evidence | 范围、发布状态、阈值及原文是否支持，不用降低门槛制造答案 |

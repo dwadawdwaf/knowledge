@@ -62,7 +62,7 @@ def test_archive_keeps_source_pages_and_explicit_loss_of_geometry():
     assert "mineru_native_location_unavailable" in csv[0].warnings
 
 
-@pytest.mark.parametrize("variant", ["valid", "wrong_type", "missing_box", "wrong_version"])
+@pytest.mark.parametrize("variant", ["valid", "wrong_type", "missing_box", "wrong_version", "over_budget"])
 def test_pdf_geometry_is_optional_and_tied_to_the_structured_page(variant):
     middle = {
         "schema": "docvortex.middle", "schema_version": "2.0", "is_full_document": True,
@@ -76,10 +76,16 @@ def test_pdf_geometry_is_optional_and_tied_to_the_structured_page(variant):
     }
     if variant == "wrong_version":
         middle["metadata"]["producer"]["version"] = "4.1.1"
-    blocks = normalize_archive(archive(middle=middle), "application/pdf", 100000)
+    data = archive(middle=middle)
+    limit = 100000
+    if variant == "over_budget":
+        with zipfile.ZipFile(io.BytesIO(data)) as target:
+            limit = target.getinfo("structured_content.json").file_size
+    blocks = normalize_archive(data, "application/pdf", limit)
+    assert blocks[0].text == "合成设备保修18个月"
     assert blocks[0].metadata["pdf_bbox"] == ((0.1, 0.2, 0.45, 0.4) if variant == "valid" else None)
     assert blocks[0].locator.positions == ()
-    assert blocks[0].metadata["pdf_ocr"] is (variant != "wrong_version")
+    assert blocks[0].metadata["pdf_ocr"] is (variant not in {"wrong_version", "over_budget"})
 
 
 @pytest.mark.parametrize(

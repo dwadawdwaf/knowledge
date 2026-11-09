@@ -49,9 +49,10 @@ def main() -> int:
     parser.add_argument("--question", help="执行一次问题后退出，便于复验；不会保存问答正文")
     args = parser.parse_args()
     try:
-        settings = load_real_settings()
+        settings = load_real_settings(workbench=True)
         print(f"向量模型：{settings.embedding_model}（{settings.embedding_dim} 维）", flush=True)
         print(f"生成模型：{settings.generator_model}", flush=True)
+        print(f"检索方案：{settings.retrieval_profile}", flush=True)
         print("模型配置检查通过；未输出 API 密钥。", flush=True)
         if args.check:
             return 0

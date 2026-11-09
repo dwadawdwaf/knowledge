@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import pathlib
+from typing import Literal
 from urllib.parse import urlsplit
 
 from pydantic import ValidationError
@@ -18,6 +19,13 @@ class _RealSettings(Settings):
     model_config = SettingsConfigDict(
         env_prefix="KS_", env_file=BACKEND / ".env", extra="ignore", env_ignore_empty=True
     )
+
+
+class _WorkbenchSettings(_RealSettings):
+    retrieval_profile: Literal["baseline-v1", "optimized-v2", "fts-v1", "bm25-v1"] = "bm25-v1"
+    opensearch_url: str | None = "http://127.0.0.1:19277"
+    chunk_strategy: Literal["legacy-v1", "structure-v2"] = "structure-v2"
+    semantic_max_distance: float = 0.42
 
 
 def validate_real_settings(settings: Settings) -> None:
@@ -43,9 +51,9 @@ def validate_real_settings(settings: Settings) -> None:
         raise ValueError(f"当前数据库要求 {EMBEDDING_DIM} 维向量，不允许混用维度")
 
 
-def load_real_settings() -> Settings:
+def load_real_settings(*, workbench: bool = False) -> Settings:
     try:
-        settings = _RealSettings()
+        settings = _WorkbenchSettings() if workbench else _RealSettings()
     except ValidationError as exc:
         raise ValueError(
             "backend/.env 配置格式不正确，请检查字段类型；不输出可能包含密钥的错误详情"
@@ -96,6 +104,9 @@ def real_model_environment(settings: Settings) -> dict[str, str]:
         "chunk_max_chars",
         "chunk_overlap_chars",
         "retrieval_profile",
+        "opensearch_url",
+        "opensearch_index",
+        "opensearch_timeout_seconds",
         "evidence_coverage",
         "structured_context",
         "recall_limit",

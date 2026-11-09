@@ -7,8 +7,10 @@ import { locatorText, warningLabel } from './core.mjs';
 const MODES = [
   ['hybrid', '混合检索', '关键词与语义各召回一路，再融合排序'],
   ['semantic', '语义检索', '按向量距离找同义表述，可跨措辞命中'],
-  ['keyword', '关键词检索', '按字面相似度命中，适合核对专有名词'],
+  ['keyword', '关键词检索', '根据词项匹配排序，适合查找专有名词'],
 ];
+
+const SCORE_LABEL = { bm25: 'BM25', bm25_rrf: 'BM25 + 向量融合' };
 
 const GUIDE = [
   ['quote', '命中片段', '截取命中的那段原文，可直接复制或跳到文件定位'],
@@ -252,7 +254,7 @@ function paintResults(app, container, result) {
   summary.append(el('strong', '', `${hits.length} 个片段`));
   const chip = el('span', 'chip', MODES.find(([value]) => value === result.mode)?.[1] || result.score_type || result.mode);
   summary.append(chip);
-  if (result.score_type) summary.append(el('span', 'chip mono', result.score_type));
+  if (result.score_type) summary.append(el('span', 'chip mono', SCORE_LABEL[result.score_type] || result.score_type));
   if (result.degraded) summary.append(el('span', 'chip warn', '已降级'));
   container.append(summary);
 
@@ -288,7 +290,8 @@ function card(app, hit, index, result) {
   title.append(el('span', '', hit.title));
   title.addEventListener('click', () => app.openSource(hit.chunk_id));
 
-  const score = el('span', 'result-score', `${hit.score_type || result.score_type} · ${Number(hit.score).toFixed(4)}`);
+  const type = hit.score_type || result.score_type;
+  const score = el('span', 'result-score', `${SCORE_LABEL[type] || type} · ${Number(hit.score).toFixed(4)}`);
   const kb = el('button', 'result-kb');
   kb.type = 'button';
   kb.title = hit.kb_name ? `所属知识库：${hit.kb_name}` : '未知知识库';

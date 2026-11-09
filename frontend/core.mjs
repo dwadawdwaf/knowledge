@@ -9,6 +9,7 @@ const messages = {
   VALIDATION_ERROR: '请求参数不符合要求，请检查输入。',
   MODEL_UNAVAILABLE: '模型服务暂不可用，未返回答案。',
   MODEL_TIMEOUT: '模型服务超时，未返回答案。',
+  KEYWORD_INDEX_UNAVAILABLE: '关键词索引暂不可用，请检查本机检索服务后重试。',
   CITATION_VALIDATION_FAILED: '答案未通过引用校验，未返回正文。这不是正常拒答；已知同主题无答案场景也可能触发此错误。',
 };
 export class ApiError extends Error {

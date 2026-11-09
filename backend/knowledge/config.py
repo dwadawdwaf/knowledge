@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from functools import lru_cache
 from typing import Literal
+from urllib.parse import urlsplit
 
 from pydantic import Field, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
@@ -62,7 +63,10 @@ class Settings(BaseSettings):
 
     recall_limit: int = 50
     rrf_k: int = 60
-    retrieval_profile: Literal["baseline-v1", "optimized-v2", "fts-v1"] = "baseline-v1"
+    retrieval_profile: Literal["baseline-v1", "optimized-v2", "fts-v1", "bm25-v1"] = "baseline-v1"
+    opensearch_url: str | None = None
+    opensearch_index: str = Field(default="ks-chunks-bm25-v1", pattern=r"^ks-[a-z0-9][a-z0-9-]{0,62}$")
+    opensearch_timeout_seconds: float = Field(default=10, gt=0, le=60)
     evidence_coverage: bool = False
     structured_context: bool = False
     keyword_weight: float = Field(default=0.5, ge=0, le=2)
@@ -102,6 +106,19 @@ class Settings(BaseSettings):
     def validate_chunking(self) -> Settings:
         if self.chunk_max_chars < 16 or not 0 <= self.chunk_overlap_chars < self.chunk_max_chars:
             raise ValueError("分块长度须至少16，重叠须非负且小于分块长度")
+        return self
+
+    @model_validator(mode="after")
+    def validate_opensearch(self) -> Settings:
+        if self.retrieval_profile == "bm25-v1" and not self.opensearch_url:
+            raise ValueError("bm25-v1 需要配置本机 KS_OPENSEARCH_URL")
+        if self.opensearch_url:
+            parsed = urlsplit(self.opensearch_url)
+            if (parsed.scheme not in {"http", "https"} or parsed.hostname not in {"127.0.0.1", "::1"}
+                    or parsed.username or parsed.password or parsed.path not in {"", "/"}
+                    or parsed.query or parsed.fragment):
+                raise ValueError("OpenSearch 仅允许本机回环地址")
+            _ = parsed.port
         return self
 
 

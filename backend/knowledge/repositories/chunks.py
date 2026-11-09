@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import uuid
-from collections.abc import Sequence
+from collections.abc import Iterator, Sequence
 from typing import Any, cast
 
 from sqlalchemy import Result, bindparam, func, select, text
@@ -78,7 +78,23 @@ _FTS_QUERY_CTE = """
 _FTS_VECTOR = "to_tsvector('pg_catalog.english'::regconfig, c.tsv)"
 
 
-def _build_sql(mode: str, optimized: bool = False, full_text: bool = False) -> str:
+_BM25_CTE = f"""
+    kw AS (
+        SELECT c.id, candidate.raw_score, row_number() OVER (ORDER BY candidate.rank) AS rnk
+        FROM unnest(CAST(:bm25_ids AS uuid[]), CAST(:bm25_scores AS double precision[]))
+            WITH ORDINALITY AS candidate(id, raw_score, rank)
+        JOIN chunks c ON c.id = candidate.id
+        JOIN index_builds b ON b.id = c.build_id
+        JOIN documents d ON d.active_build_id = c.build_id
+        JOIN knowledge_bases kb ON kb.id = d.kb_id
+        WHERE {_FILTERS}
+    )
+"""
+
+
+def _build_sql(
+    mode: str, optimized: bool = False, full_text: bool = False, bm25: bool = False,
+) -> str:
     quality = "similarity(c.tsv, :q)"
     matches = f"{quality} >= :floor"
     if optimized:
@@ -98,11 +114,13 @@ def _build_sql(mode: str, optimized: bool = False, full_text: bool = False) -> s
         {_FTS_QUERY_CTE}, {fts_cte}, {fallback_cte},
         kw AS (SELECT * FROM fts_kw UNION ALL SELECT * FROM fallback_kw)
         """
+    if bm25:
+        kw_cte = _BM25_CTE
     where = ""
     if mode == "keyword":
         ctes = f"WITH {kw_cte}"
         joins = "JOIN kw ON kw.id = c.id"
-        score = "1.0 / (:k + kw.rnk)"
+        score = "kw.raw_score" if bm25 else "1.0 / (:k + kw.rnk)"
         details = "kw.raw_score AS keyword_score, kw.rnk AS keyword_rank, NULL AS semantic_distance, NULL AS semantic_rank"
     elif mode == "semantic":
         ctes = f"WITH {_SEM_CTE}"
@@ -129,7 +147,7 @@ def _build_sql(mode: str, optimized: bool = False, full_text: bool = False) -> s
     JOIN knowledge_bases kb ON kb.id = d.kb_id
     {joins}
     {where}
-    ORDER BY score DESC, c.ordinal, c.id
+    ORDER BY score DESC, {"kw.rnk" if bm25 and mode == "keyword" else "c.ordinal"}, c.id
     LIMIT :top_k
     """
 
@@ -155,11 +173,13 @@ def search(
     exact_terms: Sequence[str] = (),
     keyword_local_floor: float = 0.3,
     full_text: bool = False,
+    bm25_candidates: Sequence[tuple[uuid.UUID, float]] | None = None,
 ) -> list[SearchHit]:
     if mode in ("semantic", "hybrid") and vector is None:
         raise ValueError("该模式需要查询向量")
 
-    statement = text(_build_sql(mode, optimized, full_text)).bindparams(bindparam("kb_ids", expanding=True))
+    bm25 = bm25_candidates is not None
+    statement = text(_build_sql(mode, optimized, full_text, bm25)).bindparams(bindparam("kb_ids", expanding=True))
     params = {
         "owner": actor.subject_id,
         "kb_ids": list(kb_ids),
@@ -178,10 +198,19 @@ def search(
     }
     if vector is not None:
         params["vec"] = "[" + ",".join(f"{value:.6f}" for value in vector) + "]"
+    if bm25_candidates is not None:
+        unique = dict(bm25_candidates)
+        params["bm25_ids"] = list(unique)
+        params["bm25_scores"] = list(unique.values())
 
     rows = session.execute(statement, params).mappings().all()
     if mode in ("semantic", "hybrid"):
         assert_compatible(session, actor, kb_ids, embedding_model, embedding_dim)
+    score_type = {
+        "keyword": "bm25" if bm25 else "rrf",
+        "hybrid": "bm25_rrf" if bm25 else "rrf",
+        "semantic": "cosine_rank",
+    }[mode]
     return [
         SearchHit(
             document_id=str(row["document_id"]),
@@ -194,7 +223,7 @@ def search(
             text=row["text"],
             locator=row["locator"],
             score=float(row["score"]),
-            score_type="rrf" if mode != "semantic" else "cosine_rank",
+            score_type=score_type,
             warnings=tuple(row["warnings"] or ()),
             structure=row["structure"] or {},
             diagnostics={key: row[key] for key in (
@@ -203,6 +232,44 @@ def search(
         )
         for row in rows
     ]
+
+
+def visible_builds(
+    session: Session, actor: Actor, kb_ids: Sequence[uuid.UUID],
+    *, lock_builds: Sequence[uuid.UUID] = (),
+) -> dict[uuid.UUID, uuid.UUID]:
+    """返回当前授权的构建与文档。冷同步持文档共享锁，避免在删除后重新写入索引。"""
+    sql = f"""
+        SELECT b.id AS build_id, d.id AS document_id
+        FROM documents d
+        JOIN index_builds b ON b.id = d.active_build_id
+        JOIN knowledge_bases kb ON kb.id = d.kb_id
+        WHERE {_FILTERS}
+    """
+    if lock_builds:
+        sql += " AND b.id = ANY(CAST(:builds AS uuid[])) ORDER BY d.id FOR SHARE OF d"
+    statement = text(sql).bindparams(bindparam("kb_ids", expanding=True))
+    return {
+        row.build_id: row.document_id
+        for row in session.execute(statement, {
+            "owner": actor.subject_id, "kb_ids": list(kb_ids), "builds": list(lock_builds),
+        })
+    }
+
+
+def keyword_rows(
+    session: Session, builds: Sequence[uuid.UUID],
+) -> Iterator[tuple[uuid.UUID, uuid.UUID, str]]:
+    """在持有授权构建的文档锁后读取关键词文本。"""
+    rows = session.execute(
+        select(Chunk.build_id, Chunk.id, Chunk.tsv).where(Chunk.build_id.in_(builds))
+        .execution_options(yield_per=250)
+    )
+    try:
+        for row in rows:
+            yield row[0], row[1], row[2]
+    finally:
+        rows.close()
 
 
 def related(

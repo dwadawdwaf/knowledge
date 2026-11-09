@@ -22,6 +22,7 @@
 
 基础支持TXT、MD、CSV、文本PDF、DOCX、XLSX、PPTX；扫描PDF与图片通过可选MinerU。
 支持混合检索、证据约束问答、对话存档、版本发布、同模型重建和删除阻断。
+Windows 真实工作台默认用本机 OpenSearch BM25 和 PostgreSQL/pgvector 向量检索，通过加权 RRF 融合。安装与配置见[工作台检索运行说明](docs/runbook.md#56-工作台使用-bm25-混合检索)。
 可选结构分块、跨页来源映射、查询归一化、加权召回与本机重排。启用方式和实验结果见[运行手册](docs/runbook.md#54-分块与检索优化对照)与[检索优化汇总](issues.md#检索优化汇总)。
 上传/新版本可显式选基础解析或MinerU；服务准备与精度边界见运行手册，纯文本不伪装OCR。
 MinerU已准备D盘独立环境时，start.cmd自动启动或复用服务；默认离线，不自动下载模型，详见运行手册。
