@@ -57,7 +57,10 @@ def parser_server():
             image = None
             if state["word_image"]:
                 if b'filename="input.png"' in body:
-                    blocks = [{"type": "text", "content": "图中校准编号7842"}]
+                    blocks = [
+                        {"type": "text", "content": "图中校准编号7842"},
+                        {"type": "text", "content": "编号每周复核。"},
+                    ]
                 else:
                     image = "images/page_0_image_0.png"
                     blocks = [{"type": "image", "content": "", "image_source": image}]
@@ -372,8 +375,10 @@ def test_word_image_text_reaches_published_search_index(session, actor, settings
             session, actor, settings, deps.embedder, query="图中校准编号7842", kb_ids=[kb.id], mode="keyword",
         )
         assert state["calls"] == 2
-        assert len(hits) == 1 and hits[0].text == "图中校准编号7842"
+        assert len(hits) == 1 and hits[0].text == "图中校准编号7842\n编号每周复核。"
         assert hits[0].locator["type"] == "doc" and "page" not in hits[0].locator
+        assert hits[0].locator["precision"] == "composite"
+        assert len(hits[0].locator["sources"]) == 2
         assert "word_image_ocr_requires_review" in session.get(IndexBuild, uploaded.build_id).warnings
         assert document.source(session, actor, uploaded.document_id, deps.storage)["data"] == original
         document.delete(session, actor, uploaded.document_id, settings.max_attempts)

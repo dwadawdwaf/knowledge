@@ -321,6 +321,15 @@ def chunk_evidence_units(
         if element.kind in {"header", "footer"}:
             omitted = True
             continue
+        image_group = element.metadata.get("word_image_group")
+        previous_group = unit[-1].metadata.get("word_image_group") if unit else None
+        if image_group is not None or previous_group is not None:
+            if image_group != previous_group:
+                flush()
+            if image_group is not None:
+                # 同一张嵌入图的 OCR 段落共享文档单元；各段仍保留自己的来源偏移。
+                unit.append(element)
+                continue
         if element.kind in PDF_INDEPENDENT:
             flush()
             if element.text.strip():

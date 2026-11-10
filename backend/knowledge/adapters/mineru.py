@@ -237,6 +237,7 @@ def _normalize_content(
                     markup.feed(value)
                     images.extend(markup.images)
                 for image_source in dict.fromkeys(images):
+                    image_group = len(result)
                     for recognized in word_ocr.read(image_source):
                         result.append(ParsedBlock(
                             recognized.text,
@@ -246,6 +247,7 @@ def _normalize_content(
                                 "mineru_native_location_unavailable",
                             })),
                             kind="figure",
+                            metadata={"word_image_group": image_group},
                         ))
             metadata = {}
             if media == "application/pdf":

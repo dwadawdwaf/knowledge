@@ -18,6 +18,7 @@ from knowledge.adapters.parser import (
     detect_media_type,
 )
 from knowledge.config import Settings
+from knowledge.domain.chunking import chunk_blocks
 from knowledge.domain.errors import ParseFailed, UnsupportedFormat
 
 
@@ -307,3 +308,42 @@ def test_word_images_in_tables_are_local_bounded_and_empty_ocr_is_warned():
     assert {"word_image_ocr_asset_unavailable", "word_image_ocr_budget_exceeded", "word_image_ocr_no_text"} <= set(
         result[0].warnings
     )
+
+
+def test_word_ocr_groups_by_image_occurrence_preserving_order_and_offsets():
+    name = "images/page_0_image_1.png"
+    image = {"type": "image", "image_source": name, "content": ""}
+    question, answer = "设备检查频率是多少？", "每周检查一次。"
+    word_result = archive(
+        mutate=lambda p: p["pages"][0].update(blocks=[
+            {"type": "text", "content": "图片前的 Word 正文"}, image, image,
+            {"type": "text", "content": "图片后的 Word 正文"},
+        ]),
+        assets=[(name, b"\x89PNG\r\n\x1a\nsynthetic")],
+    )
+    ocr = archive(mutate=lambda p: p["pages"][0].update(blocks=[
+        {"type": "paragraph_title", "content": question}, {"type": "text", "content": answer},
+    ]))
+    with patch("knowledge.adapters.mineru._open", side_effect=[
+        io.BytesIO(word_result), io.BytesIO(ocr), io.BytesIO(ocr),
+    ]):
+        blocks = MinerUParser(Settings()).parse(b"fixture", DOCX, "synthetic.docx")
+
+    chunks = chunk_blocks(blocks)
+    assert [part.text for part in chunks] == [
+        "图片前的 Word 正文", f"{question}\n{answer}", f"{question}\n{answer}", "图片后的 Word 正文",
+    ]
+    for part, expected in zip(chunks[1:3], ([1, 2], [3, 4]), strict=True):
+        assert part.locator["precision"] == "composite" and "page" not in part.locator
+        assert "word_image_ocr_requires_review" in part.warnings
+        assert [item["locator"]["block"] for item in part.locator["sources"]] == expected
+        for source in part.locator["sources"]:
+            loc = source["locator"]
+            assert part.text[source["chunk_start"]:source["chunk_end"]] == blocks[loc["block"]].text[
+                loc["char_start"]:loc["char_end"]
+            ]
+
+    limited = chunk_blocks(blocks, max_chars=16, overlap=2)
+    assert [part.text for part in limited[1:-1]] == [question, answer, question, answer]
+    assert limited[1].structure["unit_id"] == limited[2].structure["unit_id"]
+    assert limited[2].structure["unit_id"] != limited[3].structure["unit_id"]

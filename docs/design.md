@@ -33,7 +33,7 @@ MinerU接本机4.1 file-parse API，除TXT/MD外均提交原件，固定tier=bas
 从默认ZIP内structured_content.json读取全量结果，不安装其SDK/模型到主环境，不使用云端。
 只允许回环origin，无代理/重定向，生成无业务文件名的上传名；不跟随响应中的URL，202仅按本次request_id构造本机轮询/下载路径，限制总等待/响应/解压预算。
 schema/页码/完整性校验失败报PARSE_FAILED，缺少精确几何或Office物理页码时降级block/page并告警；外部HTML仅转纯文本，不执行或抓取外链。
-DOC/DOCX保留原生正文；引用到同一结果ZIP中`images/`的PNG/JPEG/TIFF素材再提交同一个本机MinerU接口（`ocr_mode=ocr`）。原件与外链不为OCR另行读取；不解压到磁盘。原件与图片请求共享总等待预算，单文档最多读取32次素材，累计素材解压字节受KS_MINERU_OUTPUT_BYTES限制。仅把识别出的文本作为独立块，标记`word_image_ocr_requires_review`，不冒充原生文字或物理页码。缺失、跳过或无识别文字记录warnings；服务故障不以部分正文冒充成功。DOCX基础解析发现内嵌素材但仅提取正文时标记`docx_images_require_mineru`。
+DOC/DOCX保留原生正文；引用到同一结果ZIP中`images/`的PNG/JPEG/TIFF素材再提交同一个本机MinerU接口（`ocr_mode=ocr`）。原件与外链不为OCR另行读取；不解压到磁盘。原件与图片请求共享总等待预算，单文档最多读取32次素材，累计素材解压字节受KS_MINERU_OUTPUT_BYTES限制。同一嵌入图片位置的OCR段落进入同一文档单元，在长度预算内合为一块；超长按段落、句子或兜底窗口切分，保留各段来源。不同图片位置和原生正文不混合。OCR片段标记`word_image_ocr_requires_review`，不冒充原生文字或物理页码。缺失、跳过或无识别文字记录warnings；服务故障不以部分正文冒充成功。DOCX基础解析发现内嵌素材但仅提取正文时标记`docx_images_require_mineru`。
 MinerU输出正文中的NUL等长替换为U+FFFD，块及build标记mineru_nul_replaced；原件不改，块内码点偏移不缩短。
 此为数据库文本兼容修复，不自动重建历史内容；恢复失败文档仍经显式重建创建新build。
 解析参数随新build冻结，重试/普通重建保留；曾用已移除DeepDoc的TXT/MD重切时改为基础直读文本并在新构建告警，其他历史格式不静默改解析器。同字节去重回原回执，并返回已有build的parser_profile，界面提示选择未生效，不借重传换策略。
