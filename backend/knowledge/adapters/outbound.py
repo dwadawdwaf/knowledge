@@ -11,6 +11,7 @@
 
 from __future__ import annotations
 
+import ipaddress
 import logging
 import os
 import socket
@@ -74,8 +75,19 @@ def _build(direct: bool, follow_redirects: bool = True) -> urllib.request.Opener
 
 
 def uses_direct_connection(base_url: str) -> bool:
-    """端点是否本机；本机必须直连，否则会被系统代理截走。"""
-    return (urlsplit(base_url).hostname or "") in LOOPBACK_HOSTS
+    """端点是否本机或内网；两者都必须直连，否则会被系统代理截走。
+
+    内网部署的模型服务（例如 10.x 的推理集群）经公网代理转发通常不可达，
+    而且把内网请求交给代理本身也不合适，因此私有地址段一律直连。
+    """
+    host = urlsplit(base_url).hostname or ""
+    if host in LOOPBACK_HOSTS:
+        return True
+    try:
+        address = ipaddress.ip_address(host)
+    except ValueError:
+        return False
+    return address.is_loopback or address.is_private or address.is_link_local
 
 
 def opener_for(base_url: str) -> urllib.request.OpenerDirector:

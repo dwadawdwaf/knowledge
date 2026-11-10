@@ -12,6 +12,14 @@ def test_loopback_endpoint_is_direct():
     assert outbound.uses_direct_connection("http://localhost:11434/v1")
 
 
+def test_private_network_endpoint_is_direct():
+    """内网部署的模型服务直连；经公网代理转发既不可达也不合适。"""
+    assert outbound.uses_direct_connection("http://10.245.226.35:7901/v1")
+    assert outbound.uses_direct_connection("http://192.168.1.20:8000/v1")
+    assert outbound.uses_direct_connection("http://172.16.5.9:8000/v1")
+    assert not outbound.uses_direct_connection("http://8.8.8.8/v1")
+
+
 def test_remote_endpoint_uses_system_route():
     assert not outbound.uses_direct_connection("https://api.deepseek.com")
 
