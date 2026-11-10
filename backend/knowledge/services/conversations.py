@@ -21,6 +21,11 @@ def list_owned(session: Session, actor: Actor) -> list[Conversation]:
     return conversation_repo.list_owned(session, actor)
 
 
+def delete(session: Session, actor: Actor, conversation_id: uuid.UUID) -> None:
+    conversation_repo.delete_owned(session, actor, conversation_id)
+    session.commit()
+
+
 def detail(
     session: Session, actor: Actor, conversation_id: uuid.UUID
 ) -> tuple[Conversation, list[Message]]:

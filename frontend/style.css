@@ -450,6 +450,24 @@ html[data-theme="dark"] .brand-mark { color: #06202a; }
 .session-item svg { width: 14px; height: 14px; color: var(--text-4); }
 .session-item:hover { background: var(--surface-hover); color: var(--text); }
 .session-item.active { background: var(--surface-active); color: var(--text); font-weight: 550; }
+.session-row { display: flex; align-items: center; gap: 2px; }
+.session-row > .session-item { flex: 1 1 auto; min-width: 0; }
+.session-del {
+  flex: 0 0 auto;
+  width: 26px;
+  height: 26px;
+  display: none;
+  align-items: center;
+  justify-content: center;
+  border: 0;
+  border-radius: var(--r-sm);
+  background: transparent;
+  color: var(--text-4);
+}
+.session-row:hover .session-del, .session-del:focus-visible { display: inline-flex; }
+.session-del:hover { background: var(--danger-soft, #fdeceb); color: var(--danger, #b3261e); }
+.session-del svg { width: 14px; height: 14px; }
+
 .session-item .dot { width: 5px; height: 5px; border-radius: 50%; background: var(--accent); flex: 0 0 5px; }
 
 .side-empty {
@@ -1257,6 +1275,8 @@ html[data-theme="dark"] .user-bubble { color: var(--text); }
 .composer-bar { display: flex; align-items: center; justify-content: space-between; gap: 10px; margin-top: 4px; }
 .composer-hint { font-size: 11.5px; color: var(--text-4); }
 .composer-tools { display: flex; align-items: center; gap: 8px; }
+/* 范围按钮在发送按钮左侧：收窄，避免挤压输入区 */
+.composer-tools .scope-btn { max-width: 200px; height: 30px; }
 .send-btn {
   display: grid;
   place-items: center;

@@ -93,6 +93,21 @@ def list_conversations(
     return envelope({"items": items}, request_id(request))
 
 
+@router.delete("/conversations/{conversation_id}", response_model=Envelope)
+def delete_conversation(
+    conversation_id: uuid.UUID,
+    request: Request,
+    session: Session = Depends(get_session),
+    actor: Actor = Depends(get_actor),
+) -> dict:
+    """删除会话与消息。回答问题本身不删，知识库资料不受影响。
+
+    用 200 + envelope 而不是 204：前端统一按 JSON 解析响应，空体需要额外分支。
+    """
+    conversation_service.delete(session, actor, conversation_id)
+    return envelope({"id": str(conversation_id), "deleted": True}, request_id(request))
+
+
 @router.get("/conversations/{conversation_id}", response_model=Envelope)
 def get_conversation(
     conversation_id: uuid.UUID,

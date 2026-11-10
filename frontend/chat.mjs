@@ -44,17 +44,7 @@ function header(app, session) {
   const left = el('div', 'chat-head-left');
   left.append(el('h1', 'chat-title', session?.title || '新对话'));
 
-  const tag = el('span', 'chat-tag', scopeTagText(app));
-  tag.id = 'chat-scope-tag';
-  left.append(tag);
-
   const right = el('div', 'chat-head-right');
-  right.append(scopeControl(app, {
-    onChange: () => {
-      const node = document.querySelector('#chat-scope-tag');
-      if (node) node.textContent = scopeTagText(app);
-    },
-  }));
   right.append(iconButtonNewChat(app));
   head.append(left, right);
   return head;
@@ -65,12 +55,6 @@ function scopeMetaText(app) {
   if (!ids.length) return '所选知识库：无';
   if (ids.length > 1) return `所选知识库：全部 ${ids.length} 个`;
   return `所选知识库：${scopeLabel(app)}`;
-}
-
-function scopeTagText(app) {
-  const count = scopeIds(app).length;
-  if (!count) return '尚未选择知识库';
-  return count > 1 ? `依据 ${count} 个知识库` : '单库问答';
 }
 
 function iconButtonNewChat(app) {
@@ -142,6 +126,8 @@ function composer(app) {
   const bar = el('div', 'composer-bar');
   bar.append(el('span', 'composer-hint', 'Enter 发送 · Shift + Enter 换行'));
   const tools = el('div', 'composer-tools');
+  // 检索范围紧挨发送按钮：提问前顺手确认这次依据哪些资料
+  tools.append(scopeControl(app));
   const send = el('button', 'send-btn');
   send.type = 'submit';
   send.setAttribute('aria-label', '发送问题');

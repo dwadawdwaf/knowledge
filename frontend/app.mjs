@@ -284,6 +284,37 @@ async function ensureConversation(session, title) {
   return session;
 }
 
+/** 删除一段对话：会话与消息一起删，知识库资料不受影响。 */
+function deleteSession(session) {
+  actionDialog({
+    title: '删除这段对话？',
+    description: '对话记录与引用会一并删除，知识库里的资料不受影响。',
+    confirmText: '删除',
+    danger: true,
+    action: async () => {
+      if (session.serverId) {
+        await api.request(`/conversations/${session.id}`, { method: 'DELETE' });
+      }
+      const wasActive = state.sessionId === session.id || state.historySelection === session.id;
+      state.sessions = state.sessions.filter(item => item.id !== session.id);
+      if (!wasActive) {
+        renderSessions();
+        return;
+      }
+      if (state.sessions.length) {
+        await selectSession(state.sessions[0]);
+        return;
+      }
+      const draft = draftSession();
+      state.sessions = [draft];
+      state.sessionId = draft.id;
+      state.historySelection = '';
+      renderSessions();
+      render();
+    },
+  });
+}
+
 async function selectSession(session) {
   state.sessionId = session.id;
   if (!session.loaded) session.loading = true;
@@ -311,13 +342,26 @@ function renderSessions() {
 
   state.sessions.forEach(session => {
     const active = state.page === 'chat' && session.id === state.historySelection;
+    const row = el('div', 'session-row');
     const item = el('button', active ? 'session-item active' : 'session-item');
     if (active) item.setAttribute('aria-current', 'page');
     item.type = 'button';
     item.title = session.title || '新对话';
     item.append(icon('chat'), el('span', '', session.title || '新对话'));
     item.addEventListener('click', () => selectSession(session));
-    list.append(item);
+
+    const remove = el('button', 'session-del');
+    remove.type = 'button';
+    remove.title = '删除对话';
+    remove.setAttribute('aria-label', '删除对话');
+    remove.append(icon('trash'));
+    remove.addEventListener('click', event => {
+      event.stopPropagation();
+      deleteSession(session);
+    });
+
+    row.append(item, remove);
+    list.append(row);
   });
 }
 
