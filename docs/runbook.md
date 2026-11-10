@@ -71,7 +71,8 @@ API/Worker退出不等于后台数据库停止，停止用：
 .\.venv\Scripts\python.exe -m knowledge.entrypoints.worker
 ```
 
-当前head为0003_chunk_warnings；0002固定任务目标，升级前不能留下未处理旧任务；0003保存块警告。
+当前head为0006_conversation_archived；从0001升级前不能留下未处理旧任务。
+0004扩展模型标识字段，0005支持知识库归档，0006将已有会话初始化为active并保留消息。
 不对未知默认库运行迁移，不改历史迁移，不原地回填已发布片段。
 
 ### 本次数据库回退与备份
@@ -82,24 +83,6 @@ API/Worker退出不等于后台数据库停止，停止用：
 备份在忽略目录 `backend/.data/rollback-backups/20261030T021547Z/`：before.dump是完整custom格式备份，
 manifest.json记录版本和计数，迁移源码副本用于恢复演练。含业务资料，仅本地保存，禁止提交/外发。
 恢复时先用pg_restore到新库验证，再评审切换；不要直接覆盖当前库，也不重复运行一次性降级脚本。
-
-### 建立持久基础评测库（会清空当前业务数据）
-
-仅明确要求替换当前数据时运行，不作为日常启动命令：
-
-```powershell
-.\backend\.venv\Scripts\python.exe -X utf8 -u backend/scripts/retrieval_baseline.py --reset-current --confirm-real --serve
-```
-
-脚本仅接受`.data/db_url`记录的本机knowledge库及项目`.data/objects`卷；备份在
-`backend/.data/evaluation-backups/<UTC时间>/`，包含before.dump、旧objects和校验清单。
-清空前自动停止精确匹配该库/卷的API/Worker，原启动终端将断开；发现其他数据库连接则停止，不强制踢掉。
-先实际恢复到独立副本校验记录数和版本，成功才清空。原件留在配套备份，不外发。
-导入11份自制文件（5种格式），固定24题/8维度，对比4种召回配置并执行24次问答；上限120次检索/问答，
-使用现有真实模型，只有自制资料会被提交。入库和报告发布另需向量调用，费用未知，失败不自动重跑。
-每6题发布一次进度；评测页已下线（决策0029），过程与结果改从“检索评测 · 过程与结果”库的报告原件查看。
-`--serve`使实验后前端继续运行，Ctrl+C停止服务；不加则完成后退出，数据持久保留，下次start.cmd可继续查看。
-报告库应与被测资料库分开选择，不能将含标注答案的报告库纳入被测检索范围。
 
 ## 3. 同模型重建与人工恢复
 
@@ -121,7 +104,7 @@ manifest.json记录版本和计数，迁移源码副本用于恢复演练。含�
 历史DeepDoc构建只读保留，不再新增；新上传只支持基础解析或MinerU。
 MinerU为本机独立Python环境，不通过容器运行，启动方式见§5。
 
-## 5. 验证与评测
+## 5. 验证
 
 ### 解析器选择与MinerU
 
@@ -168,43 +151,6 @@ node --test frontend/core.test.mjs
 跳过/xfail/排除用例不能算完整通过。非Windows中文PDF测试需KS_TEST_FONT_PATH指定已有字体。
 浏览器检查仅在相关前端改动收尾运行，需要已有Node/测试浏览器，不自动安装。
 CI定义在.github/workflows/backend.yml，文件存在不等于远端已实跑。
-
-固定12题自制集评测默认离线；真实调用先获得授权，confirm参数不替代授权：
-
-```powershell
-.\backend\.venv\Scripts\python.exe -u backend/scripts/evaluate_local.py
-.\backend\.venv\Scripts\python.exe -u backend/scripts/evaluate_local.py --real --confirm-real
-```
-
-真实模式使用固定自制资料及临时库/API/Worker，48次检索/问答API请求、上限60，不自动重跑。
-上传向量化和轮询是额外调用，不据此推断供应商token或费用。报告在backend/.data/evaluation，
-只存指纹、配置名、指标与耗时，不存正文/密钥/端点。词面覆盖、结构引用有效均不等于事实正确。
-
-### 持久库第二轮公开长文档评测
-
-仅限已批准的六份官方公开资料和已冻结的48题；不清空旧库，不重新下载语料。
-原件、来源清单和标注位于`backend/.data/public-corpus-v1`，不提交；不能替换成私人或甲方资料。
-
-本机16GiB内存的本轮配置：启动MinerU前设置`$env:MINERU_PROCESSING_WINDOW_SIZE='8'`，
-再运行`./start-mineru.ps1`；只缩小批处理窗口，不减少页数或关闭识别功能。已运行服务需核对其启动环境，
-复用服务不会使新环境变量生效。实验进程设置`$env:KS_PARSE_OUTPUT_BYTES='134217728'`（128MiB），
-预检与后台Worker使用同一有界预算，实际值记入预检报告；不修改服务默认16MiB或放开ZIP成员校验。
-
-```powershell
-.\backend\.venv\Scripts\python.exe -X utf8 -u backend/scripts/evaluate_public.py --prepare-only
-.\backend\.venv\Scripts\python.exe -X utf8 -u backend/scripts/evaluate_public.py --confirm-public --serve --port 8013
-```
-
-第一条复用生产解析器做本地预检，不入库或调用模型。第二条保留现有库，新增第二轮资料库，
-发布过程与结果并打开工作台；在“检索评测”选择轮次、开发集或留出集，也可查看实际问答与引用。
-本轮改用MinerU和现有bge-m3/deepseek-flash配置，不做解析器配对对照或调参；检索/问答最多240次，
-入库与报告发布的向量调用另计。`--confirm-public`不替代用户授权。
-本次已批准的入库恢复使用`--resume-ingestion --confirm-public --serve --port 8010`；须先停止同库旧工作台/Worker，
-保留run-started.json，不能删标记重跑。只允许尚无本轮报告的恢复一次，已有报告时停止并核对请求记录。
-`backend/.data/public-round2-mineru`保存预检、启动标记及报告；之前未进入问答的基础解析尝试保留在`backend/.data/public-round2`。
-启动标记存在时拒绝再次执行，
-中断后先核对已有结果，不删标记碰运气重跑。关闭终端会停止本轮工作台，数据库和原件继续保留。
-日常只看结果时用普通启动器，不重新执行评测；报告中词面命中和引用覆盖不等同于答案事实正确率。
 
 ## 6. 排障
 

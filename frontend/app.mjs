@@ -625,14 +625,6 @@ const app = {
   loadAllFiles,
   openLibrary,
   openLibraryById,
-  openLibrarySearch: (kbId, query = '') => {
-    if (!state.libraries.some(kb => kb.id === kbId)) { notify('评测资料已删除或不再可访问。'); return; }
-    openLibraryById(kbId);
-    state.libraryTab = 'search';
-    state.query = query;
-    state.searchResult = null;
-    render();
-  },
   openKnowledgeList: () => { state.library = null; navigate('knowledge'); },
   openBrowse: (doc, focus) => openBrowse(doc, focus),
   closeBrowse: () => closeBrowse(),

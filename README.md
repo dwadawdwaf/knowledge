@@ -25,18 +25,17 @@
 上传/新版本可显式选基础解析或MinerU；服务准备与精度边界见运行手册，纯文本不伪装OCR。
 MinerU已准备D盘独立环境时，start.cmd自动启动或复用服务；默认离线，不自动下载模型，详见运行手册。
 不支持旧版XLS/PPT、表格聚合问答、通用回答兜底、语义目录规划、共享授权、账号体系或token流式输出。
-左侧“检索评测”查看自制问题集的过程与结果；手动检索位于知识库的“检索”页签，数据替换与实验命令见运行手册。
+手动检索位于工作台“检索”入口和知识库的“检索”页签。
 历史会话仅供展示，不参与问答上下文。真实模型效果和复杂格式识别尚未全面验收。
 
 ## 验证
 
 ```powershell
 .\backend\.venv\Scripts\python.exe -u backend/scripts/check.py
-node --test frontend/core.test.mjs frontend/evaluation.test.mjs
+node --test frontend/core.test.mjs
 ```
 
 后端完整入口包括依赖预检、lint、类型检查、隔离库、迁移和HTTP验收，不调用真实模型。
-本轮[真实基础评测报告与截图](backend/testdata/retrieval_baseline/results/2026-10-30/report.html)为固定实验快照，非业务准确率承诺；下载后用浏览器打开HTML，保留同目录images。
 普通pytest可能跳过数据库用例，不能代替完整检查。
 
 ## 文档
