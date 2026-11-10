@@ -96,8 +96,6 @@ class Settings(BaseSettings):
 
     chunk_max_chars: int = 800
     chunk_overlap_chars: int = 100
-    chunk_strategy: Literal["legacy-v1", "structure-v2"] = "legacy-v1"
-    pdf_chunk_strategy: Literal["pdf-layout-v1"] | None = None
 
     @model_validator(mode="after")
     def validate_chunking(self) -> Settings:

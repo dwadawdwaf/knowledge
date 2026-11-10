@@ -84,10 +84,10 @@ class _Heartbeat:
         self._thread.join(timeout=2)
 
 
-def process_next(session: Session, deps: WorkerDeps) -> bool:
+def process_next(session: Session, deps: WorkerDeps, *, target_job_id: uuid.UUID | None = None) -> bool:
     """领取并处理一个任务；无任务时返回 False。"""
     token = uuid.uuid4()
-    job = job_repo.claim_next(session, token, deps.settings.lease_seconds)
+    job = job_repo.claim_next(session, token, deps.settings.lease_seconds, job_id=target_job_id)
     if job is None:
         return False
 

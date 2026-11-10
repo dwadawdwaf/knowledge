@@ -3,15 +3,15 @@
 from __future__ import annotations
 
 import re
+from collections.abc import Iterator
 from dataclasses import replace
 from itertools import pairwise
 from typing import Any
 
-from knowledge.domain.chunking import TextChunk, _split_text
+from knowledge.domain.chunking import EVIDENCE_UNIT_STRATEGY, TextChunk, _split_text
 from knowledge.domain.entities import ParsedBlock
 from knowledge.domain.pdf_layout import (
     PDF_INDEPENDENT,
-    PDF_LAYOUT_STRATEGY,
     order_pdf_blocks,
     pdf_continuation,
 )
@@ -19,29 +19,38 @@ from knowledge.domain.pdf_layout import (
 _HEADING = re.compile(r"^(#{1,6})\s+(.+)$")
 _CHAPTER = re.compile(r"^第[一二三四五六七八九十百千万零〇\d]+[章节编部]\s*\S.*$")
 _ARTICLE = re.compile(r"^第[一二三四五六七八九十百千万零〇\d]+条")
+_SUBPOINT = re.compile(r"^\s*(?:[（(][一二三四五六七八九十百\d]+[）)]|[一二三四五六七八九十百\d]+[、.．])")
+_LIST_ITEM = re.compile(r"^(?:\\?[-+*•▪◦]\s+|\d+(?:\.\d+)*\\?[.)、]\s+)")
+_SENTENCE_BOUNDARY = re.compile(r"[。！？；]+|[.!?;]+(?=\s|$)|\r?\n")
 
 
-def _elements(block: ParsedBlock, *, pdf_layout: bool = False) -> list[ParsedBlock]:
+def _elements(block: ParsedBlock) -> list[ParsedBlock]:
     """识别行首显式结构，偏移仍属于原始解析块。"""
-    if block.kind in {"table", "table_row", "figure", "caption", "footnote", "header", "footer"} or (
-        pdf_layout and block.kind in PDF_INDEPENDENT
-    ):
+    if block.kind in PDF_INDEPENDENT or block.kind in {"header", "footer"}:
         return [block]
     lines = list(re.finditer(r"[^\n]+(?:\n|$)", block.text))
     boundaries = {0, len(block.text)}
-    if pdf_layout and block.kind == "text":
-        boundaries.update(match.end() for match in re.finditer(r"\r?\n[ \t]*\r?\n", block.text))
+    boundaries.update(match.end() for match in re.finditer(r"\r?\n[ \t]*\r?\n", block.text))
     kinds: dict[int, tuple[str, int | None]] = {}
+    default = ("text", None) if block.kind == "heading" else (block.kind, block.heading_level)
     for line in lines:
         value = line.group().strip()
         match = _HEADING.match(value)
-        if match or _CHAPTER.match(value):
-            boundaries.update((line.start(), line.end()))
-            kinds[line.start()] = ("heading", len(match[1]) if match else 1)
-        elif _ARTICLE.match(value):
+        label = (match[2] if match else value).strip("*_` ")
+        if _ARTICLE.match(label):
             boundaries.add(line.start())
             kinds[line.start()] = ("article", None)
+        elif _SUBPOINT.match(label) or _LIST_ITEM.match(value):
+            boundaries.add(line.start())
+            kinds[line.start()] = ("text", None)
+        elif match or _CHAPTER.match(label) or (
+            block.kind == "heading" and line is lines[0]
+        ):
+            boundaries.update((line.start(), line.end()))
+            default_level = block.heading_level or 1
+            kinds[line.start()] = ("heading", len(match[1]) if match else default_level)
     points = sorted(boundaries)
+    points = [0, *(start for start, end in pairwise(points) if start and block.text[start:end].strip()), len(block.text)]
     return [
         replace(
             block,
@@ -51,8 +60,8 @@ def _elements(block: ParsedBlock, *, pdf_layout: bool = False) -> list[ParsedBlo
                 char_start=block.locator.char_start + start,
                 char_end=block.locator.char_start + end,
             ),
-            kind=kinds.get(start, (block.kind, block.heading_level))[0],
-            heading_level=kinds.get(start, (block.kind, block.heading_level))[1],
+            kind=kinds.get(start, default)[0],
+            heading_level=kinds.get(start, default)[1],
         )
         for start, end in pairwise(points)
         if block.text[start:end].strip()
@@ -103,6 +112,40 @@ def _compatible(previous: ParsedBlock, current: ParsedBlock) -> bool:
     return True
 
 
+def _separator(previous: ParsedBlock, current: ParsedBlock) -> str:
+    if previous.text.endswith("\n") or current.text.startswith(("\n", "\r\n")):
+        return ""
+    if replace(previous.locator, char_start=0, char_end=0) == replace(
+        current.locator, char_start=0, char_end=0,
+    ) and previous.locator.char_end == current.locator.char_start:
+        return ""
+    return "\n"
+
+
+def _table_context(
+    element: ParsedBlock, headers: dict[str, tuple[str, dict[str, Any]]],
+) -> ParsedBlock:
+    if element.kind != "table_row" or not element.table_id:
+        return element
+    cells = re.sub(r"^表格\d+ 第\d+行：", "", element.text).split(
+        "\t" if "\t" in element.text else "｜"
+    )
+    row = element.metadata.get("row", element.locator.row_start)
+    if row == 1 and len(cells) > 1 and all(
+        cell.strip() and not re.fullmatch(r"[\d.,%￥$+-]+", cell.strip()) for cell in cells
+    ):
+        headers[element.table_id] = (element.text, element.locator.to_dict())
+        element = replace(element, metadata={**element.metadata, "is_header": True})
+    if element.table_id not in headers:
+        return element
+    header, source = headers[element.table_id]
+    return replace(
+        element,
+        warnings=tuple(sorted({*element.warnings, "table_header_candidate"})),
+        metadata={**element.metadata, "table_header": header, "context_sources": [source]},
+    )
+
+
 def _make_chunk(
     group: list[ParsedBlock],
     ordinal: int,
@@ -110,14 +153,14 @@ def _make_chunk(
     end: int,
     section: tuple[str, ...],
     unit_id: str,
-    title: str,
     *,
     pdf_layout: bool,
 ) -> TextChunk:
-    text = "\n".join(block.text for block in group)
+    separators = [_separator(a, b) for a, b in pairwise(group)] + [""]
+    text = "".join(block.text + separator for block, separator in zip(group, separators, strict=True))
     sources: list[dict[str, Any]] = []
     cursor = 0
-    for block in group:
+    for block, separator in zip(group, separators, strict=True):
         local_start, local_end = max(start, cursor), min(end, cursor + len(block.text))
         if local_start < local_end:
             locator = replace(
@@ -138,7 +181,7 @@ def _make_chunk(
                     "locator": locator,
                 }
             )
-        cursor += len(block.text) + 1
+        cursor += len(block.text) + len(separator)
     locator = dict(sources[0]["locator"])
     if len(sources) > 1:
         # 顶层偏移不描述拼接后的原文；每段真实偏移保留在 sources 中。
@@ -149,14 +192,13 @@ def _make_chunk(
             locator["pages"] = pages
     else:
         locator["sources"] = sources
-    context: list[str] = []
-    if title:
-        context.append(title)
-    context.extend(section)
+    piece = text[start:end]
+    # 只补片段缺少的最近结构标签，避免文件名和整条路径稀释正文。
+    label = section[-1] if section else ""
+    context = [label] if label and label not in piece else []
     header = group[0].metadata.get("table_header")
     if header:
         context.append("表头：" + str(header))
-    piece = text[start:end]
     return TextChunk(
         ordinal,
         piece,
@@ -164,7 +206,7 @@ def _make_chunk(
         tuple(sorted({warning for block in group for warning in block.warnings})),
         "\n".join([*context, piece]),
         {
-            "strategy": PDF_LAYOUT_STRATEGY if pdf_layout else "structure-v2",
+            "strategy": EVIDENCE_UNIT_STRATEGY,
             "kind": group[0].kind,
             "section_path": list(section),
             "unit_id": unit_id,
@@ -176,164 +218,141 @@ def _make_chunk(
     )
 
 
-def chunk_structured(
-    blocks: list[ParsedBlock],
-    max_chars: int,
-    overlap: int,
-    title: str,
-    *,
-    pdf_layout: bool = False,
-) -> list[TextChunk]:
-    pdf_layout = pdf_layout and bool(blocks) and all(block.locator.type == "pdf" for block in blocks)
-    if pdf_layout:
-        blocks = order_pdf_blocks(blocks)
+def _unit_connection(
+    previous: ParsedBlock, current: ParsedBlock, *, in_section: bool, pdf_layout: bool,
+) -> bool:
+    a, b = previous.locator, current.locator
+    if a.type != b.type or a.sheet != b.sheet:
+        return False
+    if not pdf_layout:
+        return _compatible(previous, current) and (a.page == b.page or in_section)
+    if pdf_continuation(previous, current, in_section):
+        return True
+    if a.page != b.page:
+        # 基础 PDF 没有版面探测；保留已识别节内的相邻页未完句能力。
+        return in_section and "pdf_bbox" not in previous.metadata and "pdf_bbox" not in current.metadata and (
+            _compatible(previous, current)
+        )
+    if previous.metadata["pdf_layout"] == current.metadata["pdf_layout"] == "unknown":
+        # 未知版面不推断栏位；仅凭显式节标题、列表或续文沿同页解析顺序装箱。
+        previous_line = previous.text.lstrip()
+        current_line = current.text.lstrip()
+        return in_section or bool(
+            (_LIST_ITEM.match(current_line) or _SUBPOINT.match(current_line)) and (
+                previous.text.rstrip().endswith(("：", ":"))
+                or _LIST_ITEM.match(previous_line) or _SUBPOINT.match(previous_line)
+            )
+        )
+    return all(previous.metadata[key] == current.metadata[key] for key in ("pdf_band", "pdf_column"))
+
+
+def _unit_atoms(block: ParsedBlock, cap: int, overlap: int) -> Iterator[ParsedBlock]:
+    if len(block.text) <= cap:
+        yield block
+        return
+    if block.kind in {"table", "table_row"}:
+        spans = _split_text(block.text, cap, 0, table_rows=True)
     else:
-        blocks = [block for _, block in sorted(
-            enumerate(blocks), key=lambda item: (item[1].metadata.get("order", item[0]), item[0])
-        )]
-    elements = [
-        element
-        for block in blocks
-        for part in ([block] if pdf_layout else _table_rows(block))
-        for element in _elements(part, pdf_layout=pdf_layout)
+        boundaries = [0, *(m.end() for m in _SENTENCE_BOUNDARY.finditer(block.text)), len(block.text)]
+        spans = [
+            (start + a, start + b)
+            for start, end in pairwise(boundaries) if start < end
+            for a, b in (
+                [(0, end - start)] if end - start <= cap
+                else _split_text(block.text[start:end], cap, min(overlap, cap // 4))
+            )
+        ]
+    for start, end in spans:
+        yield replace(block, text=block.text[start:end], locator=replace(
+            block.locator, char_start=block.locator.char_start + start,
+            char_end=block.locator.char_start + end,
+        ))
+
+
+def chunk_evidence_units(
+    blocks: list[ParsedBlock], max_chars: int, overlap: int,
+) -> list[TextChunk]:
+    """先恢复语义单元，再在每个单元内优先以完整元素装箱。"""
+    pdf_layout = bool(blocks) and all(block.locator.type == "pdf" for block in blocks)
+    ordered = order_pdf_blocks(blocks) if pdf_layout else [
+        block for _, block in sorted(enumerate(blocks), key=lambda item: (item[1].metadata.get("order", item[0]), item[0]))
     ]
+    elements = (
+        element for block in ordered for part in ([block] if pdf_layout else _table_rows(block))
+        for element in _elements(part)
+    )
     chunks: list[TextChunk] = []
-    section: list[str] = []
+    unit: list[ParsedBlock] = []
+    unit_id = 0
+    headings: list[tuple[int, str]] = []
     article = ""
-    group: list[ParsedBlock] = []
-    previous_pdf: ParsedBlock | None = None
-    unit = 0
-    table_headers: dict[str, tuple[str, dict[str, Any]]] = {}
-    omitted_running_matter = False
+    headers: dict[str, tuple[str, dict[str, Any]]] = {}
+    omitted = False
 
     def flush() -> None:
-        nonlocal group
-        if not group:
+        nonlocal unit_id
+        if not unit:
             return
-        text = "\n".join(block.text for block in group)
-        prose = pdf_layout and group[0].kind == "text"
-        table = pdf_layout and group[0].kind == "table"
-        cap = min(max_chars, 520) if prose and group[0].metadata["pdf_layout"] != "single_column" else max_chars
-        effective_overlap = min(overlap, cap // 4) if prose else 0 if table else overlap
-        for start, end in _split_text(
-            text, cap, effective_overlap, sentence_boundaries=prose, table_rows=table,
-        ):
-            if text[start:end].strip():
-                path = tuple(section) + ((article,) if article else ())
+        path = tuple(label for _, label in headings) + ((article,) if article else ())
+        packed: list[ParsedBlock] = []
+        size = 0
+
+        def emit() -> None:
+            if packed and any(atom.text.strip() for atom in packed):
                 chunks.append(_make_chunk(
-                    group, len(chunks), start, end, path, str(unit), title, pdf_layout=pdf_layout,
+                    packed, len(chunks), 0, size, path, str(unit_id),
+                    pdf_layout=pdf_layout,
                 ))
-        group = []
+            packed.clear()
+
+        for element in unit:
+            for atom in _unit_atoms(element, max_chars, overlap):
+                gap = len(_separator(packed[-1], atom)) if packed else 0
+                if packed and size + gap + len(atom.text) > max_chars:
+                    emit()
+                    size = gap = 0
+                packed.append(atom)
+                size += gap + len(atom.text)
+        emit()
+        unit.clear()
+        unit_id += 1
 
     for element in elements:
         if element.kind in {"header", "footer"}:
-            omitted_running_matter = True
+            omitted = True
+            continue
+        if element.kind in PDF_INDEPENDENT:
+            flush()
+            if element.text.strip():
+                unit.append(_table_context(element, headers))
+                flush()
             continue
         if not element.text.strip():
-            if pdf_layout and element.kind in PDF_INDEPENDENT:
-                flush()
-                unit += 1
-                previous_pdf = None
             continue
-        if element.kind == "table_row" and element.table_id:
-            cells = re.sub(r"^表格\d+ 第\d+行：", "", element.text).split(
-                "\t" if "\t" in element.text else "｜"
-            )
-            row = element.metadata.get("row", element.locator.row_start)
-            if (
-                row == 1
-                and len(cells) > 1
-                and all(
-                    cell.strip() and not re.fullmatch(r"[\d.,%￥$+-]+", cell.strip())
-                    for cell in cells
-                )
-            ):
-                table_headers[element.table_id] = (element.text, element.locator.to_dict())
-                element = replace(element, metadata={**element.metadata, "is_header": True})
-            if element.table_id in table_headers:
-                header, source = table_headers[element.table_id]
-                element = replace(
-                    element,
-                    warnings=tuple(sorted({*element.warnings, "table_header_candidate"})),
-                    metadata={
-                        **element.metadata,
-                        "table_header": header,
-                        "context_sources": [source],
-                    },
-                )
-        if element.kind == "heading":
+        if element.kind in {"heading", "article"}:
             flush()
-            unit += 1
-            article = ""
-            level = max(1, element.heading_level or 1)
-            section = section[: level - 1] + [element.text.strip()]
-        elif element.kind == "article":
-            flush()
-            unit += 1
-            match = _ARTICLE.match(element.text.strip())
-            article = match[0] if match else ""
-        if pdf_layout:
-            continuation = previous_pdf is not None and pdf_continuation(
-                previous_pdf, element, bool(section or article)
-            )
-            if previous_pdf is not None and not continuation and (
-                previous_pdf.locator.page != element.locator.page
-                or previous_pdf.metadata["pdf_band"] != element.metadata["pdf_band"]
-                or previous_pdf.metadata["pdf_column"] != element.metadata["pdf_column"]
-            ):
+            first_line = element.text.strip().splitlines()[0]
+            marker = _HEADING.match(first_line)
+            label = (marker[2] if marker else first_line).strip("*_` ")
+            if element.kind == "heading":
+                level = element.heading_level or 1
+                while headings and headings[-1][0] >= level:
+                    headings.pop()
+                headings.append((level, label))
+                article = ""
+            else:
+                match = _ARTICLE.match(label)
+                article = match[0] if match else ""
+        if unit:
+            previous = unit[-1]
+            if not _unit_connection(previous, element, in_section=bool(headings or article), pdf_layout=pdf_layout):
                 flush()
-                unit += 1
-            if group:
-                previous = group[-1]
-                size = sum(len(block.text) + 1 for block in group) + len(element.text)
-                cap = max_chars if all(
-                    item.metadata["pdf_layout"] == "single_column" for item in (group[0], element)
-                ) else min(max_chars, 520)
-                if not continuation or size > cap:
-                    flush()
-                elif previous.locator.page != element.locator.page:
-                    element = replace(element, warnings=tuple(sorted({
-                        *element.warnings, "cross_page_continuation_candidate",
-                    })))
-                elif previous.metadata["pdf_column"] != element.metadata["pdf_column"]:
-                    element = replace(element, warnings=tuple(sorted({
-                        *element.warnings, "cross_column_continuation_candidate",
-                    })))
-            group.append(element)
-            if element.kind != "text":
-                flush()
-                unit += 1
-            previous_pdf = element
-            continue
-        if group:
-            size = sum(len(block.text) + 1 for block in group) + len(element.text)
-            cross_page_unknown = group[-1].locator.page != element.locator.page and not (
-                section or article
-            )
-            compatible = _compatible(group[-1], element)
-            if not compatible or size > max_chars or cross_page_unknown:
-                previous = group[-1]
-                flush()
-                if (
-                    cross_page_unknown
-                    or previous.kind in {"table", "table_row"}
-                    or previous.locator.type != element.locator.type
-                ):
-                    unit += 1
-            elif group[-1].locator.page != element.locator.page:
-                element = replace(
-                    element,
-                    warnings=tuple(
-                        sorted({*element.warnings, "cross_page_continuation_candidate"})
-                    ),
-                )
-        group.append(element)
-        if element.kind in {"table", "table_row", "figure", "caption", "footnote"}:
-            flush()
+            elif previous.locator.page != element.locator.page:
+                element = replace(element, warnings=(*element.warnings, "cross_page_continuation_candidate"))
+            elif pdf_layout and previous.metadata["pdf_column"] != element.metadata["pdf_column"]:
+                element = replace(element, warnings=(*element.warnings, "cross_column_continuation_candidate"))
+        unit.append(element)
     flush()
-    if omitted_running_matter:
-        chunks = [
-            replace(piece, warnings=tuple(sorted({*piece.warnings, "running_matter_omitted"})))
-            for piece in chunks
-        ]
+    if omitted:
+        chunks = [replace(part, warnings=tuple(sorted({*part.warnings, "running_matter_omitted"}))) for part in chunks]
     return chunks

@@ -7,6 +7,7 @@ import uuid
 from sqlalchemy import func, select, text
 from sqlalchemy.orm import Session
 
+from knowledge.domain.chunking import upgrade_chunk_config
 from knowledge.domain.entities import BuildState, JobState, Lifecycle
 from knowledge.domain.errors import ModelUnavailable, StaleJob
 from knowledge.repositories.tables import Chunk, Document, DocumentVersion, IndexBuild, Job
@@ -104,15 +105,15 @@ def publish(
     session.flush()
 
 
-def retry_build(session: Session, document: Document, job: Job) -> bool:
-    old = session.get(IndexBuild, job.build_id)
-    if old is None or old.state not in (BuildState.QUEUED, BuildState.RUNNING):
-        return False
-    old.state = BuildState.FAILED
+def replace_pending_build(
+    session: Session, document: Document, job: Job, old: IndexBuild,
+    *, chunk_config: dict, old_state: BuildState,
+) -> IndexBuild:
+    old.state = old_state
     build = IndexBuild(
         version_id=old.version_id,
         state=BuildState.QUEUED,
-        chunk_config=dict(old.chunk_config),
+        chunk_config=chunk_config,
         embedding_model=old.embedding_model,
         embedding_dim=old.embedding_dim,
         warnings=[],
@@ -121,6 +122,20 @@ def retry_build(session: Session, document: Document, job: Job) -> bool:
     session.flush()
     document.pending_build_id = build.id
     job.build_id = build.id
+    return build
+
+
+def retry_build(session: Session, document: Document, job: Job) -> bool:
+    old = session.get(IndexBuild, job.build_id)
+    if old is None or old.state not in (BuildState.QUEUED, BuildState.RUNNING):
+        return False
+    version = session.get(DocumentVersion, old.version_id)
+    if version is None or version.document_id != document.id:
+        return False
+    replace_pending_build(
+        session, document, job, old,
+        chunk_config=upgrade_chunk_config(old.chunk_config, version.media_type), old_state=BuildState.FAILED,
+    )
     return True
 
 

@@ -12,6 +12,7 @@ from sqlalchemy.orm import Session
 from knowledge.adapters.preview import docx_preview, sheet_preview, to_png
 from knowledge.adapters.storage import new_object_key
 from knowledge.config import Settings
+from knowledge.domain.chunking import EVIDENCE_UNIT_STRATEGY, upgrade_chunk_config
 from knowledge.domain.entities import Actor, BuildState, JobKind, Lifecycle, ParserProfile
 from knowledge.domain.errors import (
     FileTooLarge,
@@ -27,7 +28,7 @@ from knowledge.repositories import documents as doc_repo
 from knowledge.repositories import jobs as job_repo
 from knowledge.repositories import knowledge_bases as kb_repo
 from knowledge.repositories import reindex as reindex_repo
-from knowledge.repositories.tables import Document, IndexBuild
+from knowledge.repositories.tables import Document, DocumentVersion, IndexBuild
 
 
 @dataclass(frozen=True)
@@ -62,7 +63,7 @@ def reindex(
 ) -> ReindexResult:
     """同模型重建最新上传版本；短事务内授权、比较代次并创建固定目标任务。"""
     document = reindex_repo.lock_document(session, actor, document_id)
-    reindex_repo.get_version(session, actor, document_id, version_id)
+    version = reindex_repo.get_version(session, actor, document_id, version_id)
     if (
         document.generation != expected_generation
         or reindex_repo.latest_version_id(session, actor, document_id) != version_id
@@ -70,7 +71,34 @@ def reindex(
     ):
         raise VersionConflict("文档或处理状态已变化，请刷新后查询任务")
     source = reindex_repo.original_build(session, actor, version_id)
-    if source is None or (source.embedding_model, source.embedding_dim) != (
+    return _enqueue_reindex(session, actor, settings, document_id, version, source, embedder_model, embedder_dim)
+
+
+def rechunk_existing(
+    session: Session, actor: Actor, settings: Settings, *, document_id: uuid.UUID,
+    embedder_model: str, embedder_dim: int, include_current: bool = False,
+) -> ReindexResult | None:
+    """维护入口优先重切当前发布，不把更新失败的版本意外发布。"""
+    document = reindex_repo.lock_document(session, actor, document_id)
+    if reindex_repo.has_open_job(session, actor, document_id):
+        raise VersionConflict("文档有未完成的任务")
+    source = session.get(IndexBuild, document.active_build_id) if document.active_build_id else None
+    if source and not include_current and source.chunk_config.get("strategy") == EVIDENCE_UNIT_STRATEGY:
+        return None
+    version_id = document.current_version_id or reindex_repo.latest_version_id(session, actor, document_id)
+    if version_id is None:
+        raise NotFound("文档版本不存在")
+    version = reindex_repo.get_version(session, actor, document_id, version_id)
+    if source is None:
+        source = reindex_repo.original_build(session, actor, version_id)
+    return _enqueue_reindex(session, actor, settings, document_id, version, source, embedder_model, embedder_dim)
+
+
+def _enqueue_reindex(
+    session: Session, actor: Actor, settings: Settings, document_id: uuid.UUID,
+    version: DocumentVersion, source: IndexBuild | None, embedder_model: str, embedder_dim: int,
+) -> ReindexResult:
+    if source is None or source.version_id != version.id or (source.embedding_model, source.embedding_dim) != (
         embedder_model,
         embedder_dim,
     ):
@@ -81,8 +109,9 @@ def reindex(
         document_id,
         source,
         settings.max_attempts,
+        upgrade_chunk_config(source.chunk_config, version.media_type),
     )
-    result = ReindexResult(document_id, version_id, build.id, job.id, generation)
+    result = ReindexResult(document_id, version.id, build.id, job.id, generation)
     session.commit()
     return result
 
@@ -94,14 +123,12 @@ def _new_build(
     embedder_model: str,
     embedder_dim: int,
     parser_profile: str,
-    media_type: str,
 ) -> IndexBuild:
     build = IndexBuild(
         version_id=version_id,
         state=BuildState.QUEUED,
         chunk_config={
-            "strategy": (settings.pdf_chunk_strategy or settings.chunk_strategy)
-            if media_type == "application/pdf" else settings.chunk_strategy,
+            "strategy": EVIDENCE_UNIT_STRATEGY,
             "max_chars": settings.chunk_max_chars,
             "overlap_chars": settings.chunk_overlap_chars,
             "parser_profile": parser_profile,
@@ -116,7 +143,8 @@ def _new_build(
 
 
 def _validate(data: bytes, settings: Settings, registry, filename: str, profile: str | None = None):
-    from knowledge.adapters.parser import detect_media_type
+    from knowledge.adapters.mineru import PROFILE
+    from knowledge.adapters.parser import DOC, detect_media_type
 
     if len(data) == 0:
         raise UnsupportedFormat("文件为空")
@@ -124,11 +152,8 @@ def _validate(data: bytes, settings: Settings, registry, filename: str, profile:
         raise FileTooLarge("文件超过大小上限")
 
     media_type = detect_media_type(data, filename)
-    selected = profile or (
-        settings.pdf_parser_profile
-        if media_type == "application/pdf"
-        else settings.document_parser_profile
-    )
+    defaults = {"application/pdf": settings.pdf_parser_profile, DOC: PROFILE}
+    selected = profile or defaults.get(media_type, settings.document_parser_profile)
     if selected not in get_args(ParserProfile):
         raise ValidationFailed("未知解析方案")
     registry.for_file(media_type, filename, profile=selected)
@@ -193,7 +218,7 @@ def upload(
         media_type=media_type,
         byte_size=len(data),
     )
-    build = _new_build(session, version.id, settings, embedder_model, embedder_dim, selected, media_type)
+    build = _new_build(session, version.id, settings, embedder_model, embedder_dim, selected)
     job = job_repo.create(
         session,
         JobKind.INGEST,
@@ -262,7 +287,7 @@ def add_version(
         media_type=media_type,
         byte_size=len(data),
     )
-    build = _new_build(session, version.id, settings, embedder_model, embedder_dim, selected, media_type)
+    build = _new_build(session, version.id, settings, embedder_model, embedder_dim, selected)
     job = job_repo.create(
         session,
         JobKind.INGEST,

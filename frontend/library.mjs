@@ -6,8 +6,8 @@ import {
 import { jobLabel, reindexTarget, PARSER_OPTIONS, uploadForm, parserLabel } from './core.mjs';
 import { renderSearch } from './search.mjs';
 
-const ACCEPT = '.txt,.md,.csv,.pdf,.docx,.xlsx,.pptx,.png,.jpg,.jpeg,.tif,.tiff';
-const PATTERN = /\.(txt|md|csv|pdf|docx|xlsx|pptx|png|jpe?g|tiff?)$/i;
+const ACCEPT = '.txt,.md,.csv,.pdf,.doc,.docx,.xlsx,.pptx,.png,.jpg,.jpeg,.tif,.tiff';
+const PATTERN = /\.(txt|md|csv|pdf|docx?|xlsx|pptx|png|jpe?g|tiff?)$/i;
 const MAX_BYTES = 50 * 1024 * 1024;
 
 /* ---------------------------------------------------------------- 列表页 */
@@ -224,7 +224,7 @@ function uploadZone(app, kb) {
   const mark = el('span', 'upload-mark');
   mark.append(icon('upload'));
   const text = el('div');
-  text.append(el('strong', '', '添加知识资料'), el('p', '', 'PDF 默认使用 MinerU；也可选择基础解析。图片需 MinerU 服务，纯文本直接读取。单文件不超过 50 MB；上传新版本使用当前选择，重建保留原方案。'));
+  text.append(el('strong', '', '添加知识资料'), el('p', '', 'DOC 默认使用 MinerU。DOCX 内图片和单独的图片需使用 MinerU 才能识别文字。单文件不超过 50 MB；上传新版本使用当前选择，重建保留原方案。'));
   copy.append(mark, text);
 
   const input = el('input');
@@ -420,7 +420,7 @@ function actionBar(app, doc) {
   const rebuild = el('button', 'link-btn', '重建');
   rebuild.type = 'button';
   rebuild.disabled = !target || ['running', 'queued'].includes(doc.job?.state);
-  rebuild.title = target ? '按原模型与分段配置创建新构建' : '缺少失败版本的上传回执，不能把旧发布版本当作恢复目标';
+  rebuild.title = target ? '沿用原向量模型，使用现行分块策略创建新构建' : '缺少失败版本的上传回执，不能把旧发布版本当作恢复目标';
   rebuild.addEventListener('click', async () => {
     rebuild.disabled = true;
     try {

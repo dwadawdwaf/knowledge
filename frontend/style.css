@@ -1814,6 +1814,9 @@ html[data-theme="dark"] .modal-mark { color: #06202a; }
   transition: background-color 0.14s ease;
 }
 .chunk-seg:hover { background: var(--accent); }
+.chunk-seg-composite, .chunk-seg-composite:hover { background: transparent; border: 0; }
+.chunk-seg-range { position: absolute; inset-block: 0; border-radius: 2px; background: var(--accent-line); }
+.chunk-seg-composite:hover .chunk-seg-range { background: var(--accent); }
 
 .chunk-list-box { display: flex; flex-direction: column; gap: 8px; }
 .chunk-list-box h4 { margin-bottom: 2px; }

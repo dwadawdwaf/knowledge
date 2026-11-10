@@ -11,7 +11,6 @@ from statistics import median
 
 from knowledge.domain.entities import ParsedBlock
 
-PDF_LAYOUT_STRATEGY = "pdf-layout-v1"
 PDF_INDEPENDENT = frozenset(
     {"table", "table_row", "figure", "caption", "footnote", "equation", "code", "aside"}
 )

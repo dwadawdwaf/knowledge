@@ -18,6 +18,7 @@ TEXT_PLAIN = "text/plain"
 TEXT_MARKDOWN = "text/markdown"
 TEXT_CSV = "text/csv"
 APPLICATION_PDF = "application/pdf"
+DOC = "application/msword"
 DOCX = "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
 XLSX = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
 PPTX = "application/vnd.openxmlformats-officedocument.presentationml.presentation"
@@ -56,6 +57,13 @@ def detect_media_type(data: bytes, filename: str) -> str:
         return "image/jpeg"
     if data.startswith((b"II*\x00", b"MM\x00*")):
         return "image/tiff"
+    if filename.lower().endswith(".doc") and data.startswith(b"\xd0\xcf\x11\xe0\xa1\xb1\x1a\xe1"):
+        # 复合文件头至少还有一个扇区；具体 WordDocument 流交给 MinerU 检验。
+        header = data[26:32]
+        if (header == b"\x03\x00\xfe\xff\x09\x00" and len(data) >= 1024) or (
+            header == b"\x04\x00\xfe\xff\x0c\x00" and len(data) >= 8192
+        ):
+            return DOC
     if data.startswith(b"PK\x03\x04"):
         # 两者都是 zip 容器，只能靠扩展名区分；认不出就交给白名单兜底拒绝。
         lowered = filename.lower()
@@ -186,6 +194,7 @@ class DocxParser:
                 or sum(entry.file_size for entry in entries) > self.max_uncompressed_bytes
             ):
                 raise ParseFailed("DOCX 解压资源超限")
+            has_images = any(entry.filename.startswith("word/media/") and not entry.is_dir() for entry in entries)
         document = docx.Document(io.BytesIO(data))
         order = {element._element: index for index, element in enumerate(document.iter_inner_content())}
         blocks: list[ParsedBlock] = []
@@ -232,6 +241,8 @@ class DocxParser:
                         ),
                     )
                 )
+        if has_images and blocks:
+            blocks[0] = replace(blocks[0], warnings=("docx_images_require_mineru",))
         return blocks
 
 

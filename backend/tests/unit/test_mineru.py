@@ -10,9 +10,15 @@ from unittest.mock import patch
 import pytest
 
 from knowledge.adapters.mineru import PROFILE, MinerUParser, normalize_archive
-from knowledge.adapters.parser import DirectTextParser, build_parser_registry
+from knowledge.adapters.parser import (
+    DOC,
+    DOCX,
+    DirectTextParser,
+    build_parser_registry,
+    detect_media_type,
+)
 from knowledge.config import Settings
-from knowledge.domain.errors import ParseFailed
+from knowledge.domain.errors import ParseFailed, UnsupportedFormat
 
 
 def test_missing_service_is_not_reported_as_document_damage():
@@ -24,7 +30,7 @@ def test_missing_service_is_not_reported_as_document_damage():
     assert "SECRET" not in str(error.value) and "private" not in str(error.value)
 
 
-def archive(*, mutate=None, duplicate=False, middle=None):
+def archive(*, mutate=None, duplicate=False, middle=None, assets=()):
     content = {
         "metadata": {"producer": {"name": "mineru", "version": "4.1.0"}},
         "is_full_document": True,
@@ -47,6 +53,8 @@ def archive(*, mutate=None, duplicate=False, middle=None):
             target.writestr("middle_json.json", json.dumps(middle))
         if duplicate:
             target.writestr("structured_content.json", "{}")
+        for name, payload in assets:
+            target.writestr(name, payload)
         target.writestr("../../must-not-be-written.txt", "not extracted")
     return stream.getvalue()
 
@@ -233,6 +241,7 @@ def test_all_native_document_routes_are_explicit():
         "application/pdf",
         "image/png",
         "text/csv",
+        DOC,
         "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
         "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
         "application/vnd.openxmlformats-officedocument.presentationml.presentation",
@@ -243,4 +252,58 @@ def test_all_native_document_routes_are_explicit():
     assert (
         "parser_direct_text"
         in DirectTextParser().parse(b"synthetic", "text/plain", "a.txt")[0].warnings
+    )
+
+
+def test_legacy_word_requires_ole_signature_and_mineru():
+    signature = b"\xd0\xcf\x11\xe0\xa1\xb1\x1a\xe1"
+    header = signature + bytes(18) + b"\x03\x00\xfe\xff\x09\x00"
+    assert detect_media_type(header.ljust(1024, b"\x00"), "word.DOC") == DOC
+    assert detect_media_type(header, "word.doc") != DOC
+    assert detect_media_type(b"not-ole", "word.doc") != DOC
+    with pytest.raises(UnsupportedFormat):
+        build_parser_registry(Settings()).for_file(DOC, "word.doc", profile="legacy-v1")
+
+
+@pytest.mark.parametrize("media", [DOC, DOCX])
+def test_word_image_only_is_searchable_text_with_word_locator(media):
+    payload = b"\x89PNG\r\n\x1a\nsynthetic"
+    image = {"type": "image", "image_source": "images/page_0_image_1.png", "content": ""}
+    word_result = archive(
+        mutate=lambda p: p["pages"][0].update(blocks=[image]),
+        assets=[(image["image_source"], payload)],
+    )
+    with patch("knowledge.adapters.mineru._open", side_effect=[
+        io.BytesIO(word_result), io.BytesIO(archive()),
+    ]) as opened:
+        result = MinerUParser(Settings()).parse(b"fixture", media, "private.docx")
+    assert result[0].text == "合成设备保修18个月"
+    assert result[0].locator.type == ("doc" if media == DOC else "docx")
+    assert result[0].locator.page is None and result[0].locator.precision == "block"
+    assert "word_image_ocr_requires_review" in result[0].warnings
+    body = opened.call_args_list[1].args[0].data
+    assert b'name="ocr_mode"\r\n\r\nocr' in body and payload in body
+    assert b"private.docx" not in body
+
+
+def test_word_images_in_tables_are_local_bounded_and_empty_ocr_is_warned():
+    png = b"\x89PNG\r\n\x1a\nsynthetic"
+    table = {"type": "table", "content": (
+        '<table><tr><td>甲<img src="images/safe.png"><img src="https://untrusted/remote.png">'
+        '<img src="images/large.png"></td></tr></table>'
+    )}
+    word_result = archive(mutate=lambda p: p["pages"][0].update(blocks=[table]), assets=[
+        ("images/safe.png", png), ("images/large.png", png * 2),
+    ])
+    with (
+        patch("knowledge.adapters.mineru._open", side_effect=[
+            io.BytesIO(word_result), io.BytesIO(archive(mutate=lambda p: p["pages"][0].update(blocks=[]))),
+        ]) as opened,
+        patch("knowledge.adapters.mineru._MAX_OFFICE_IMAGES", 1),
+    ):
+        result = MinerUParser(Settings()).parse(b"fixture", DOCX, "fixture.docx")
+    assert opened.call_count == 2
+    assert result[0].text == "甲"
+    assert {"word_image_ocr_asset_unavailable", "word_image_ocr_budget_exceeded", "word_image_ocr_no_text"} <= set(
+        result[0].warnings
     )

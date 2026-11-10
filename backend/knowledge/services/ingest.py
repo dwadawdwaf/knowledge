@@ -11,10 +11,9 @@ import uuid
 from sqlalchemy.orm import Session
 
 from knowledge.config import Settings
-from knowledge.domain.chunking import chunk_blocks
+from knowledge.domain.chunking import chunk_blocks, upgrade_chunk_config
 from knowledge.domain.entities import BuildState, JobState
 from knowledge.domain.errors import DomainError, ModelUnavailable, ParseFailed, StaleJob
-from knowledge.domain.pdf_layout import PDF_LAYOUT_STRATEGY
 from knowledge.domain.ports import Embedder, ObjectStorage
 from knowledge.logging import get_logger
 from knowledge.repositories import builds as build_repo
@@ -42,7 +41,7 @@ def run(
     embedder: Embedder,
 ) -> None:
     try:
-        document, _job, build, version = build_repo.lock_execution(session, job_id, lease_token)
+        document, job, build, version = build_repo.lock_execution(session, job_id, lease_token)
     except StaleJob:
         session.rollback()
         job_repo.finish(session, job_id, lease_token, JobState.CANCELLED, "cancelled")
@@ -51,11 +50,14 @@ def run(
         raise StaleJob("任务目标不匹配")
     if build.embedding_model != embedder.model or build.embedding_dim != embedder.dimension:
         raise ModelUnavailable("构建向量配置已变化，请按原配置处理或重建")
+    chunk_config = upgrade_chunk_config(build.chunk_config, version.media_type)
+    if chunk_config != build.chunk_config:
+        build = build_repo.replace_pending_build(
+            session, document, job, build, chunk_config=chunk_config, old_state=BuildState.CANCELLED,
+        )
     generation = document.generation
     build_id, version_id, title = build.id, version.id, document.title
     object_key, media_type = version.object_key, version.media_type
-    chunk_config = dict(build.chunk_config)
-    strategy = chunk_config.get("strategy", "legacy-v1")
     build.state = BuildState.RUNNING
     session.commit()
 
@@ -91,19 +93,14 @@ def run(
     except Exception as exc:  # 解析器内部异常统一归为失败
         raise ParseFailed(f"解析失败：{type(exc).__name__}") from exc
 
-    if not blocks or (
-        strategy != PDF_LAYOUT_STRATEGY and not any(block.text.strip() for block in blocks)
-    ):
+    if not blocks:
         raise EmptyContent("未提取到正文")
 
     # 2) 分段
     if not job_repo.set_stage(session, job_id, lease_token, "chunking"):
         raise DomainError("租约已失效")
     _enter_stage("chunking")
-    pieces = chunk_blocks(
-        blocks, chunk_config["max_chars"], chunk_config["overlap_chars"],
-        strategy=strategy, title=title,
-    )
+    pieces = chunk_blocks(blocks, chunk_config["max_chars"], chunk_config["overlap_chars"])
     if not pieces:
         raise EmptyContent("分段结果为空")
 
@@ -122,7 +119,10 @@ def run(
     _, _, locked_build, _ = build_repo.lock_execution(session, job_id, lease_token)
     if locked_build.id != build_id:
         raise StaleJob("任务构建已变化")
-    locked_build.warnings = sorted({warning for piece in pieces for warning in piece.warnings})
+    warnings = {warning for piece in pieces for warning in piece.warnings}
+    if chunk_config.get("parser_profile_migrated"):
+        warnings.add("historical_text_parser_replaced")
+    locked_build.warnings = sorted(warnings)
     build_repo.guard_vector_index(session, job_id, lease_token)
     chunk_repo.insert_many(
         session,

@@ -9,8 +9,18 @@ import re
 from dataclasses import dataclass, field
 from typing import Any
 
-from knowledge.domain.entities import Locator, ParsedBlock
-from knowledge.domain.pdf_layout import PDF_LAYOUT_STRATEGY
+from knowledge.domain.entities import ParsedBlock
+
+EVIDENCE_UNIT_STRATEGY = "evidence-unit-v1"
+
+
+def upgrade_chunk_config(source: dict, media_type: str) -> dict:
+    """新构建统一使用现行策略；不改历史配置及原有长度预算。"""
+    config = {**source, "strategy": EVIDENCE_UNIT_STRATEGY}
+    profile = config.get("parser_profile", "legacy-v1")
+    if media_type in {"text/plain", "text/markdown"} and isinstance(profile, str) and profile.startswith("deepdoc-"):
+        config.update(parser_profile="legacy-v1", parser_profile_migrated=True)
+    return config
 
 
 @dataclass(frozen=True)
@@ -61,52 +71,9 @@ def chunk_blocks(
     blocks: list[ParsedBlock],
     max_chars: int = 800,
     overlap: int = 100,
-    *,
-    strategy: str = "legacy-v1",
-    title: str = "",
 ) -> list[TextChunk]:
     if max_chars < 16 or overlap < 0 or overlap >= max_chars:
         raise ValueError("分块长度须至少16字符，重叠须非负且小于分块长度")
-    if strategy in {"structure-v2", PDF_LAYOUT_STRATEGY}:
-        from knowledge.domain.structure import chunk_structured
+    from knowledge.domain.structure import chunk_evidence_units
 
-        return chunk_structured(blocks, max_chars, overlap, title, pdf_layout=strategy == PDF_LAYOUT_STRATEGY)
-    if strategy != "legacy-v1":
-        raise ValueError("未知分块策略")
-    chunks: list[TextChunk] = []
-    ordinal = 0
-
-    for block in blocks:
-        text = block.text
-        if not text.strip():
-            continue
-
-        for start, end in _split_text(text, max_chars, overlap):
-            piece = text[start:end]
-            if not piece.strip():
-                continue
-            base = block.locator
-            locator = Locator(
-                type=base.type,
-                char_start=base.char_start + start,
-                char_end=base.char_start + end,
-                precision=base.precision,
-                page=base.page,
-                block=base.block,
-                paragraph=base.paragraph,
-                sheet=base.sheet,
-                row_start=base.row_start,
-                row_end=base.row_end,
-                positions=base.positions,
-            )
-            chunks.append(
-                TextChunk(
-                    ordinal=ordinal,
-                    text=piece,
-                    locator=locator.to_dict(),
-                    warnings=block.warnings,
-                )
-            )
-            ordinal += 1
-
-    return chunks
+    return chunk_evidence_units(blocks, max_chars, overlap)

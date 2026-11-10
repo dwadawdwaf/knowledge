@@ -63,7 +63,7 @@ def test_real_environment_preserves_parser_output_budget():
 
 def test_real_environment_preserves_optimization_configuration():
     changes = {
-        "chunk_strategy": "structure-v2", "chunk_max_chars": 700, "chunk_overlap_chars": 80,
+        "chunk_max_chars": 700, "chunk_overlap_chars": 80,
         "retrieval_profile": "optimized-v2", "keyword_weight": 0.25, "keyword_local_floor": 0.35,
         "evidence_coverage": True, "structured_context": True,
         "semantic_weight": 1.0, "query_variants_max": 2, "recall_limit": 70, "rrf_k": 60,
@@ -74,6 +74,7 @@ def test_real_environment_preserves_optimization_configuration():
     env = real_model_environment(configured_settings().model_copy(update=changes))
     for name, value in changes.items():
         assert env["KS_" + name.upper()] == str(value)
+    assert not {"KS_CHUNK_STRATEGY", "KS_PDF_CHUNK_STRATEGY"} & env.keys()
     assert not {"KS_DATABASE_URL", "KS_STORAGE_ROOT", "KS_TOKEN_SECRET"} & env.keys()
 
 

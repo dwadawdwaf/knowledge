@@ -7,7 +7,7 @@
 
 主系统内的个人知识服务：建库、文档上传、异步处理、混合检索、证据问答、引用、版本更新/重建/删除。
 工作台同源托管在/workbench/，提供文件、知识库、检索、问答与原件/提取正文浏览；不做Office保真编辑。
-支持TXT/MD/CSV、文本PDF、DOCX、XLSX、PPTX；扫描件与图片须选MinerU。
+支持TXT/MD/CSV、PDF、DOC/DOCX、XLSX、PPTX；DOC、扫描件与图片OCR须使用MinerU。
 不做账号体系、共享授权、网页连接器、通用Agent平台、复杂表格自动理解或token流式输出。
 
 ## 2. 技术选型
@@ -26,16 +26,17 @@
 ### 显式可选解析器（本次增量）
 
 上传及新版本multipart新增可选parser_profile：legacy-v1、mineru-api4.1-v1；
-省略时按检测出的实际类型选择服务默认：PDF使用MinerU（KS_PDF_PARSER_PROFILE），其他格式使用KS_DOCUMENT_PARSER_PROFILE。
-显式parser_profile优先；所有已支持文档均可选择两种方案；
+省略时按检测类型选默认：PDF使用KS_PDF_PARSER_PROFILE，旧版DOC只支持MinerU，其余格式使用KS_DOCUMENT_PARSER_PROFILE。
+显式parser_profile优先，不支持该格式的方案明确拒绝；DOC要求`.doc`扩展名及基本OLE容器头校验，文件内容由MinerU校验。
 基础解析本来不具备图片OCR，选用时仍明确报不支持，不伪造正文。TXT/MD在两种方案中均直接读取文本并明确标记，不声称经过OCR。
 MinerU接本机4.1 file-parse API，除TXT/MD外均提交原件，固定tier=basic、ocr_mode=auto、page_range=all，
 从默认ZIP内structured_content.json读取全量结果，不安装其SDK/模型到主环境，不使用云端。
 只允许回环origin，无代理/重定向，生成无业务文件名的上传名；不跟随响应中的URL，202仅按本次request_id构造本机轮询/下载路径，限制总等待/响应/解压预算。
-schema/页码/完整性校验失败报PARSE_FAILED，缺少精确几何或Office物理页码时降级block/page并告警；外部HTML仅转纯文本，不执行或抓取图片。
+schema/页码/完整性校验失败报PARSE_FAILED，缺少精确几何或Office物理页码时降级block/page并告警；外部HTML仅转纯文本，不执行或抓取外链。
+DOC/DOCX保留原生正文；引用到同一结果ZIP中`images/`的PNG/JPEG/TIFF素材再提交同一个本机MinerU接口（`ocr_mode=ocr`）。原件与外链不为OCR另行读取；不解压到磁盘。原件与图片请求共享总等待预算，单文档最多读取32次素材，累计素材解压字节受KS_MINERU_OUTPUT_BYTES限制。仅把识别出的文本作为独立块，标记`word_image_ocr_requires_review`，不冒充原生文字或物理页码。缺失、跳过或无识别文字记录warnings；服务故障不以部分正文冒充成功。DOCX基础解析发现内嵌素材但仅提取正文时标记`docx_images_require_mineru`。
 MinerU输出正文中的NUL等长替换为U+FFFD，块及build标记mineru_nul_replaced；原件不改，块内码点偏移不缩短。
 此为数据库文本兼容修复，不自动重建历史内容；恢复失败文档仍经显式重建创建新build。
-参数随新build冻结，重试/普通重建保留，不改数据库或旧文档；同字节去重回原回执，并返回已有build的parser_profile，界面提示选择未生效，不借重传换策略。
+解析参数随新build冻结，重试/普通重建保留；曾用已移除DeepDoc的TXT/MD重切时改为基础直读文本并在新构建告警，其他历史格式不静默改解析器。同字节去重回原回执，并返回已有build的parser_profile，界面提示选择未生效，不借重传换策略。
 界面上传及新版本明确选择；默认与两端配置需一致，高级服务故障不回退基础解析。
 文档详情的parser_profile优先显示已发布方案，尚未首次发布时显示待构建方案，避免失败文件隐藏原选择。
 解析失败仍使用PARSE_FAILED；服务未启动、令牌缺失/不匹配、版本不匹配仅返回固定白名单操作提示，不透传上游异常。
@@ -100,19 +101,16 @@ query最多2000码点；knowledge_base_ids必填1–20个；top_k默认5、最�
 RRF只是排名分，不能替代相关性阈值。哈希向量阈值不能直接用于真实模型。
 向量配置不兼容报MODEL_UNAVAILABLE，不冒充no_evidence；显式keyword仍可独立使用。
 
-### 6.1.2 可选结构分块与检索优化
+### 6.1.2 可选检索优化
 
-通用服务的默认配置为legacy-v1分块与baseline-v1检索。新策略分别由KS_CHUNK_STRATEGY=structure-v2及
-KS_RETRIEVAL_PROFILE=optimized-v2启用，真实效果验收前不全局替换默认。新策略作为可选能力合入，不沿用旧效果基线。
+默认检索为baseline-v1；可由KS_RETRIEVAL_PROFILE=optimized-v2启用优化，不沿用旧效果基线。
 
-- 新build在chunk_config冻结strategy；旧build缺失该项按legacy-v1，普通重建仍复制原配置。对照使用独立库导入相同字节，不绕过同库去重。
 - ParsedBlock保留kind、heading_level、table_id及解析器确实提供的metadata；子进程序列化必须保留这些字段。
-- structure-v2按显式标题、章/条边界组织，合并同节短段，长元素按句子/段落切开；PPTX不跨幻灯片合并，表格与正文隔离。
 - 仅排除解析器显式标注的页眉/页脚并告警running_matter_omitted；不按重复短语删除正文。文本段落识别兼容LF/CRLF及空白行，原始码点偏移不归一化。
-- DOCX结构分块恢复段落/表格在原件中的顺序，legacy-v1保持原行为。CSV/XLSX按行拆分，保存跳空行前的真实行号；首行候选表头进入检索上下文并标记table_header_candidate，不声称已正确识别所有表头。
+- DOCX恢复段落/表格在原件中的顺序；PPTX不跨幻灯片合并。CSV/XLSX按行拆分，保存跳空行前的真实行号；首行候选表头进入检索上下文并标记table_header_candidate，不声称已正确识别所有表头。
 - 跨页仅在相邻页、同节和未完句等线索兼容时连接，标记cross_page_continuation_candidate；未知关系保持独立，章节/条款边界阻断关联。多栏顺序、扫描识别及跨页续表结构不足时保留解析告警，不伪造几何或续表关系。
 - 合并片段用locator.precision=composite及sources保存每段chunk_start/chunk_end与原始locator，顶层不提供虚构的连续字符偏移。单来源保留原定位并附来源映射；前端展示全部来源页。
-- chunks.structure保存strategy、kind、section_path、unit_id、table_id、is_header及context_sources，旧行迁移默认空对象。text是原文，tsv与向量输入可附文档标题、章节及候选表头；附加上下文不能充当引用原文。
+- chunks.structure保存strategy、kind、section_path、unit_id、table_id、is_header及context_sources，旧行迁移默认空对象。text是原文，tsv与向量输入可附片段缺少的最近结构标签及候选表头；附加上下文不能充当引用原文。
 - optimized-v2保留原问题，补充NFKC/空白归一化版本及有限显式并列子问句，保留否定、数值、单位和范围。编号/条号提取仅来自用户原问题；不读取历史会话、不扩大库范围、不自动调用模型改写。
 - 关键词对照使用全文/局部trigram与编号精确包含，语义仍使用原模型；各候选SQL显式排序并稳定处理并列。按配置加权RRF，扩展问题取最佳候选分数，避免按改写次数累加。
 - 局部trigram另用keyword_local_floor（候选默认0.3），全文仍用原similarity_floor；两者尺度不同，不直接共用阈值。
@@ -133,11 +131,20 @@ PostgreSQL 先查出当前有权访问的已发布构建，OpenSearch 按这些�
 
 ### 6.1.3 PDF 版面分块
 
-`KS_PDF_CHUNK_STRATEGY=pdf-layout-v1` 只覆盖 PDF 新构建的分块策略，仍在 `chunk_config.strategy` 冻结。解析器沿用上传时的选择，重试和普通重建沿用原构建策略。原件、发布事务和授权条件沿用现有规则。
+PDF 在统一分块前恢复版面。原件、发布事务和授权条件沿用现有规则。
 
 - 优先使用解析器提供的真实块框。MinerU 4.1 的正文仍从 `structured_content.json` 读取，`middle_json.json` 经协议、生产者、物理页号和页内块数量及类型顺序核对后提供归一化块框。坐标缺失、通栏块与栏内块重叠或无法可靠归类的版面保留页内解析顺序，标记 `pdf_layout_uncertain`。
 - 单栏按正文段落切分。双栏在可靠栏间距内先左后右。存在通栏摘要、图表或标题的混排页先按通栏块分区，再恢复各区的阅读顺序。跨栏、跨页仅连接与解析顺序兼容的明确续文，或位置、章节和续句线索一致的相邻正文。复合定位保留每段页码、栏位和实际可用的块框，`pdf_bbox` 是原解析块框。
-- 多栏及版面未知页的正文块上限为配置长度与 520 字符的较小值。长段优先在自然边界拆分。表格独立成块，超长时优先在原有行边界拆开。公式、图注、脚注和代码各自保留边界。OCR 正文沿用解析器输出并标记 `pdf_ocr_requires_review`，未识别出文字的视觉块只在有可用图注或版面边界时参与处理。
+- 显式中文条款在同页同版面区域内合并条号、相邻正文和连续编号分点；版面未知时只沿同页解析顺序并保留告警。下一个条号或标题断开，不为了合并分点跨栏、跨页。超出分块长度时，后续片段仍将条号加入检索文本，条号不重复写入引用原文。
+- 表格独立成块，超长时优先在原有行边界拆开。公式、图注、脚注和代码各自保留边界。OCR 正文沿用解析器输出并标记 `pdf_ocr_requires_review`，未识别出文字的视觉块只在有可用图注或版面边界时参与处理。
+
+### 6.1.4 文档单元优先分块
+
+`evidence-unit-v1` 是唯一的写入策略，冻结到所有新构建。历史构建不改写，尚未完成的旧策略任务在取得租约后替换为新构建。普通重建使用现行策略及原长度预算和向量配置；批量维护优先重建当前发布版本，未曾发布的重建最新上传版本。先按解析器的阅读顺序、标题层级和显式条款/列表组织文档单元，再在单元内按长度预算装入完整段落与列表项。
+
+- 新节、独立表格或其他独立内容是边界。PDF 沿用版面恢复；版面不明时只在同页按显式节、列表或解析器续文线索合并并保留告警，不假设跨页、跨栏关系。文档内部的表格、代码、图注等不混入正文块。
+- 短元素不切开；超长元素先按句、行等自然边界拆分，无法自然切开的超长正文才用有界字符窗口。常规片段间不复制重叠正文。
+- 同一单元拆出的块共享 `unit_id`，标题路径沿用 `section_path`；原文与来源按已有 `locator.sources` 回溯，不生成摘要或伪造原文。检索、排序、关联证据与重建接口行为不变。
 
 ### 6.2 问答
 

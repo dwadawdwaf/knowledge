@@ -20,7 +20,7 @@ def block(text: str, page: int, index: int = 0) -> ParsedBlock:
 
 def test_cross_page_continuation_keeps_every_original_span():
     blocks = [block("# 报销规则", 1), block("未经批准的", 1, 1), block("超标准费用由个人承担。", 2)]
-    pieces = chunk_blocks(blocks, strategy="structure-v2")
+    pieces = chunk_blocks(blocks)
     assert len(pieces) == 1
     piece = pieces[0]
     assert piece.locator["pages"] == [1, 2]
@@ -46,10 +46,10 @@ def test_paragraphs_recognize_line_endings_without_changing_offsets(newline):
 
 
 def test_unknown_cross_page_and_new_sections_stay_separate():
-    pieces = chunk_blocks([block("上一页未完", 1), block("下一页内容", 2)], strategy="structure-v2")
+    pieces = chunk_blocks([block("上一页未完", 1), block("下一页内容", 2)])
     assert len(pieces) == 2
     pieces = chunk_blocks(
-        [block("# 第一节\n旧内容未完", 1), block("# 第二节\n新内容。", 2)], strategy="structure-v2"
+        [block("# 第一节\n旧内容未完", 1), block("# 第二节\n新内容。", 2)]
     )
     assert len(pieces) == 2
     assert all(not ("旧内容" in p.text and "新内容" in p.text) for p in pieces)
@@ -57,22 +57,21 @@ def test_unknown_cross_page_and_new_sections_stay_separate():
 
 def test_only_explicit_running_matter_is_omitted_with_warning():
     blocks = [replace(block("文件页眉", 1), kind="header"), block("正文中的文件页眉也须保留。", 1, 1)]
-    pieces = chunk_blocks(blocks, strategy="structure-v2")
+    pieces = chunk_blocks(blocks)
     assert len(pieces) == 1 and pieces[0].text == blocks[1].text
     assert "running_matter_omitted" in pieces[0].warnings
-    assert "文件页眉" in chunk_blocks(blocks)[0].text
 
 
 def test_sparse_table_row_is_not_dropped_when_trailing_cells_are_empty():
     blocks = CsvParser().parse("设备,位置\nEQ-NX-803,\n".encode(), "text/csv", "synthetic.csv")
-    pieces = chunk_blocks(blocks, strategy="structure-v2")
+    pieces = chunk_blocks(blocks)
     row = next(piece for piece in pieces if "EQ-NX-803" in piece.text)
     assert row.locator["row_start"] == 2
 
 
 def test_long_element_slices_preserve_sources_and_article_parent():
     text = "第十二条 费用管理\n" + "超过标准须批准。" * 40
-    pieces = chunk_blocks([block(text, 1)], max_chars=90, overlap=10, strategy="structure-v2")
+    pieces = chunk_blocks([block(text, 1)], max_chars=90, overlap=10)
     assert len(pieces) > 2
     assert len({p.structure["unit_id"] for p in pieces}) == 1
     for piece in pieces:
@@ -91,7 +90,7 @@ def test_table_header_crosses_batches_but_keeps_real_row_numbers():
         "text/csv",
         "synthetic.csv",
     )
-    pieces = chunk_blocks(blocks, strategy="structure-v2")
+    pieces = chunk_blocks(blocks)
     row = next(piece for piece in pieces if "B-02" in piece.text)
     assert row.locator["row_start"] == row.locator["row_end"] == 4
     assert "位置" in row.retrieval_text
@@ -114,9 +113,7 @@ def test_docx_structure_restores_interleaved_table_order():
         "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
         "synthetic.docx",
     )
-    legacy = chunk_blocks(blocks)
-    assert "表格之后" in legacy[1].text  # 历史分块顺序不变。
-    structured = chunk_blocks(blocks, strategy="structure-v2")
+    structured = chunk_blocks(blocks)
     joined = "\n".join(piece.text for piece in structured)
     assert joined.index("表格之前") < joined.index("A-01") < joined.index("表格之后")
 

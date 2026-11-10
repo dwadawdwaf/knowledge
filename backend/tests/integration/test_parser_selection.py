@@ -26,7 +26,7 @@ from knowledge.domain.entities import Actor
 from knowledge.domain.errors import NotFound
 from knowledge.entrypoints.api import create_app
 from knowledge.repositories.tables import IndexBuild
-from knowledge.services import document, knowledge, qa
+from knowledge.services import document, knowledge, qa, retrieval
 from knowledge.worker.loop import process_next
 
 pytestmark = [
@@ -37,14 +37,14 @@ pytestmark = [
 
 @contextmanager
 def parser_server():
-    state = {"fail": False, "calls": 0, "nul": False}
+    state = {"fail": False, "calls": 0, "nul": False, "blocks": None, "word_image": False}
 
     class Handler(BaseHTTPRequestHandler):
         def log_message(self, *args):
             pass
 
         def do_POST(self):
-            self.rfile.read(int(self.headers["content-length"]))
+            body = self.rfile.read(int(self.headers["content-length"]))
             state["calls"] += 1
             self.send_response(503 if state["fail"] else 200)
             self.end_headers()
@@ -53,17 +53,25 @@ def parser_server():
             block = "合成设备保修期限为18个月。"
             if state["nul"]:
                 block += "备注甲\x00乙"
+            blocks = state["blocks"] or [{"type": "text", "content": block}]
+            image = None
+            if state["word_image"]:
+                if b'filename="input.png"' in body:
+                    blocks = [{"type": "text", "content": "图中校准编号7842"}]
+                else:
+                    image = "images/page_0_image_0.png"
+                    blocks = [{"type": "image", "content": "", "image_source": image}]
             stream = io.BytesIO()
             with zipfile.ZipFile(stream, "w") as archive:
+                if image:
+                    archive.writestr(image, b"\x89PNG\r\n\x1a\nsynthetic")
                 archive.writestr(
                     "structured_content.json",
                     json.dumps(
                         {
                             "metadata": {"producer": {"name": "mineru", "version": "4.1.0"}},
                             "is_full_document": True,
-                            "pages": [
-                                {"page_idx": 0, "blocks": [{"type": "text", "content": block}]}
-                            ],
+                            "pages": [{"page_idx": 0, "blocks": blocks}],
                         }
                     ),
                 )
@@ -306,3 +314,101 @@ def test_pdf_default_is_frozen_for_upload_and_new_version(session, actor, settin
             session.get(IndexBuild, result.build_id).chunk_config["parser_profile"]
             == "mineru-api4.1-v1"
         )
+
+
+def test_article_keyword_hit_includes_subpoints(session, actor, settings, deps):
+    lines = [
+        "第八条 样品登记", "（一）低温样品贴蓝色标签。", "（二）常温样品放入干燥柜。",
+        "（三）危险样品由管理员签收。", "（四）空容器单独登记。", "第九条 设备保养", "每月校准。",
+    ]
+    with parser_server() as (url, state):
+        state["blocks"] = [{"type": "text", "content": line} for line in lines]
+        settings = settings.model_copy(update={
+            "mineru_url": url, "retrieval_profile": "optimized-v2",
+        })
+        registry = build_parser_registry(settings)
+        deps = replace(deps, settings=settings, registry=registry)
+        kb = knowledge.create(session, actor, "合成条款")
+        uploaded = document.upload(
+            session, actor, settings, deps.storage, registry, kb_id=kb.id,
+            filename="synthetic.pdf", data=b"%PDF-synthetic-article", parser_profile="mineru-api4.1-v1",
+            embedder_model=deps.embedder.model, embedder_dim=deps.embedder.dimension,
+        )
+        assert process_next(session, deps)
+        session.expire_all()
+        hits = retrieval.search(
+            session, actor, settings, deps.embedder, query="第八条相关内容", kb_ids=[kb.id],
+            mode="keyword", top_k=1,
+        )
+        assert len(hits) == 1 and hits[0].text.splitlines() == lines[:5]
+        assert hits[0].locator["precision"] == "composite"
+        stranger = Actor(subject_id="other", tenant_id=actor.tenant_id)
+        with pytest.raises(NotFound):
+            document.chunks(session, stranger, uploaded.document_id)
+        document.delete(session, actor, uploaded.document_id, settings.max_attempts)
+        assert retrieval.search(
+            session, actor, settings, deps.embedder, query="第八条相关内容", kb_ids=[kb.id], mode="keyword",
+        ) == []
+
+
+def test_word_image_text_reaches_published_search_index(session, actor, settings, deps):
+    with parser_server() as (url, state):
+        state["word_image"] = True
+        settings = settings.model_copy(update={"mineru_url": url, "document_parser_profile": "legacy-v1"})
+        registry = build_parser_registry(settings)
+        deps = replace(deps, settings=settings, registry=registry)
+        kb = knowledge.create(session, actor, "合成 Word 图片")
+        header = b"\xd0\xcf\x11\xe0\xa1\xb1\x1a\xe1" + bytes(18) + b"\x03\x00\xfe\xff\x09\x00"
+        original = header.ljust(1024, b"\x00")
+        uploaded = document.upload(
+            session, actor, settings, deps.storage, registry, kb_id=kb.id,
+            filename="synthetic.doc", data=original,
+            embedder_model=deps.embedder.model, embedder_dim=deps.embedder.dimension,
+        )
+        assert uploaded.parser_profile == "mineru-api4.1-v1"
+        assert process_next(session, deps)
+        session.expire_all()
+        hits = retrieval.search(
+            session, actor, settings, deps.embedder, query="图中校准编号7842", kb_ids=[kb.id], mode="keyword",
+        )
+        assert state["calls"] == 2
+        assert len(hits) == 1 and hits[0].text == "图中校准编号7842"
+        assert hits[0].locator["type"] == "doc" and "page" not in hits[0].locator
+        assert "word_image_ocr_requires_review" in session.get(IndexBuild, uploaded.build_id).warnings
+        assert document.source(session, actor, uploaded.document_id, deps.storage)["data"] == original
+        document.delete(session, actor, uploaded.document_id, settings.max_attempts)
+        assert retrieval.search(
+            session, actor, settings, deps.embedder, query="图中校准编号7842", kb_ids=[kb.id], mode="keyword",
+        ) == []
+
+
+def test_new_import_uses_evidence_units_and_dedup_does_not_enqueue(session, actor, settings, deps):
+    original = b"%PDF-synthetic-workflow"
+    heading, *body = ["试验准备", "在平整台面上固定装置。", "启动前确认以下事项：", "- 打开排气阀。", "- 记录环境温度。"]
+    with parser_server() as (url, state):
+        state["blocks"] = [
+            {"type": "title", "content": heading, "level": 2},
+            *[{"type": "text", "content": line} for line in body],
+        ]
+        settings = settings.model_copy(update={"mineru_url": url})
+        registry = build_parser_registry(settings)
+        deps = replace(deps, settings=settings, registry=registry)
+
+        kb = knowledge.create(session, actor, "文档单元分块")
+
+        def upload():
+            return document.upload(
+                session, actor, settings, deps.storage, registry, kb_id=kb.id,
+                filename="synthetic.pdf", data=original, parser_profile="mineru-api4.1-v1",
+                embedder_model=deps.embedder.model, embedder_dim=deps.embedder.dimension,
+            )
+        new = upload()
+        assert process_next(session, deps)
+        session.expire_all()
+        new_items = document.chunks(session, actor, new.document_id)["items"]
+        assert [item["text"] for item in new_items] == ["\n".join([heading, *body])]
+        assert new_items[0]["locator"]["precision"] == "composite"
+        assert session.get(IndexBuild, new.build_id).chunk_config["strategy"] == "evidence-unit-v1"
+        duplicate = upload()
+        assert duplicate.deduplicated and duplicate.build_id == new.build_id
+        assert not process_next(session, deps)

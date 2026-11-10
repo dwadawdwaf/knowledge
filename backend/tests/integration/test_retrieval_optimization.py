@@ -34,7 +34,7 @@ pytestmark = [
 
 def test_real_two_page_pdf_preserves_composite_citation(session, settings, deps, actor):
     configured = settings.model_copy(
-        update={"chunk_strategy": "structure-v2", "retrieval_profile": "optimized-v2"}
+        update={"retrieval_profile": "optimized-v2"}
     )
     deps.settings = configured
     pdf = FPDF()
@@ -83,7 +83,7 @@ def test_pdf_layout_upload_reorders_columns_and_retrieves_cross_page_evidence(
     session, settings, deps, actor, monkeypatch,
 ):
     configured = settings.model_copy(update={
-        "pdf_chunk_strategy": "pdf-layout-v1", "retrieval_profile": "optimized-v2",
+        "retrieval_profile": "optimized-v2",
     })
     deps.settings = configured
     # PDF 原件由真实写入器生成。解析服务响应使用独立的版面夹具，刻意按行交错两栏。
@@ -129,12 +129,15 @@ def test_pdf_layout_upload_reorders_columns_and_retrieves_cross_page_evidence(
     while process_next(session, deps):
         pass
     build = session.get(IndexBuild, ack.build_id)
-    assert build.state == "ready" and build.chunk_config["strategy"] == "pdf-layout-v1"
+    assert build.state == "ready" and build.chunk_config["strategy"] == "evidence-unit-v1"
     hits = retrieval.search(
         session, actor, configured, deps.embedder, query="verification sample stored under nitrogen",
         kb_ids=[kb.id],
     )
-    assert hits[0].text == "The verification sample was\nstored under nitrogen."
+    assert hits[0].text == (
+        "Calibration summary.\nCatalyst yield is\nninety-one percent.\n"
+        "The verification sample was\nstored under nitrogen."
+    )
     assert hits[0].locator["pages"] == [1, 2]
     assert hits[0].structure["section_path"] == ["1 Results"]
     answer = qa.answer(
@@ -145,7 +148,7 @@ def test_pdf_layout_upload_reorders_columns_and_retrieves_cross_page_evidence(
     with pytest.raises(NotFound):
         chunk_repo.get_owned(session, Actor("other", "default"), uuid.UUID(hits[0].chunk_id))
     _, other = ingest(session, configured, deps, actor, "普通文档", "这是一份普通文档。")
-    assert session.get(IndexBuild, other.build_id).chunk_config["strategy"] == configured.chunk_strategy
+    assert session.get(IndexBuild, other.build_id).chunk_config["strategy"] == "evidence-unit-v1"
 
 
 def ingest(session, settings, deps, actor, name, content):
@@ -329,7 +332,7 @@ def test_structure_headers_related_are_authorized_and_blocked_after_delete(
     session, settings, deps, actor
 ):
     optimized = settings.model_copy(
-        update={"chunk_strategy": "structure-v2", "retrieval_profile": "optimized-v2"}
+        update={"retrieval_profile": "optimized-v2"}
     )
     deps.settings = optimized
     kb = knowledge_service.create(session, actor, "表格")
@@ -395,11 +398,11 @@ def test_reranking_is_injected_and_failures_are_not_no_evidence(session, setting
 
 
 def test_retry_freezes_chunk_strategy_and_existing_build(session, settings, deps, actor):
-    configured = settings.model_copy(update={"chunk_strategy": "structure-v2"})
+    configured = settings
     deps.settings = configured
     _, result = ingest(session, configured, deps, actor, "规则", "# 使用规则\n\n使用后归还。")
     original = session.get(IndexBuild, result.build_id)
-    assert original.chunk_config["strategy"] == "structure-v2"
+    assert original.chunk_config["strategy"] == "evidence-unit-v1"
     document = document_service.detail(session, actor, result.document_id)
     rebuilt = document_service.reindex(
         session,
@@ -433,7 +436,7 @@ def test_evidence_budget_does_not_grow_after_primary_selection(session, settings
 
 def test_coverage_search_preserves_first_hit_and_checks_scope(session, settings, deps, actor):
     optimized = settings.model_copy(
-        update={"chunk_strategy": "structure-v2", "retrieval_profile": "optimized-v2"}
+        update={"retrieval_profile": "optimized-v2"}
     )
     deps.settings = optimized
     kb, _ = ingest(
