@@ -16,7 +16,7 @@ BACKEND = pathlib.Path(__file__).resolve().parents[2]
 SAMPLE = (BACKEND / "testdata" / "engineering" / "handbook-sections.md").read_bytes()
 
 
-def _publish(session, settings, deps, actor: Actor, *, process: bool = True):
+def _publish(session, settings, deps, actor: Actor, *, process: bool = True, data: bytes = SAMPLE):
     kb = knowledge_service.create(session, actor, f"手册-{actor.subject_id}")
     upload = document_service.upload(
         session,
@@ -26,7 +26,7 @@ def _publish(session, settings, deps, actor: Actor, *, process: bool = True):
         deps.registry,
         kb_id=kb.id,
         filename="handbook-sections.md",
-        data=SAMPLE,
+        data=data,
         embedder_model=deps.embedder.model,
         embedder_dim=deps.embedder.dimension,
     )
@@ -36,10 +36,11 @@ def _publish(session, settings, deps, actor: Actor, *, process: bool = True):
 
 
 def test_chunks_are_ordered_and_carry_locators(session, settings, deps):
-    # 独立段落短于默认800；显式缩小窗口，确保实际覆盖长段落重叠，而非依赖换行识别失败。
+    # 既验证多来源定位，也用无自然边界的长段落验证兜底窗口重叠。
     settings = settings.model_copy(update={"chunk_max_chars": 120, "chunk_overlap_chars": 20})
     actor = Actor(subject_id="ui-owner", tenant_id="default")
-    _, upload = _publish(session, settings, deps, actor)
+    data = SAMPLE + ("\n\n" + "甲" * 250).encode()
+    _, upload = _publish(session, settings, deps, actor, data=data)
 
     view = document_service.chunks(session, actor, upload.document_id)
 
@@ -49,7 +50,14 @@ def test_chunks_are_ordered_and_carry_locators(session, settings, deps):
     assert view["truncated"] is False
     ordinals = [item["ordinal"] for item in view["items"]]
     assert ordinals == sorted(ordinals)
-    spans = [(item["locator"]["char_start"], item["locator"]["char_end"]) for item in view["items"]]
+    spans = []
+    text = data.decode()
+    assert any(item["locator"]["precision"] == "composite" for item in view["items"])
+    for item in view["items"]:
+        for source in item["locator"]["sources"]:
+            start, end = source["locator"]["char_start"], source["locator"]["char_end"]
+            spans.append((start, end))
+            assert item["text"][source["chunk_start"]:source["chunk_end"]] == text[start:end]
     assert all(end > start for start, end in spans)
     assert all(item["text"].strip() for item in view["items"])
     # 长段落按窗口滑动，相邻分块应共享部分字符，视图才能画出重叠。

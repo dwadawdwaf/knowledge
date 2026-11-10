@@ -27,6 +27,7 @@ BACKEND = pathlib.Path(__file__).resolve().parents[1]
 
 # 持久库配套的对象卷：同一套库重复启动必须落在同一个目录，否则原文全部 404。
 WORKBENCH_OBJECTS = pathlib.Path(os.environ.get("KS_WORKBENCH_OBJECTS") or BACKEND / ".data" / "objects")
+WORKBENCH_OWNER = "demo-owner"
 
 
 @contextmanager
@@ -91,7 +92,7 @@ class LocalRuntime:
         self.stack = ExitStack()
         self.processes: dict[str, tuple[subprocess.Popen, BinaryIO]] = {}
         self.log_dir = BACKEND / ".data" / "e2e" / uuid.uuid4().hex[:12]
-        self.owner = "demo-owner"
+        self.owner = WORKBENCH_OWNER
         # 每次运行用新密钥签发令牌：上一轮落在浏览器历史里的令牌对下一次无效。
         self.token_secret = secrets.token_urlsafe(32)
 

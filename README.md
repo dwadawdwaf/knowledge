@@ -20,9 +20,9 @@
 
 ## 当前范围
 
-基础支持TXT、MD、CSV、文本PDF、DOCX、XLSX、PPTX；扫描PDF与图片通过可选MinerU。
+基础支持TXT、MD、CSV、文本PDF、DOCX、XLSX、PPTX；旧版DOC、扫描PDF、图片及Word内嵌图片OCR使用本机MinerU。
 支持混合检索、证据约束问答、对话存档、版本发布、同模型重建和删除阻断。
-可选结构分块、PDF 版面分块、加权召回、本机重排和 OpenSearch BM25；默认策略不变。配置见[运行手册](docs/runbook.md#可选分块与检索策略)。
+统一使用文档单元优先分块；可选加权召回、本机重排和 OpenSearch BM25。配置见[运行手册](docs/runbook.md#本机批量重切与可选检索策略)。
 上传/新版本可显式选基础解析或MinerU；服务准备与精度边界见运行手册，纯文本不伪装OCR。
 MinerU已准备D盘独立环境时，start.cmd自动启动或复用服务；默认离线，不自动下载模型，详见运行手册。
 不支持旧版XLS/PPT、表格聚合问答、通用回答兜底、语义目录规划、共享授权、账号体系或token流式输出。

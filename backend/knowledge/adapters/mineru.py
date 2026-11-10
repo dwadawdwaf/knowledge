@@ -11,10 +11,12 @@ import urllib.error
 import urllib.request
 import uuid
 import zipfile
+from collections.abc import Callable
 from dataclasses import replace
 from html.parser import HTMLParser
 from urllib.parse import urlsplit
 
+from knowledge.adapters.parser import DOC, DOCX, detect_media_type
 from knowledge.config import Settings
 from knowledge.domain.entities import Locator, ParsedBlock
 from knowledge.domain.errors import ParseFailed
@@ -25,11 +27,14 @@ EXTENSIONS = {
     "image/png": ".png",
     "image/jpeg": ".jpg",
     "image/tiff": ".tiff",
-    "application/vnd.openxmlformats-officedocument.wordprocessingml.document": ".docx",
+    DOC: ".doc",
+    DOCX: ".docx",
     "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet": ".xlsx",
     "application/vnd.openxmlformats-officedocument.presentationml.presentation": ".pptx",
     "text/csv": ".csv",
 }
+_OFFICE_IMAGE_PATH = re.compile(r"images/[A-Za-z0-9_.-]+\.[A-Za-z0-9]+")
+_MAX_OFFICE_IMAGES = 32
 
 
 class _NoRedirect(urllib.request.HTTPRedirectHandler):
@@ -49,11 +54,14 @@ class HtmlText(HTMLParser):
     def __init__(self) -> None:
         super().__init__(convert_charrefs=True)
         self.parts: list[str] = []
+        self.images: list[str] = []
         self.hidden = 0
 
     def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
         if tag in {"script", "style"}:
             self.hidden += 1
+        elif tag == "img" and not self.hidden:
+            self.images.append(dict(attrs).get("src") or "")
         elif tag in {"tr", "br", "p"}:
             self.parts.append("\n")
 
@@ -113,7 +121,48 @@ def _pdf_captions(value: object) -> list[dict]:
     ]
 
 
-def normalize_archive(data: bytes, media: str, limit: int) -> list[ParsedBlock]:
+class _WordImageOCR:
+    def __init__(
+        self, archive: zipfile.ZipFile, read_budget: int, text_budget: int,
+        recognize: Callable[[bytes, str], list[ParsedBlock]],
+    ) -> None:
+        self.archive = archive
+        self.read_budget = read_budget
+        self.text_budget = text_budget
+        self.recognize = recognize
+        self.count = 0
+        self.warnings: set[str] = set()
+
+    def read(self, source: str) -> list[ParsedBlock]:
+        if not _OFFICE_IMAGE_PATH.fullmatch(source) or source not in self.archive.NameToInfo:
+            self.warnings.add("word_image_ocr_asset_unavailable")
+            return []
+        entry = self.archive.getinfo(source)
+        if self.count >= _MAX_OFFICE_IMAGES or entry.file_size > self.read_budget:
+            self.warnings.add("word_image_ocr_budget_exceeded")
+            return []
+        self.count += 1
+        self.read_budget -= entry.file_size
+        payload = self.archive.read(entry)
+        media = detect_media_type(payload, "")
+        if not media.startswith("image/"):
+            self.warnings.add("word_image_ocr_format_unsupported")
+            return []
+        blocks = self.recognize(payload, media)
+        if not blocks:
+            self.warnings.add("word_image_ocr_no_text")
+        self.text_budget -= sum(len(block.text.encode("utf-8")) for block in blocks)
+        if self.text_budget < 0:
+            raise ValueError("OCR 输出超限")
+        return blocks
+
+
+def normalize_archive(
+    data: bytes, media: str, limit: int, *,
+    recognize_image: Callable[[bytes, str], list[ParsedBlock]] | None = None,
+    image_budget: int = 0,
+    allow_empty: bool = False,
+) -> list[ParsedBlock]:
     with zipfile.ZipFile(io.BytesIO(data)) as archive:
         entries = archive.infolist()
         if len(entries) > 2048:
@@ -135,6 +184,16 @@ def normalize_archive(data: bytes, media: str, limit: int) -> list[ParsedBlock]:
                 except (ValueError, zipfile.BadZipFile):
                     # 附加坐标损坏时保留已验证的正文，布局策略会标记缺失。
                     pass
+        word_ocr = (
+            _WordImageOCR(archive, image_budget, limit - content_entry.file_size, recognize_image)
+            if media in {DOC, DOCX} and recognize_image is not None else None
+        )
+        return _normalize_content(content, middle, media, word_ocr, allow_empty=allow_empty)
+
+
+def _normalize_content(
+    content: dict, middle: object, media: str, word_ocr: _WordImageOCR | None, *, allow_empty: bool,
+) -> list[ParsedBlock]:
     if content.get("is_full_document") is not True or not isinstance(content.get("pages"), list):
         raise ValueError("不接受截断文档")
     producer = content.get("metadata", {}).get("producer", {})
@@ -163,10 +222,31 @@ def normalize_archive(data: bytes, media: str, limit: int) -> list[ParsedBlock]:
             source_kind = str(block.get("type", "text")).lower()
             kind = "table" if "table" in source_kind else {
                 "title": "heading", "heading": "heading", "caption": "caption",
+                "doc_title": "heading", "paragraph_title": "heading",
                 "footnote": "footnote", "image": "figure", "figure": "figure",
                 "header": "header", "page_header": "header", "footer": "footer",
                 "page_footer": "footer", "page_number": "footer",
             }.get(source_kind, "text")
+            images: list[str] = []
+            if word_ocr is not None:
+                source = block.get("image_source")
+                if isinstance(source, str) or kind == "figure":
+                    images.append(source if isinstance(source, str) else "")
+                if isinstance(value, str) and "<img" in value.lower():
+                    markup = HtmlText()
+                    markup.feed(value)
+                    images.extend(markup.images)
+                for image_source in dict.fromkeys(images):
+                    for recognized in word_ocr.read(image_source):
+                        result.append(ParsedBlock(
+                            recognized.text,
+                            Locator(EXTENSIONS[media][1:], 0, len(recognized.text), "block", block=len(result)),
+                            tuple(sorted({
+                                *recognized.warnings, "word_image_ocr_requires_review",
+                                "mineru_native_location_unavailable",
+                            })),
+                            kind="figure",
+                        ))
             metadata = {}
             if media == "application/pdf":
                 pdf_kind = {
@@ -179,6 +259,8 @@ def normalize_archive(data: bytes, media: str, limit: int) -> list[ParsedBlock]:
                     "pdf_continues_prev": block.get("continues_prev") is True,
                     "pdf_captions": _pdf_captions(block.get("captions")),
                 }
+            if (not isinstance(value, str) or not value.strip()) and images and kind == "figure":
+                continue
             if not isinstance(value, str) or not value.strip():
                 skipped = True
                 # 空的视觉块仍可作为通栏边界，旧策略会略过它。
@@ -187,7 +269,7 @@ def normalize_archive(data: bytes, media: str, limit: int) -> list[ParsedBlock]:
                 ):
                     continue
                 value = ""
-            if "table" in str(block.get("type", "")) or re.search(
+            if (images and "<img" in value.lower()) or "table" in source_kind or re.search(
                 r"</?(?:table|thead|tbody|tr|td|th|p|div|span|br|script|style|h[1-6])(?:\s[^>]*|\s*/?)>",
                 value,
                 re.IGNORECASE,
@@ -229,12 +311,15 @@ def normalize_archive(data: bytes, media: str, limit: int) -> list[ParsedBlock]:
                     metadata=metadata,
                 )
             )
-    if not any(block.text.strip() or block.metadata.get("pdf_captions") for block in result):
+    if not allow_empty and not any(block.text.strip() or block.metadata.get("pdf_captions") for block in result):
         raise ValueError("没有可用正文")
-    if skipped:
+    if result and (skipped or (word_ocr is not None and word_ocr.warnings)):
         index = next((index for index, block in enumerate(result) if block.text.strip()), 0)
         first = result[index]
-        result[index] = replace(first, warnings=(*first.warnings, "mineru_content_skipped"))
+        warnings = {*first.warnings, *(word_ocr.warnings if word_ocr else ())}
+        if skipped:
+            warnings.add("mineru_content_skipped")
+        result[index] = replace(first, warnings=tuple(sorted(warnings)))
     return result
 
 
@@ -267,11 +352,16 @@ class MinerUParser:
     def parse(self, data: bytes, media_type: str, filename: str) -> list[ParsedBlock]:
         if not self.supports(media_type, filename):
             raise ParseFailed("MinerU不支持该文件类型")
+        return self._parse(data, media_type, time.monotonic() + self.timeout)
+
+    def _parse(
+        self, data: bytes, media_type: str, deadline: float, *, embedded_image: bool = False,
+    ) -> list[ParsedBlock]:
         request_id = uuid.uuid4().hex
         boundary = "ks" + uuid.uuid4().hex
         fields = {
             "tier": "basic",
-            "ocr_mode": "auto",
+            "ocr_mode": "ocr" if embedded_image else "auto",
             "page_range": "all",
             "output_formats": "default",
             "wait_timeout": "0",
@@ -293,7 +383,10 @@ class MinerUParser:
         request = urllib.request.Request(
             self.url + "/v1/file_parse", data=bytes(body), headers=headers
         )
-        deadline = time.monotonic() + self.timeout
+
+        def recognize_image(payload: bytes, media: str) -> list[ParsedBlock]:
+            return self._parse(payload, media, deadline, embedded_image=True)
+
         try:
             while True:
                 remaining = deadline - time.monotonic()
@@ -304,7 +397,11 @@ class MinerUParser:
                     if len(raw) > self.limit or time.monotonic() >= deadline:
                         raise ValueError("输出超限")
                     if raw.startswith(b"PK"):
-                        return normalize_archive(raw, media_type, self.json_limit)
+                        return normalize_archive(
+                            raw, media_type, self.json_limit,
+                            recognize_image=recognize_image if media_type in {DOC, DOCX} else None,
+                            image_budget=self.limit, allow_empty=embedded_image,
+                        )
                     if request.full_url.endswith("/result"):
                         raise ValueError("结果不是ZIP")
                     status = json.loads(raw)
@@ -336,5 +433,7 @@ class MinerUParser:
             raise ParseFailed(message) from exc
         except urllib.error.URLError as exc:
             raise ParseFailed("MinerU服务未就绪，请先启动本机解析服务") from exc
+        except ParseFailed:
+            raise
         except Exception as exc:
             raise ParseFailed("MinerU不可用或解析结果无效") from exc

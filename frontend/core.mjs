@@ -5,7 +5,7 @@ const messages = {
   VERSION_CONFLICT: '文档状态已变化或已有处理任务，请刷新后再操作。',
   SOURCE_CHANGED: '回答期间资料发生变化，请重新提问。',
   FILE_TOO_LARGE: '文件超过后端大小上限。',
-  UNSUPPORTED_FORMAT: '不支持该文件，请使用 TXT、MD、文本 PDF 或 DOCX。',
+  UNSUPPORTED_FORMAT: '文件格式或所选解析方案不支持。DOC 和图片需要 MinerU。',
   VALIDATION_ERROR: '请求参数不符合要求，请检查输入。',
   MODEL_UNAVAILABLE: '模型服务暂不可用，未返回答案。',
   MODEL_TIMEOUT: '模型服务超时，未返回答案。',
@@ -129,6 +129,12 @@ const WARNING_LABELS = {
   mineru_table_linearized: 'MinerU 表格/HTML已转纯文本',
   mineru_content_skipped: 'MinerU存在未提取的非文本或不支持块，内容可能不完整',
   mineru_nul_replaced: 'MinerU 无效 NUL 字符已替换为 �，对应文字需复核',
+  docx_images_require_mineru: '基础解析未识别 DOCX 内图片，请选用 MinerU',
+  word_image_ocr_requires_review: '此片段来自 Word 内图片的 OCR，需核对原图',
+  word_image_ocr_asset_unavailable: 'Word 内部分图片不可读取或为外链，未进行 OCR',
+  word_image_ocr_format_unsupported: 'Word 内部分图片格式不支持 OCR',
+  word_image_ocr_budget_exceeded: '已达到 Word 图片识别上限，部分图片未识别',
+  word_image_ocr_no_text: 'Word 内部分图片未识别出文字',
   xlsx_rows_truncated: '表格行数超上限，仅索引前若干行',
   csv_rows_truncated: '表格行数超上限，仅索引前若干行',
   table_header_candidate: '按首行关联候选表头，需核对列名与单位',
@@ -148,12 +154,25 @@ export function visibleWarnings(codes = []) {
   return (codes || []).filter(code => !HIDDEN_WARNING_CODES.has(code));
 }
 // 分块视图只做度量与相对定位；缺字符偏移时退化为等宽，不伪造覆盖比例。
+function absoluteRanges(locator) {
+  const valid = part => Number.isInteger(part?.char_start) && Number.isInteger(part?.char_end)
+    && part.char_start >= 0 && part.char_end > part.char_start;
+  if (locator.precision === 'composite') {
+    const sources = (locator.sources || []).map(source => source.locator);
+    if (!sources.length || !sources.every((part, index) => part?.precision === 'char'
+      && valid(part) && (!index || part.char_start >= sources[index - 1].char_end))) return [];
+    return sources.map(part => [part.char_start, part.char_end]);
+  }
+  return (!locator.precision || locator.precision === 'char') && valid(locator)
+    ? [[locator.char_start, locator.char_end]] : [];
+}
+
 export function chunkMetrics(items = []) {
   const spans = items.map(item => {
     const locator = item.locator || {};
-    const start = Number.isFinite(locator.char_start) ? locator.char_start : null;
-    const end = Number.isFinite(locator.char_end) ? locator.char_end : null;
-    return { ordinal: item.ordinal, chars: (item.text || '').length, start, end, page: locator.page ?? null };
+    const ranges = absoluteRanges(locator);
+    return { ordinal: item.ordinal, chars: [...(item.text || '')].length,
+      start: ranges[0]?.[0] ?? null, end: ranges.at(-1)?.[1] ?? null, ranges, page: locator.page ?? null };
   });
   const chars = spans.reduce((sum, span) => sum + span.chars, 0);
   // 块内偏移（部分解析器）每块都从 0 开始，按比例画会得出错误的覆盖关系；
@@ -165,7 +184,12 @@ export function chunkMetrics(items = []) {
   const maxEnd = usable ? Math.max(...spans.map(span => span.end)) : 0;
   let overlaps = 0;
   for (let index = 1; index < spans.length; index += 1) {
-    if (usable && spans[index].start < spans[index - 1].end) overlaps += spans[index - 1].end - spans[index].start;
+    if (!usable || spans[index].start >= spans[index - 1].end) continue;
+    for (const [start, end] of spans[index].ranges) {
+      for (const [priorStart, priorEnd] of spans[index - 1].ranges) {
+        overlaps += Math.max(0, Math.min(end, priorEnd) - Math.max(start, priorStart));
+      }
+    }
   }
   const pages = [...new Set(items.flatMap(item => item.locator?.pages || [item.locator?.page]).filter(page => page != null))].sort((left, right) => left - right);
   const step = spans.length ? 100 / spans.length : 0;
@@ -173,7 +197,8 @@ export function chunkMetrics(items = []) {
     if (!usable) return { ordinal: span.ordinal, left: index * step, width: Math.max(step - 0.5, 1), start: null, end: null, chars: span.chars, page: span.page };
     const left = (span.start / maxEnd) * 100;
     const width = Math.max(((span.end - span.start) / maxEnd) * 100, 1.2);
-    return { ordinal: span.ordinal, left, width, start: span.start, end: span.end, chars: span.chars, page: span.page };
+    return { ordinal: span.ordinal, left, width, start: span.start, end: span.end,
+      ranges: span.ranges, chars: span.chars, page: span.page };
   });
   const blockPrecision = items.length > 0
     && items.every(item => (item.locator || {}).precision === 'block');
@@ -192,6 +217,7 @@ export function readableSize(bytes) {
 
 const MEDIA_LABELS = [
   ['application/pdf', 'PDF'],
+  ['application/msword', 'DOC'],
   ['image/png', 'PNG'],
   ['image/jpeg', 'JPEG'],
   ['image/tiff', 'TIFF'],

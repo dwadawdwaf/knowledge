@@ -95,6 +95,18 @@ test('分块度量按字符区间计算重叠与覆盖', () => {
   assert.equal(metrics.segments[0].left, 0); assert.equal(metrics.segments[0].width, 50);
   assert.equal(metrics.segments[1].left, 40);
 });
+test('复合分块的原文间隙不计入覆盖或重叠', () => {
+  const char = (char_start, char_end) => ({ precision: 'char', char_start, char_end });
+  const metrics = chunkMetrics([
+    { ordinal: 0, text: '甲乙', locator: { precision: 'composite', sources: [
+      { locator: char(0, 1) }, { locator: char(5, 6) },
+    ] } },
+    { ordinal: 1, text: '丙丁乙', locator: char(3, 6) },
+  ]);
+  assert.equal(metrics.usable, true);
+  assert.deepEqual(metrics.segments[0].ranges, [[0, 1], [5, 6]]);
+  assert.equal(metrics.overlaps, 1);
+});
 test('缺字符偏移时退化为等宽且不声明重叠', () => {
   const metrics = chunkMetrics([
     { ordinal: 0, text: 'x', locator: { page: 1 } },

@@ -91,8 +91,6 @@ def real_model_environment(settings: Settings) -> dict[str, str]:
         "semantic_max_distance",
         "evidence_min_score",
         "evidence_max_items",
-        "chunk_strategy",
-        "pdf_chunk_strategy",
         "chunk_max_chars",
         "chunk_overlap_chars",
         "retrieval_profile",

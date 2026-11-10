@@ -110,7 +110,7 @@ MinerU为本机独立Python环境，不通过容器运行，启动方式见§5�
 
 上传区选择“沿用服务默认 / 基础解析 / MinerU”，该选择也用于上传新版本。
 API在multipart中传parser_profile；选项与冻结语义见设计“显式可选解析器”。PDF默认MinerU，可配KS_PDF_PARSER_PROFILE；其他格式默认可配KS_DOCUMENT_PARSER_PROFILE，
-两端须重启到同一版本。重试/普通重建不换策略，同字节去重提示实际已有方案，不把选择当作已切换。
+两端须重启到同一版本。同字节去重提示实际已有方案，不把选择当作已切换。
 TXT/MD直接读取并告警，不依赖OCR服务；基础模式没有图片OCR，选基础上传图片仍报不支持。
 MinerU结果ZIP读取上限`KS_MINERU_OUTPUT_BYTES`（默认64MB，含未读取的图片）；
 正文`structured_content.json`仍受`parse_output_bytes`（默认16MB）限制，图片等未读取成员不计入。
@@ -134,9 +134,10 @@ MinerU固定本机4.1.2独立环境，主环境不安装其重依赖。用户已
 确认API未被配置为外部Router/SaaS；wrapper本身不加载模型，不代表上游不会转发。
 主项目配置KS_MINERU_URL=http://127.0.0.1:8003，可选KS_MINERU_TOKEN供本机认证代理，
 KS_MINERU_TIMEOUT_SECONDS为总等待预算（默认330秒），而非性能承诺。代理必须是本机origin；不接外网地址或任意响应URL。
-请求固定basic/auto/all，不对长文档只取前10页；超时或异常明确失败，不回退基础解析。
+原件请求使用basic/auto/all，Word内嵌图片的二次请求强制OCR；超时或异常明确失败，不回退基础解析。
 上游可能在超时/断连后继续工作，本项目不自动重提同次HTTP请求；须按本机服务的保留/清理规则处理其缓存。
-4.1 ZIP要求structured_content.json与完整标记，限制压缩/解压预算，不解压任意路径或获取图片。
+4.1 ZIP要求structured_content.json与完整标记，限制压缩/解压预算，不解压任意路径或获取外链。
+上传 DOC 可沿用默认方案；DOCX 若需识别图片，请在上传或更新前选 MinerU。识别内容可在“分块”中查看，按提示核对原图。
 当前客户端以页/块定位，不承诺字框、Office物理分页或完整表格语义，相关warnings需人工核对。
 实际OCR/版面效果验收独立于协议测试，当前已验证范围与遗留问题见根目录issues。
 上游[输出契约](https://opendatalab.github.io/MinerU/reference/output_files/)及[许可](https://github.com/opendatalab/MinerU/blob/master/LICENSE.md)须按部署版本核对。
@@ -152,18 +153,25 @@ node --test frontend/core.test.mjs
 浏览器检查仅在相关前端改动收尾运行，需要已有Node/测试浏览器，不自动安装。
 CI定义在.github/workflows/backend.yml，文件存在不等于远端已实跑。
 
-### 可选分块与检索策略
+### 本机批量重切与可选检索策略
 
-先按本手册升级数据库，不清空或重建现有库。默认继续使用 `legacy-v1` 分块、`baseline-v1` 检索。
-以下是可按需配置的独立能力，API 和 Worker 应使用相同配置：
+先按本手册升级数据库，不清空现有库。退出运行中的工作台，保留本机 PostgreSQL、向量服务和 MinerU，再执行：
 
-- `KS_CHUNK_STRATEGY=structure-v2`：仅对新构建启用结构分块；普通重建保留旧策略。
-- `KS_PDF_CHUNK_STRATEGY=pdf-layout-v1`：仅对新 PDF 构建启用版面分块。
+```powershell
+.\backend\.venv\Scripts\python.exe -u backend/scripts/rechunk_local.py
+.\backend\.venv\Scripts\python.exe -u backend/scripts/rechunk_local.py --apply --include-current
+```
+
+首条仅统计，第二条逐个重切当前工作台所有可访问文档，只使用本机模型。失败保留旧发布；不带 `--include-current` 重跑可跳过已切换文档。完成后重新启动工作台。
+
+检索默认 `baseline-v1`，以下能力可独立配置，API 和 Worker 应使用相同配置：
+
 - `KS_RETRIEVAL_PROFILE=optimized-v2`：启用查询优化与加权融合；`fts-v1` 选用 PostgreSQL 英文全文检索。
 - `KS_RETRIEVAL_PROFILE=bm25-v1`：同时配置 `KS_OPENSEARCH_URL` 为本机回环地址。
   Windows 可准备本地 OpenSearch 发行包并使用 `start-opensearch.ps1`；不下载模型或发行包。
   不同 PostgreSQL 实例使用独立的 `KS_OPENSEARCH_INDEX`。仅在显式配置后才检查或启动此依赖。
 - 在 `optimized-v2` 下，`KS_RERANKER_URL` 和 `KS_RERANKER_MODEL` 可显式指向本机重排服务；未配置时不调用。
+
 
 ## 6. 排障
 

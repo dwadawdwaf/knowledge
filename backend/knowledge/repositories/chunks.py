@@ -279,7 +279,7 @@ def related(
     """在授权的当前构建内读取同结构邻接片段或同表表头。旧索引不猜测关联。"""
     anchor_ids = [
         uuid.UUID(hit.chunk_id) for hit in hits
-        if hit.structure.get("strategy") in {"structure-v2", "pdf-layout-v1"}
+        if hit.structure.get("strategy") in {"structure-v2", "pdf-layout-v1", "evidence-unit-v1"}
     ]
     if not anchor_ids or limit <= 0:
         return []

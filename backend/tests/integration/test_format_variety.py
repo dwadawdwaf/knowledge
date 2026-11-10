@@ -245,13 +245,15 @@ def test_xlsx_is_indexed_with_sheet_and_row_locators(session, settings, deps):
     assert job.state is JobState.SUCCEEDED, job.last_error
 
     view = document_service.chunks(session, actor, result.document_id)
-    assert view["total"] == 1
-    item = view["items"][0]
-    assert item["locator"]["sheet"] == "人员名单"
-    assert (item["locator"]["row_start"], item["locator"]["row_end"]) == (1, 3)
-    assert item["locator"]["precision"] == "sheet"
+    assert view["total"] == 3
+    for index, row in enumerate(view["items"], 1):
+        assert row["locator"]["sheet"] == "人员名单"
+        assert (row["locator"]["row_start"], row["locator"]["row_end"]) == (index, index)
+        assert row["locator"]["precision"] == "sheet"
     # 单元格内容必须可检索，不能只留表名
-    assert "陈建工" in item["text"] and "B-201" in item["text"]
+    assert [item["text"] for item in view["items"]] == [
+        "部门\t负责人\t工位", "网络部\t陈建工\tB-201", "行政部\t李静\tA-102",
+    ]
 
 
 def _pptx_bytes() -> bytes:
@@ -289,15 +291,17 @@ def test_csv_and_pptx_are_indexed_with_their_locators(session, settings, deps):
     )
 
     csv_view = document_service.chunks(session, actor, csv_result.document_id)
-    assert csv_view["total"] == 1
-    csv_item = csv_view["items"][0]
-    assert csv_item["locator"]["type"] == "csv"
-    assert (csv_item["locator"]["row_start"], csv_item["locator"]["row_end"]) == (1, 3)
-    assert "陈建工" in csv_item["text"]
+    assert csv_view["total"] == 3
+    for index, item in enumerate(csv_view["items"], 1):
+        assert item["locator"]["type"] == "csv"
+        assert (item["locator"]["row_start"], item["locator"]["row_end"]) == (index, index)
+    assert [item["text"] for item in csv_view["items"]] == [
+        "部门\t负责人\t工位", "网络部\t陈建工\tB-201", "行政部\t李静\tA-102",
+    ]
 
     pptx_view = document_service.chunks(session, actor, pptx_result.document_id)
-    assert pptx_view["total"] == 1
-    pptx_item = pptx_view["items"][0]
-    assert pptx_item["locator"]["type"] == "pptx"
-    assert pptx_item["locator"]["page"] == 1
-    assert "季度汇报" in pptx_item["text"]
+    assert pptx_view["total"] == 2
+    assert [item["text"].strip() for item in pptx_view["items"]] == ["季度汇报（测试资料）", "第一条 本季度完成事项。"]
+    for pptx_item in pptx_view["items"]:
+        assert pptx_item["locator"]["type"] == "pptx"
+        assert pptx_item["locator"]["page"] == 1

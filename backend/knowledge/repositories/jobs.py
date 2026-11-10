@@ -32,6 +32,7 @@ _CLAIM = text(
     WHERE id = (
         SELECT id FROM jobs
         WHERE state = 'queued' AND available_at <= now() AND attempt < max_attempts
+          AND (CAST(:job_id AS uuid) IS NULL OR id = :job_id)
         ORDER BY available_at
         LIMIT 1
         FOR UPDATE SKIP LOCKED
@@ -73,8 +74,10 @@ def create(
     return job
 
 
-def claim_next(session: Session, token: uuid.UUID, lease_seconds: int) -> dict | None:
-    row = session.execute(_CLAIM, {"token": token, "lease": lease_seconds}).mappings().first()
+def claim_next(
+    session: Session, token: uuid.UUID, lease_seconds: int, *, job_id: uuid.UUID | None = None,
+) -> dict | None:
+    row = session.execute(_CLAIM, {"token": token, "lease": lease_seconds, "job_id": job_id}).mappings().first()
     session.commit()
     return dict(row) if row else None
 

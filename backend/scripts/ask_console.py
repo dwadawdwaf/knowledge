@@ -103,6 +103,11 @@ def ask_once(
             position.append(f"段落索引 {locator['paragraph']}")
         if locator.get("char_start") is not None:
             position.append(f"字符 [{locator['char_start']}, {locator.get('char_end')})")
+        elif locator.get("precision") == "composite":
+            for source in locator.get("sources", []):
+                part = source.get("locator", {})
+                if part.get("precision") == "char" and part.get("char_start") is not None:
+                    position.append(f"字符 [{part['char_start']}, {part.get('char_end')})")
         print(f"\n引用 [{citation['index']}] {_safe_text(citation['title'])}", file=stream)
         print(
             "  定位：" + _safe_text("；".join(position) or locator.get("type", "未知")), file=stream

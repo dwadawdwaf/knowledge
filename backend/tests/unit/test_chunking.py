@@ -29,8 +29,12 @@ def test_long_block_splits_with_overlap():
 def test_offsets_are_absolute_across_blocks():
     blocks = [_block("第一段。", 0), _block("第二段。", 100)]
     chunks = chunk_blocks(blocks, max_chars=50, overlap=5)
-    assert chunks[0].locator["char_start"] == 0
-    assert chunks[1].locator["char_start"] == 100
+    assert len(chunks) == 1 and chunks[0].text == "第一段。\n第二段。"
+    assert chunks[0].locator["precision"] == "composite"
+    assert [s["locator"]["char_start"] for s in chunks[0].locator["sources"]] == [0, 100]
+    assert [chunks[0].text[s["chunk_start"]:s["chunk_end"]] for s in chunks[0].locator["sources"]] == [
+        "第一段。", "第二段。",
+    ]
 
 
 def test_blank_blocks_skipped():

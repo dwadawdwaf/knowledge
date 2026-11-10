@@ -22,6 +22,7 @@ SCRIPTS = (
     "check",
     "test_policy",
     "workbench",
+    "rechunk_local",
     "browser_smoke",
 )
 
