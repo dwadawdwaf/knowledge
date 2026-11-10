@@ -19,7 +19,7 @@
   </div>
   <div class="scrim" id="scrim" hidden></div>
 
-  <div class="app" id="app">
+  <div class="app" id="app" data-connected="false">
     <aside class="sidebar" id="sidebar" aria-label="工作台导航">
       <div class="side-head">
         <a class="brand" href="#knowledge" id="brand">
@@ -36,7 +36,7 @@
         <button class="nav-item" type="button" data-page="chat"><span class="nav-icon" data-icon="chat"></span><span class="nav-text">对话</span></button>
         <button class="nav-item" type="button" data-page="knowledge"><span class="nav-icon" data-icon="library"></span><span class="nav-text">知识库</span></button>
         <button class="nav-item" type="button" data-page="files"><span class="nav-icon" data-icon="folder"></span><span class="nav-text">全部文件</span></button>
-        <button class="nav-item" type="button" data-page="search"><span class="nav-icon" data-icon="search"></span><span class="nav-text">检索评测</span></button>
+        <button class="nav-item" type="button" data-page="search"><span class="nav-icon" data-icon="search"></span><span class="nav-text">检索</span></button>
       </nav>
 
       <div class="side-fill">
@@ -57,7 +57,7 @@
         <div class="user-row">
           <button class="user-card" id="connection" type="button">
             <span class="avatar" aria-hidden="true">我</span>
-            <span class="user-meta"><strong id="connection-label">未连接</strong><small>开发访问令牌</small></span>
+            <span class="user-meta"><strong id="connection-label">知识工作台</strong></span>
             <span class="user-cog" data-icon="settings" aria-hidden="true"></span>
           </button>
           <button class="icon-btn" id="theme-toggle" type="button" aria-label="切换深浅色" title="切换深浅色" data-icon="moon"></button>

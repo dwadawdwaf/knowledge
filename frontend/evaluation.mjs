@@ -1,5 +1,8 @@
+// 已从产品界面下线：路由不再引用本模块（第一轮测评结果不对外展示）。
+// 保留文件与单测，仅供内部复现；如需恢复，把 app.mjs 的 search 路由指回 renderEvaluation。
 // 评测结果复用已授权的文档原件接口；页面只读，不从浏览器触发付费批量实验。
 import { el, actionButton, emptyState, loading } from './dom.mjs';
+import { visibleWarnings } from './core.mjs';
 
 export const REPORT_LIBRARY = '检索评测 · 过程与结果';
 export const REPORT_FILE = 'retrieval-evaluation-v1.txt';
@@ -25,7 +28,7 @@ export function parseReport(text) {
 
 export function needsReview(row) {
   return Boolean(row.qa.error || row.qa.status_matches_label !== true || row.qa.forbidden_detected
-    || row.qa.citations_resolvable === false || row.qa.warnings?.length
+    || row.qa.citations_resolvable === false || visibleWarnings(row.qa.warnings).length
     || VARIANTS.some(([key]) => row.retrieval[key]?.error || row.retrieval[key]?.degraded)
     || (row.answerable && (row.retrieval.hybrid_5.fact_recall !== 1
       || row.qa.lexical_coverage !== 1 || row.qa.citation_fact_coverage !== 1)));
@@ -64,13 +67,16 @@ export function renderEvaluation(app) {
       const documents = await app.api.request(`/knowledge-bases/${library.id}/documents`);
       if (current !== sequence || !page.isConnected) return;
       const available = documents.items.filter(item => REPORT_FILES.includes(item.title) && item.current_version_id)
-        .sort((a, b) => b.title.localeCompare(a.title));
+        .sort((a, b) => (a.title === REPORT_FILE ? -1 : b.title === REPORT_FILE ? 1 : b.title.localeCompare(a.title)));
       run.replaceChildren();
       available.forEach(item => {
         const option = el('option', '', item.title === REPORT_FILE ? '第一轮 · 自制基础集' : '第二轮 · 真实长文档');
         option.value = item.id; run.append(option);
       });
-      if (!available.some(item => item.id === selectedReport)) selectedReport = available[0]?.id || '';
+      // 默认落在第一轮（自制基础集），其余轮次仍可从下拉切换。
+      if (!available.some(item => item.id === selectedReport)) {
+        selectedReport = (available.find(item => item.title === REPORT_FILE) || available[0])?.id || '';
+      }
       run.value = selectedReport; run.disabled = !available.length;
       const document = available.find(item => item.id === selectedReport);
       if (!document) { body.replaceChildren(emptyState('评测准备中', '正在发布首份过程记录，请稍后刷新。')); return; }

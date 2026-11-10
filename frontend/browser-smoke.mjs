@@ -39,7 +39,7 @@ try {
   await send('Page.enable'); await send('Runtime.enable');
   await wait(`document.querySelector('#content .primary')`);
   console.log('[浏览器 1/9] 打开带令牌的地址即自动连接，地址栏随即清除令牌');
-  await wait(`document.querySelector('#connection-label')?.textContent.startsWith('已连接')`);
+  await wait(`document.querySelector('#app').dataset.connected === 'true'`);
   assert.equal(await js(`document.querySelector('#connection-dialog').open`), false, '自动连接后不应再弹连接窗口');
   assert.equal(await js(`location.hash.includes('t=')`), false, '令牌必须从地址栏清除');
   assert.equal(await js(`localStorage.length + sessionStorage.length`), 0);
@@ -127,8 +127,8 @@ try {
   assert.equal(await js(`[...document.querySelectorAll('.answer-message')].at(-1).querySelector('.answer-body')`), null);
   await send('Fetch.disable'); socket.removeEventListener('message', intercept);
   await js(`document.querySelector('[data-page=search]').click()`);
-  await wait(`document.querySelector('.evaluation-page h1')?.textContent==='检索评测'`);
-  assert.equal(await js(`document.querySelector('#search-query')`), null, '全局入口不再提供手动检索');
+  await wait(`document.querySelector('.search-page h1')?.textContent==='资料检索'`);
+  assert.ok(await js(`document.querySelector('#search-query')`), '检索页应直接提供检索输入框');
   await js(`document.querySelector('[data-page=knowledge]').click()`);
   await clickText('行政制度 · 自制样本');
   await clickText('检索');
@@ -167,14 +167,14 @@ try {
   assert.equal(await js(`Boolean(window.uiXss || document.querySelector('.kb-card img'))`), false);
   console.log('[浏览器 9/9] 刷新清空身份和内容，浏览器存储中没有令牌');
   assert.equal(await js(`localStorage.length + sessionStorage.length`), 0);
-  await send('Page.reload'); await wait(`document.querySelector('#connection-label')?.textContent==='未连接'`);
+  await send('Page.reload'); await wait(`document.querySelector('#connection-dialog[open]')`);
   assert.equal(await js(`document.querySelectorAll('.kb-card').length`), 0);
   console.log('[浏览器 补充] 重连后从后端恢复对话历史');
   // 仅改 hash 不会重新执行 bootstrap；加一个 query 强制整页加载，令牌仍在片段里。
   await send('Page.navigate', {
     url: process.env.KS_UI_URL.replace('/workbench/', '/workbench/?reconnect=1'),
   });
-  await wait(`document.querySelector('#connection-label')?.textContent.startsWith('已连接')`);
+  await wait(`document.querySelector('#app').dataset.connected === 'true'`);
   await js(`document.querySelector('[data-page=chat]').click()`);
   await wait(`document.querySelectorAll('#thread .turn').length >= 3`);
   assert.ok(await js(`[...document.querySelectorAll('.answer-body')].at(-1)?.textContent.includes('关闭空调')`),

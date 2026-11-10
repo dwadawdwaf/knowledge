@@ -53,13 +53,13 @@ domain不依赖框架。命名、类型、日志与验证纪律唯一见根目�
 
 | 表 | 核心语义 |
 | --- | --- |
-| knowledge_bases | owner来自Actor；状态active/deleting/deleted |
+| knowledge_bases | owner来自Actor；状态active/deleting/deleted，archived表示保留数据但隐藏（不进列表，也不能作为检索或上传范围） |
 | documents | current_version_id是已发布版本，active_build_id是当前构建，pending_build_id是待处理构建；generation为更新/删除栅栏 |
 | document_versions | 不可变上传，保存version_no、object_key、sha256、media_type、byte_size；唯一(document_id,version_no)/(kb_id,sha256) |
 | index_builds | 一次索引处理，冻结chunk_config及向量模型/维度；queued/running/ready/failed/cancelled/retired |
 | chunks | build所属片段，保存ordinal、text、locator、warnings、embedding和关键词文本；唯一(build_id,ordinal)，向量HNSW/余弦和关键词GIN/trigram索引 |
 | jobs | ingest/reindex/cleanup；queued/running/succeeded/failed/cancelled；处理任务固定build_id/generation，cleanup不填 |
-| conversations | owner所属的对话 |
+| conversations | owner所属的对话；状态active/archived，archived保留消息但不进历史列表 |
 | messages | 本轮问题/答案、状态、引用与模型标识，仅作历史展示，不参与后续生成上下文 |
 
 locator页码1起，字符偏移为Unicode码点左闭右开；无法精确定位明确降级block/page。
@@ -102,8 +102,8 @@ RRF只是排名分，不能替代相关性阈值。哈希向量阈值不能直�
 
 ### 6.1.1 基础评测与前端入口
 
-全局“检索评测”只读展示过程、方案对比、分维度用例及异常，不从浏览器触发批量模型调用。
-手动检索置于知识库“检索”页签，SQL范围固定为该知识库，不沿用其他页面的全局范围。
+“检索评测”页已从产品界面下线（决策0029），评测过程与结果只在内部复现时查看，不对外展示。
+导航“检索”直接提供全局资料检索；知识库“检索”页签保留，SQL范围固定为该知识库。
 基础集为版本化自制资料、24题/8维度，标注来源文件和支持片段，非业务效果验收。
 同一批发布构建上对比keyword/semantic/hybrid Top-5及hybrid Top-20；问答固定hybrid Top-5。
 实验最多120次检索/问答请求，不自动重跑；资料入库向量化和结果发布不计入该请求数，不能将调用数当token或费用。
@@ -119,7 +119,7 @@ RRF只是排名分，不能替代相关性阈值。哈希向量阈值不能直�
 甲方/私人资料仍不得外发。新增独立资料库，保留第一轮；48题按题目/标注事实划分24开发/24留出，
 不是文档级独立或第三方盲测。运行前固定问题、原件摘要、PDF物理页序和引用片段，不根据结果改标注或参数。
 第二轮最多240次检索/问答请求，不自动重跑；向量化限定本机bge-m3，原件与真实问题标注留在忽略目录，不入提交。
-复用第一轮实验引擎，以独立报告文件retrieval-evaluation-v2-public.txt保存结果；前端可选轮次与数据划分，
+复用第一轮实验引擎，以独立报告文件retrieval-evaluation-v2-public.txt保存结果；前端可选轮次与数据划分，默认落在第一轮，
 兼容旧报告。单报告最多48题；第一轮默认仍24题/120请求，不修改旧数据或分数。
 公开PDF可显式按NFKC及排版空白归一化匹配金标；有页码标注时还要求命中对应物理页序，
 匹配规则只用于评测、不修改索引。用户随后批准第二轮改用MinerU；先前基础解析导入未进入问答，保留但不纳入本轮范围。
