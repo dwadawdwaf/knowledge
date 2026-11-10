@@ -2,7 +2,7 @@
 // 版面按「条件面板 + 结果流」两栏组织：条件固定在左，结果占满剩余宽度。
 import { el, icon, toast, emptyState, loading, autoGrow } from './dom.mjs';
 import { scopeControl, scopeIds } from './scope.mjs';
-import { locatorText, warningLabel } from './core.mjs';
+import { locatorText, warningLabel, visibleWarnings } from './core.mjs';
 
 const MODES = [
   ['hybrid', '混合检索', '关键词与语义各召回一路，再融合排序'],
@@ -263,7 +263,7 @@ function paintResults(app, container, result) {
     line.append(icon('alert'), el('span', '', '本次检索发生降级，命中可能不完整，请结合后端说明核查。'));
     container.append(line);
   }
-  (result.warnings || []).forEach(warning => {
+  visibleWarnings(result.warnings).forEach(warning => {
     const line = el('div', 'notice-line warn');
     line.append(icon('alert'), el('span', '', warningLabel(warning)));
     container.append(line);

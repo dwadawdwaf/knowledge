@@ -2,6 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { ApiClient, ApiError, reindexTarget, jobLabel, locatorText, chunkMetrics, warningLabel,
   readableSize, mediaLabel, parserLabel, groupByPage, splitHighlight, sharedWarnings,
+  visibleWarnings,
   turnsFromMessages, uploadForm, PARSER_OPTIONS } from './core.mjs';
 
 test('跨页片段展示全部来源页，不冒充单一字符区间', () => {
@@ -173,13 +174,21 @@ test('关键词切片不返回 HTML，且大小写不敏感', () => {
 
 test('共有警告只上提一次，块内保留特有条目', () => {
   const shared = sharedWarnings([
-    { warnings: ['mineru_requires_review', 'mineru_table_linearized'] },
-    { warnings: ['mineru_requires_review'] },
-    { warnings: ['mineru_requires_review'] },
+    { warnings: ['mineru_table_linearized', 'mineru_requires_review'] },
+    { warnings: ['mineru_table_linearized'] },
   ]);
-  assert.deepEqual(shared, ['mineru_requires_review']);
+  assert.deepEqual(shared, ['mineru_table_linearized']);
   assert.deepEqual(sharedWarnings([{ warnings: [] }, { warnings: ['x'] }]), []);
   assert.deepEqual(sharedWarnings([]), []);
+});
+
+test('解析实现细节的警告码不再展示给使用者', () => {
+  assert.deepEqual(visibleWarnings([
+    'mineru_requires_review', 'mineru_geometry_unavailable',
+    'mineru_native_location_unavailable', 'mineru_table_linearized',
+  ]), ['mineru_table_linearized']);
+  assert.deepEqual(visibleWarnings(), []);
+  assert.deepEqual(sharedWarnings([{ warnings: ['mineru_requires_review'] }]), []);
 });
 
 test('取文件字节时 404 仍抛统一错误，不把 JSON 当文件', async () => {

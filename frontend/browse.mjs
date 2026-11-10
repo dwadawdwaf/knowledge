@@ -2,7 +2,7 @@
 // 只读视图，不提供编辑与上传；写入操作仍在所属知识库内完成。
 import { el, icon, emptyState, loading, actionButton } from './dom.mjs';
 import {
-  jobLabel, locatorText, warningLabel, readableSize, mediaLabel, parserLabel,
+  jobLabel, locatorText, warningLabel, visibleWarnings, readableSize, mediaLabel, parserLabel,
   groupByPage, splitHighlight, sharedWarnings,
 } from './core.mjs';
 
@@ -668,7 +668,7 @@ function block(app, item, keyword, shared = []) {
   head.append(el('span', 'browse-block-loc', locatorText(locator)));
   head.append(el('span', 'browse-block-chars', `${(item.text || '').length} 字`));
   // 已提到顶部的共有警告不再逐块重复，只留本块特有的。
-  (item.warnings || [])
+  visibleWarnings(item.warnings)
     .filter(code => !shared.includes(code))
     .forEach(code => head.append(el('span', 'chunk-warn', warningLabel(code))));
 

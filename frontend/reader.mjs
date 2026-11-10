@@ -1,6 +1,6 @@
 // 引用原文与分块结果：两个抽屉共用一套读取与渲染逻辑。
 import { el, icon, emptyState, loading } from './dom.mjs';
-import { chunkMetrics, locatorText, warningLabel } from './core.mjs';
+import { chunkMetrics, locatorText, warningLabel, visibleWarnings } from './core.mjs';
 import { sheetTable } from './browse.mjs';
 
 export async function openSource(app, chunkId) {
@@ -31,7 +31,7 @@ export async function openSource(app, chunkId) {
       app.openBrowse({ id: chunk.document_id, title: chunk.title }, { locator: chunk.locator });
     });
     content.append(openFile);
-    (chunk.warnings || []).forEach(warning => {
+    visibleWarnings(chunk.warnings).forEach(warning => {
       const line = el('div', 'notice-line warn');
       line.style.marginTop = '12px';
       line.append(icon('alert'), el('span', '', warningLabel(warning)));
@@ -116,7 +116,7 @@ function list(items) {
     head.append(el('span', 'chunk-tag', `#${item.ordinal + 1}`));
     head.append(el('span', 'source-location', locatorText(item.locator)));
     head.append(el('span', 'chunk-chars', `${(item.text || '').length} 字`));
-    (item.warnings || []).forEach(code => {
+    visibleWarnings(item.warnings).forEach(code => {
       head.append(el('span', 'chunk-warn', warningLabel(code)));
     });
     const toggle = el('button', 'chunk-toggle', '展开');

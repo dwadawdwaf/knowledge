@@ -117,11 +117,15 @@ export function locatorText(locator = {}) {
   return parts.join(' · ') || '原文分块';
 }
 
+// 解析器的内部实现细节不在界面上提示：这些码仍会出现在接口里，但不再翻译成文案。
+const HIDDEN_WARNING_CODES = new Set([
+  'mineru_requires_review',
+  'mineru_geometry_unavailable',
+  'mineru_native_location_unavailable',
+]);
+
 const WARNING_LABELS = {
   parser_direct_text: '所选方案对纯文本直接读取，未使用 OCR',
-  mineru_requires_review: 'MinerU 结果需复核',
-  mineru_geometry_unavailable: 'MinerU 未使用精确字框定位',
-  mineru_native_location_unavailable: 'MinerU 原生结果无可靠原文件页码/行列',
   mineru_table_linearized: 'MinerU 表格/HTML已转纯文本',
   mineru_content_skipped: 'MinerU存在未提取的非文本或不支持块，内容可能不完整',
   mineru_nul_replaced: 'MinerU 无效 NUL 字符已替换为 �，对应文字需复核',
@@ -137,6 +141,11 @@ const WARNING_LABELS = {
 
 export function warningLabel(code) {
   return WARNING_LABELS[code] || code;
+}
+
+/** 过滤掉只属于解析实现细节、不需要展示给使用者的提示码。 */
+export function visibleWarnings(codes = []) {
+  return (codes || []).filter(code => !HIDDEN_WARNING_CODES.has(code));
 }
 // 分块视图只做度量与相对定位；缺字符偏移时退化为等宽，不伪造覆盖比例。
 export function chunkMetrics(items = []) {
@@ -225,7 +234,7 @@ export function uploadForm(file, profile = '') {
 export function sharedWarnings(items = []) {
   if (!items.length) return [];
   const [first, ...rest] = items.map(item => new Set(item.warnings || []));
-  return [...first].filter(code => rest.every(set => set.has(code))).sort();
+  return visibleWarnings([...first].filter(code => rest.every(set => set.has(code)))).sort();
 }
 
 /**
