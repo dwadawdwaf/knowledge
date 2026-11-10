@@ -39,7 +39,7 @@ try {
   await send('Page.enable'); await send('Runtime.enable');
   await wait(`document.querySelector('#content .primary')`);
   console.log('[浏览器 1/9] 打开带令牌的地址即自动连接，地址栏随即清除令牌');
-  await wait(`document.querySelector('#connection-label')?.textContent.startsWith('已连接')`);
+  await wait(`document.querySelector('#app').dataset.connected === 'true'`);
   assert.equal(await js(`document.querySelector('#connection-dialog').open`), false, '自动连接后不应再弹连接窗口');
   assert.equal(await js(`location.hash.includes('t=')`), false, '令牌必须从地址栏清除');
   assert.equal(await js(`localStorage.length + sessionStorage.length`), 0);
@@ -55,13 +55,13 @@ try {
   assert.equal(await js(`getComputedStyle(document.querySelector('.parser-choice')).height`), '38px');
   // 用纯文本验证显式选择的请求/冻结，不要求本机实际安装MinerU。
   await js(`document.querySelector('.parser-choice').value='mineru-api4.1-v1'`);
-  await setFile('.upload-zone input[type=file]', path.join(root, 'backend/testdata/evaluation/expense.md'));
+  await setFile('.upload-zone input[type=file]', path.join(root, 'backend/testdata/engineering/expense.md'));
   await wait(`!![...document.querySelectorAll('tbody tr')].find(row=>row.textContent.includes('expense.md') && row.textContent.includes('已就绪'))`, 120000);
   assert.ok(await js(`document.querySelector('#upload-feedback').textContent.includes('MinerU')`));
   console.log('[浏览器 3/9] 打开分块结果，核对覆盖条与明细一一对应');
-  // 分块夹具也有会议室内容，放到独立库，避免和后续问答的固定版本夹具竞争。
+  // 分块夹具也含会议室章节，单独放在项目库，避免影响后续行政库的引用验收。
   await js(`document.querySelector('[data-page=knowledge]').click()`);
-  await clickText('浏览器创建 · 自制样本');
+  await clickText('项目资料 · 自制样本');
   await wait(`document.querySelector('.upload-zone input[type=file]')`);
   await setFile('.upload-zone input[type=file]', path.join(root, 'backend/testdata/engineering/handbook-sections.md'));
   await wait(`!![...document.querySelectorAll('tbody tr')].find(row=>row.textContent.includes('handbook-sections.md') && row.textContent.includes('已就绪'))`, 120000);
@@ -132,8 +132,8 @@ try {
   assert.equal(await js(`[...document.querySelectorAll('.answer-message')].at(-1).querySelector('.answer-body')`), null);
   await send('Fetch.disable'); socket.removeEventListener('message', intercept);
   await js(`document.querySelector('[data-page=search]').click()`);
-  await wait(`document.querySelector('.evaluation-page h1')?.textContent==='检索评测'`);
-  assert.equal(await js(`document.querySelector('#search-query')`), null, '全局入口不再提供手动检索');
+  await wait(`document.querySelector('.search-page h1')?.textContent==='资料检索'`);
+  assert.ok(await js(`document.querySelector('#search-query')`), '检索页应直接提供检索输入框');
   await js(`document.querySelector('[data-page=knowledge]').click()`);
   await clickText('行政制度 · 自制样本');
   await clickText('检索');
@@ -172,14 +172,14 @@ try {
   assert.equal(await js(`Boolean(window.uiXss || document.querySelector('.kb-card img'))`), false);
   console.log('[浏览器 9/9] 刷新清空身份和内容，浏览器存储中没有令牌');
   assert.equal(await js(`localStorage.length + sessionStorage.length`), 0);
-  await send('Page.reload'); await wait(`document.querySelector('#connection-label')?.textContent==='未连接'`);
+  await send('Page.reload'); await wait(`document.querySelector('#connection-dialog[open]')`);
   assert.equal(await js(`document.querySelectorAll('.kb-card').length`), 0);
   console.log('[浏览器 补充] 重连后从后端恢复对话历史');
   // 仅改 hash 不会重新执行 bootstrap；加一个 query 强制整页加载，令牌仍在片段里。
   await send('Page.navigate', {
     url: process.env.KS_UI_URL.replace('/workbench/', '/workbench/?reconnect=1'),
   });
-  await wait(`document.querySelector('#connection-label')?.textContent.startsWith('已连接')`);
+  await wait(`document.querySelector('#app').dataset.connected === 'true'`);
   await js(`document.querySelector('[data-page=chat]').click()`);
   await wait(`document.querySelectorAll('#thread .turn').length >= 3`);
   assert.ok(await js(`[...document.querySelectorAll('.answer-body')].at(-1)?.textContent.includes('关闭空调')`),

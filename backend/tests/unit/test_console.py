@@ -61,6 +61,22 @@ def test_real_environment_preserves_parser_output_budget():
     assert int(env["KS_PARSE_OUTPUT_BYTES"]) == settings.parse_output_bytes
 
 
+def test_real_environment_preserves_optimization_configuration():
+    changes = {
+        "chunk_strategy": "structure-v2", "chunk_max_chars": 700, "chunk_overlap_chars": 80,
+        "retrieval_profile": "optimized-v2", "keyword_weight": 0.25, "keyword_local_floor": 0.35,
+        "evidence_coverage": True, "structured_context": True,
+        "semantic_weight": 1.0, "query_variants_max": 2, "recall_limit": 70, "rrf_k": 60,
+        "evidence_candidate_limit": 30, "evidence_max_chars": 4000, "evidence_neighbor_limit": 1,
+        "reranker_url": "http://127.0.0.1:8999/rerank", "reranker_model": "fixture",
+        "reranker_timeout_seconds": 12,
+    }
+    env = real_model_environment(configured_settings().model_copy(update=changes))
+    for name, value in changes.items():
+        assert env["KS_" + name.upper()] == str(value)
+    assert not {"KS_DATABASE_URL", "KS_STORAGE_ROOT", "KS_TOKEN_SECRET"} & env.keys()
+
+
 def test_console_displays_answer_and_server_citation():
     data = {
         "answer_status": "answered",

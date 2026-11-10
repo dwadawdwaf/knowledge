@@ -93,15 +93,18 @@ def _new_build(
     settings: Settings,
     embedder_model: str,
     embedder_dim: int,
-    parser_profile: str | None = None,
+    parser_profile: str,
+    media_type: str,
 ) -> IndexBuild:
     build = IndexBuild(
         version_id=version_id,
         state=BuildState.QUEUED,
         chunk_config={
+            "strategy": (settings.pdf_chunk_strategy or settings.chunk_strategy)
+            if media_type == "application/pdf" else settings.chunk_strategy,
             "max_chars": settings.chunk_max_chars,
             "overlap_chars": settings.chunk_overlap_chars,
-            "parser_profile": parser_profile or settings.document_parser_profile,
+            "parser_profile": parser_profile,
         },
         embedding_model=embedder_model,
         embedding_dim=embedder_dim,
@@ -190,7 +193,7 @@ def upload(
         media_type=media_type,
         byte_size=len(data),
     )
-    build = _new_build(session, version.id, settings, embedder_model, embedder_dim, selected)
+    build = _new_build(session, version.id, settings, embedder_model, embedder_dim, selected, media_type)
     job = job_repo.create(
         session,
         JobKind.INGEST,
@@ -259,7 +262,7 @@ def add_version(
         media_type=media_type,
         byte_size=len(data),
     )
-    build = _new_build(session, version.id, settings, embedder_model, embedder_dim, selected)
+    build = _new_build(session, version.id, settings, embedder_model, embedder_dim, selected, media_type)
     job = job_repo.create(
         session,
         JobKind.INGEST,

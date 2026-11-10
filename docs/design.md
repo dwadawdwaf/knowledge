@@ -1,6 +1,6 @@
 # 实现规格
 
-功能基线：14000c1，数据库迁移至0003。操作见[运行手册](runbook.md)，取舍见[决策摘要](decisions.md)，未决项见[issues](../issues.md)。
+功能基线：14000c1。迁移操作见[运行手册](runbook.md)，取舍见[决策摘要](decisions.md)，未决项见[issues](../issues.md)。
 本文不重新引入已回退的表格聚合、语义规划或分层通用回答。字段和DDL完整定义分别维护在OpenAPI、表定义与迁移中。
 
 ## 1. 定位与范围
@@ -53,13 +53,13 @@ domain不依赖框架。命名、类型、日志与验证纪律唯一见根目�
 
 | 表 | 核心语义 |
 | --- | --- |
-| knowledge_bases | owner来自Actor；状态active/deleting/deleted |
+| knowledge_bases | owner来自Actor；状态active/deleting/deleted，archived表示保留数据但隐藏（不进列表，也不能作为检索或上传范围） |
 | documents | current_version_id是已发布版本，active_build_id是当前构建，pending_build_id是待处理构建；generation为更新/删除栅栏 |
 | document_versions | 不可变上传，保存version_no、object_key、sha256、media_type、byte_size；唯一(document_id,version_no)/(kb_id,sha256) |
 | index_builds | 一次索引处理，冻结chunk_config及向量模型/维度；queued/running/ready/failed/cancelled/retired |
 | chunks | build所属片段，保存ordinal、text、locator、warnings、embedding和关键词文本；唯一(build_id,ordinal)，向量HNSW/余弦和关键词GIN/trigram索引 |
 | jobs | ingest/reindex/cleanup；queued/running/succeeded/failed/cancelled；处理任务固定build_id/generation，cleanup不填 |
-| conversations | owner所属的对话 |
+| conversations | owner所属的对话；状态active/archived，archived保留消息但不进历史列表 |
 | messages | 本轮问题/答案、状态、引用与模型标识，仅作历史展示，不参与后续生成上下文 |
 
 locator页码1起，字符偏移为Unicode码点左闭右开；无法精确定位明确降级block/page。
@@ -100,33 +100,44 @@ query最多2000码点；knowledge_base_ids必填1–20个；top_k默认5、最�
 RRF只是排名分，不能替代相关性阈值。哈希向量阈值不能直接用于真实模型。
 向量配置不兼容报MODEL_UNAVAILABLE，不冒充no_evidence；显式keyword仍可独立使用。
 
-### 6.1.1 基础评测与前端入口
+### 6.1.2 可选结构分块与检索优化
 
-全局“检索评测”只读展示过程、方案对比、分维度用例及异常，不从浏览器触发批量模型调用。
-手动检索置于知识库“检索”页签，SQL范围固定为该知识库，不沿用其他页面的全局范围。
-基础集为版本化自制资料、24题/8维度，标注来源文件和支持片段，非业务效果验收。
-同一批发布构建上对比keyword/semantic/hybrid Top-5及hybrid Top-20；问答固定hybrid Top-5。
-实验最多120次检索/问答请求，不自动重跑；资料入库向量化和结果发布不计入该请求数，不能将调用数当token或费用。
-事实召回按预期文档、build及原文片段计算，MRR为首个金标事实的倒数排名；多事实完整覆盖另列。
-无答案题不计算事实召回；回答词面覆盖、被引原文事实覆盖、可解析引用和正常拒答分开记录，均不冒充语义正确率。
-接口错误不当正常拒答、不混入有效指标分母，单独显示错误数和有效/全部样本数。
-过程/结果复用独立“检索评测 · 过程与结果”库中的固定TXT报告原件，以文件新版本发布；问答复用现有会话。
-报告与问题标注不放入被测资料库；前端经原件接口授权读取，JSON只作数据展示，不执行HTML或其中的指令。
-重置仅为显式本机管理操作：停止连接目标库/卷的项目服务、完整备份并恢复副本核对后，事务清空8张业务表，
-旧原件移入配套备份；不删除数据库、扩展或迁移历史，不触碰其他库/卷。
+通用服务的默认配置为legacy-v1分块与baseline-v1检索。新策略分别由KS_CHUNK_STRATEGY=structure-v2及
+KS_RETRIEVAL_PROFILE=optimized-v2启用，真实效果验收前不全局替换默认。新策略作为可选能力合入，不沿用旧效果基线。
 
-第二轮经用户明确授权：仅本批六份官方公开资料，可向现有deepseek-flash发送相关片段；
-甲方/私人资料仍不得外发。新增独立资料库，保留第一轮；48题按题目/标注事实划分24开发/24留出，
-不是文档级独立或第三方盲测。运行前固定问题、原件摘要、PDF物理页序和引用片段，不根据结果改标注或参数。
-第二轮最多240次检索/问答请求，不自动重跑；向量化限定本机bge-m3，原件与真实问题标注留在忽略目录，不入提交。
-复用第一轮实验引擎，以独立报告文件retrieval-evaluation-v2-public.txt保存结果；前端可选轮次与数据划分，
-兼容旧报告。单报告最多48题；第一轮默认仍24题/120请求，不修改旧数据或分数。
-公开PDF可显式按NFKC及排版空白归一化匹配金标；有页码标注时还要求命中对应物理页序，
-匹配规则只用于评测、不修改索引。用户随后批准第二轮改用MinerU；先前基础解析导入未进入问答，保留但不纳入本轮范围。
-预检复用本轮生产解析/分块，金标仍按原件冻结，不因OCR输出改变答案；分别展示原始页数、文本页、发布块数和金标可见性；
-预检通过不代替逐页版面验收。当前轮不做基础解析/MinerU配对对照，不调参；语料变化不能解释为算法改善。
-仅入库阶段失败且尚无本轮报告时，可经明确批准恢复一次：保留启动标记，核对原指纹，复用已发布构建，
-失败原件经重建创建新build，未上传资料正常导入；已有报告即拒绝从零执行，不能重跑已开始的问答。
+- 新build在chunk_config冻结strategy；旧build缺失该项按legacy-v1，普通重建仍复制原配置。对照使用独立库导入相同字节，不绕过同库去重。
+- ParsedBlock保留kind、heading_level、table_id及解析器确实提供的metadata；子进程序列化必须保留这些字段。
+- structure-v2按显式标题、章/条边界组织，合并同节短段，长元素按句子/段落切开；PPTX不跨幻灯片合并，表格与正文隔离。
+- 仅排除解析器显式标注的页眉/页脚并告警running_matter_omitted；不按重复短语删除正文。文本段落识别兼容LF/CRLF及空白行，原始码点偏移不归一化。
+- DOCX结构分块恢复段落/表格在原件中的顺序，legacy-v1保持原行为。CSV/XLSX按行拆分，保存跳空行前的真实行号；首行候选表头进入检索上下文并标记table_header_candidate，不声称已正确识别所有表头。
+- 跨页仅在相邻页、同节和未完句等线索兼容时连接，标记cross_page_continuation_candidate；未知关系保持独立，章节/条款边界阻断关联。多栏顺序、扫描识别及跨页续表结构不足时保留解析告警，不伪造几何或续表关系。
+- 合并片段用locator.precision=composite及sources保存每段chunk_start/chunk_end与原始locator，顶层不提供虚构的连续字符偏移。单来源保留原定位并附来源映射；前端展示全部来源页。
+- chunks.structure保存strategy、kind、section_path、unit_id、table_id、is_header及context_sources，旧行迁移默认空对象。text是原文，tsv与向量输入可附文档标题、章节及候选表头；附加上下文不能充当引用原文。
+- optimized-v2保留原问题，补充NFKC/空白归一化版本及有限显式并列子问句，保留否定、数值、单位和范围。编号/条号提取仅来自用户原问题；不读取历史会话、不扩大库范围、不自动调用模型改写。
+- 关键词对照使用全文/局部trigram与编号精确包含，语义仍使用原模型；各候选SQL显式排序并稳定处理并列。按配置加权RRF，扩展问题取最佳候选分数，避免按改写次数累加。
+- 局部trigram另用keyword_local_floor（候选默认0.3），全文仍用原similarity_floor；两者尺度不同，不直接共用阈值。
+- 内部候选数与公开top_k分离。可选本机HTTP重排端点通过Reranker端口注入，固定输入候选预算；无端点时不重排，已配置但故障时返回模型错误，不静默回退。重排分数不作为事实支持概率。
+- 问答按片段数/字符预算选证据，去除包含重复，预留有限关联槽。同单元邻块或同表候选表头须通过授权SQL读取，限定同一active build；旧索引没有结构时不猜测邻接。补充片段保留独立证据键和引用，生成后复核全部来源。
+
+阈值、权重、长度预算和真实效果仍需另行验证；不引入表格聚合、视觉生成或自动解析器切换。
+
+在 `optimized-v2` 下，`KS_EVIDENCE_COVERAGE` 和 `KS_STRUCTURED_CONTEXT` 是两个独立、默认关闭的开关。前者保留整句混合检索，只对具有共同对象的显式字段清单或可独立阅读的并列问句补充需求召回。原首位候选保持在首位，每项在限定候选中选一个直接片段，同片段可覆盖多项。条件归属不明确或原句无候选时保留原排序。
+
+后者只改变送入问答的关联证据。先选择直接证据，再在剩余预算内按原始表头定位、相邻页续句或同原始块连续窗口补全。补全沿用同一当前构建的授权查询，片段单独引用。检索接口的直接结果不受上下文开关影响。现有结构缺失或关系无法核验时不补全。
+
+实验配置 `KS_RETRIEVAL_PROFILE=fts-v1` 使用一条原查询。英文关键词召回由 PostgreSQL 英文词项并集和 `ts_rank_cd` 排序，GIN 表达式索引复用 `chunks.tsv` 文本。含汉字、编号或无有效词项的查询走同一条 SQL 检索路径中的既有关键词排序。语义召回、加权 RRF、授权、当前构建和引用校验沿用现有规则。
+
+显式选择 `bm25-v1` 时启用本机倒排索引；分块策略独立选择。关键词路径用本机 OpenSearch 的英文分析器和 Lucene BM25（k1=1.2，b=0.75），语义路径沿用 PostgreSQL/pgvector，混合用加权 RRF（k=60，关键词 0.5、向量 1.0）。只用一条原始查询，问答从直接命中中按现有预算选证据。
+
+PostgreSQL 先查出当前有权访问的已发布构建，OpenSearch 按这些构建过滤后取 Top K，再由 PostgreSQL 校验候选的权限与发布版本，提供原文及定位。缺失构建首次使用时由 PostgreSQL 的检索文本批量同步，写入完成才标记，支持重复同步。倒排索引禁用原文回读，文档删除提交后立即阻断检索，清理任务移除该文档的倒排记录。OpenSearch 不可用返回可重试的服务错误。
+
+### 6.1.3 PDF 版面分块
+
+`KS_PDF_CHUNK_STRATEGY=pdf-layout-v1` 只覆盖 PDF 新构建的分块策略，仍在 `chunk_config.strategy` 冻结。解析器沿用上传时的选择，重试和普通重建沿用原构建策略。原件、发布事务和授权条件沿用现有规则。
+
+- 优先使用解析器提供的真实块框。MinerU 4.1 的正文仍从 `structured_content.json` 读取，`middle_json.json` 经协议、生产者、物理页号和页内块数量及类型顺序核对后提供归一化块框。坐标缺失、通栏块与栏内块重叠或无法可靠归类的版面保留页内解析顺序，标记 `pdf_layout_uncertain`。
+- 单栏按正文段落切分。双栏在可靠栏间距内先左后右。存在通栏摘要、图表或标题的混排页先按通栏块分区，再恢复各区的阅读顺序。跨栏、跨页仅连接与解析顺序兼容的明确续文，或位置、章节和续句线索一致的相邻正文。复合定位保留每段页码、栏位和实际可用的块框，`pdf_bbox` 是原解析块框。
+- 多栏及版面未知页的正文块上限为配置长度与 520 字符的较小值。长段优先在自然边界拆分。表格独立成块，超长时优先在原有行边界拆开。公式、图注、脚注和代码各自保留边界。OCR 正文沿用解析器输出并标记 `pdf_ocr_requires_review`，未识别出文字的视觉块只在有可用图注或版面边界时参与处理。
 
 ### 6.2 问答
 
@@ -155,7 +166,7 @@ conversation_id用于存档，本轮生成不读取历史答复；无通用回�
 | GET /documents/{id}/sheets、/documents/{id}/docx | 受限只读预览200，不代表完整解析结构 |
 | GET /jobs/{id} | 阶段/尝试/错误200，无真实进度时不虚构百分比 |
 | POST /search、/qa | 检索/问答200 |
-| POST/GET /conversations、GET /conversations/{id} | 新会话201/列表200/历史200 |
+| POST/GET /conversations、GET/DELETE /conversations/{id} | 新会话201/列表200/历史200；删除200（消息级联，他人与不存在404，不用204） |
 
 文件响应private/no-store/nosniff，Office原件attachment，不伪装HTML。引用预览仍需授权。
 成功包装 `{data,meta:{request_id}}`；错误 `{error:{code,message,retryable},meta:{request_id}}`。

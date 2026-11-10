@@ -4,12 +4,14 @@ from __future__ import annotations
 
 import io
 import json
+import math
 import re
 import time
 import urllib.error
 import urllib.request
 import uuid
 import zipfile
+from dataclasses import replace
 from html.parser import HTMLParser
 from urllib.parse import urlsplit
 
@@ -68,6 +70,49 @@ class HtmlText(HTMLParser):
             self.parts.append(data)
 
 
+def _pdf_boxes(middle: object, producer: dict) -> tuple[dict[int, list[dict]], bool]:
+    if not isinstance(middle, dict) or (
+        middle.get("schema") != "docvortex.middle"
+        or middle.get("schema_version") != "2.0"
+        or middle.get("is_full_document") is not True
+    ):
+        return {}, False
+    metadata, pages = middle.get("metadata"), middle.get("pages")
+    if not isinstance(metadata, dict) or metadata.get("producer") != producer or not isinstance(pages, list):
+        return {}, False
+    indexed: dict[int, list[dict]] = {}
+    for page in pages:
+        if not isinstance(page, dict):
+            return {}, False
+        index, blocks = page.get("page_idx"), page.get("blocks")
+        if (type(index) is not int or index < 0 or index in indexed or not isinstance(blocks, list)
+                or not all(isinstance(block, dict) for block in blocks)):
+            return {}, False
+        indexed[index] = blocks
+    extensions = middle.get("extensions")
+    mineru = extensions.get("mineru") if isinstance(extensions, dict) else None
+    return indexed, isinstance(mineru, dict) and mineru.get("parse_mode") == "ocr"
+
+
+def _normalized_bbox(value: object) -> tuple[float, float, float, float] | None:
+    if not isinstance(value, list) or len(value) != 4 or not all(
+        type(item) in (int, float) and 0 <= item <= 1 and math.isfinite(item) for item in value
+    ):
+        return None
+    left, top, right, bottom = value
+    return (left, top, right, bottom) if left < right and top < bottom else None
+
+
+def _pdf_captions(value: object) -> list[dict]:
+    if not isinstance(value, list):
+        return []
+    return [
+        {"content": item["content"], "bbox": _normalized_bbox(item.get("bbox"))}
+        for item in value
+        if isinstance(item, dict) and isinstance(item.get("content"), str) and item["content"].strip()
+    ]
+
+
 def normalize_archive(data: bytes, media: str, limit: int) -> list[ParsedBlock]:
     with zipfile.ZipFile(io.BytesIO(data)) as archive:
         entries = archive.infolist()
@@ -76,17 +121,26 @@ def normalize_archive(data: bytes, media: str, limit: int) -> list[ParsedBlock]:
         names = [e.filename for e in entries]
         if len(names) != len(set(names)) or names.count("structured_content.json") != 1:
             raise ValueError("结构结果缺失或重复")
-        # 只解压 structured_content.json；图片等未读成员不计入预算，
-        # 但 JSON 本身仍受上限约束，防止解压炸弹。
+        # 仅读取协议规定的 JSON，实际读取的成员共享解压预算。
         content_entry = next(e for e in entries if e.filename == "structured_content.json")
         if content_entry.file_size > limit:
             raise ValueError("解压预算超限")
         content = json.loads(archive.read(content_entry))
+        middle = None
+        if media == "application/pdf" and "middle_json.json" in names:
+            middle_entry = archive.getinfo("middle_json.json")
+            if middle_entry.file_size <= limit - content_entry.file_size:
+                try:
+                    middle = json.loads(archive.read(middle_entry))
+                except (ValueError, zipfile.BadZipFile):
+                    # 附加坐标损坏时保留已验证的正文，布局策略会标记缺失。
+                    pass
     if content.get("is_full_document") is not True or not isinstance(content.get("pages"), list):
         raise ValueError("不接受截断文档")
     producer = content.get("metadata", {}).get("producer", {})
     if producer.get("name") != "mineru" or not str(producer.get("version", "")).startswith("4.1."):
         raise ValueError("解析协议版本不匹配")
+    geometry, ocr = _pdf_boxes(middle, producer)
     result: list[ParsedBlock] = []
     seen = set()
     skipped = False
@@ -97,12 +151,42 @@ def normalize_archive(data: bytes, media: str, limit: int) -> list[ParsedBlock]:
         seen.add(index)
         if not isinstance(page["blocks"], list):
             raise TypeError("块结构无效")
-        for block in page["blocks"]:
+        # 同一包的两个输出按协议保留顶层块数量、类型和顺序。逐页校验后才能配对。
+        middle_blocks = geometry.get(index, [])
+        aligned = len(middle_blocks) == len(page["blocks"]) and all(
+            block.get("type") == middle_block.get("type")
+            for block, middle_block in zip(page["blocks"], middle_blocks, strict=True)
+        )
+        for offset, block in enumerate(page["blocks"]):
             value = block.get("content")
+            warnings = {"mineru_requires_review", "mineru_geometry_unavailable"}
+            source_kind = str(block.get("type", "text")).lower()
+            kind = "table" if "table" in source_kind else {
+                "title": "heading", "heading": "heading", "caption": "caption",
+                "footnote": "footnote", "image": "figure", "figure": "figure",
+                "header": "header", "page_header": "header", "footer": "footer",
+                "page_footer": "footer", "page_number": "footer",
+            }.get(source_kind, "text")
+            metadata = {}
+            if media == "application/pdf":
+                pdf_kind = {
+                    "doc_title": "heading", "paragraph_title": "heading", "equation": "equation",
+                    "chart": "figure", "code": "code", "page_footnote": "footnote", "aside_text": "aside",
+                }.get(source_kind, kind)
+                box = _normalized_bbox(middle_blocks[offset].get("bbox")) if aligned else None
+                metadata = {
+                    "pdf_kind": pdf_kind, "pdf_ocr": ocr, "pdf_bbox": box,
+                    "pdf_continues_prev": block.get("continues_prev") is True,
+                    "pdf_captions": _pdf_captions(block.get("captions")),
+                }
             if not isinstance(value, str) or not value.strip():
                 skipped = True
-                continue
-            warnings = {"mineru_requires_review", "mineru_geometry_unavailable"}
+                # 空的视觉块仍可作为通栏边界，旧策略会略过它。
+                if metadata.get("pdf_kind") not in {"figure", "table", "equation"} or not (
+                    metadata.get("pdf_bbox") or metadata.get("pdf_captions")
+                ):
+                    continue
+                value = ""
             if "table" in str(block.get("type", "")) or re.search(
                 r"</?(?:table|thead|tbody|tr|td|th|p|div|span|br|script|style|h[1-6])(?:\s[^>]*|\s*/?)>",
                 value,
@@ -115,7 +199,7 @@ def normalize_archive(data: bytes, media: str, limit: int) -> list[ParsedBlock]:
             paginated = media == "application/pdf" or media.startswith("image/")
             if not paginated:
                 warnings.add("mineru_native_location_unavailable")
-            if not value.strip():
+            if not value.strip() and not metadata.get("pdf_bbox") and not metadata.get("pdf_captions"):
                 skipped = True
                 continue
             if "\x00" in value:
@@ -138,15 +222,19 @@ def normalize_archive(data: bytes, media: str, limit: int) -> list[ParsedBlock]:
                         precision="page" if paginated else "block",
                     ),
                     tuple(sorted(warnings)),
+                    kind=kind,
+                    heading_level=block.get("level") if type(block.get("level")) is int
+                    and 1 <= block["level"] <= 6 else None,
+                    table_id=f"mineru-{index}-{len(result)}" if kind == "table" else None,
+                    metadata=metadata,
                 )
             )
-    if not result:
+    if not any(block.text.strip() or block.metadata.get("pdf_captions") for block in result):
         raise ValueError("没有可用正文")
     if skipped:
-        first = result[0]
-        result[0] = ParsedBlock(
-            first.text, first.locator, (*first.warnings, "mineru_content_skipped")
-        )
+        index = next((index for index, block in enumerate(result) if block.text.strip()), 0)
+        first = result[index]
+        result[index] = replace(first, warnings=(*first.warnings, "mineru_content_skipped"))
     return result
 
 

@@ -21,12 +21,8 @@ SCRIPTS = (
     "ask_local",
     "check",
     "test_policy",
-    "evaluation",
-    "evaluate_local",
     "workbench",
     "browser_smoke",
-    "retrieval_baseline",
-    "evaluate_public",
 )
 
 

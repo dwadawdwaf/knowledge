@@ -10,11 +10,13 @@ from sqlalchemy.orm import Session
 
 from knowledge.adapters.embedding import build_embedder
 from knowledge.adapters.generator import build_generator
+from knowledge.adapters.opensearch import build_keyword_index
 from knowledge.adapters.parser import build_parser_registry
+from knowledge.adapters.reranking import build_reranker
 from knowledge.adapters.storage import LocalStorage
 from knowledge.config import Settings, get_settings
 from knowledge.domain.entities import Actor
-from knowledge.domain.ports import Embedder, Generator, ObjectStorage
+from knowledge.domain.ports import Embedder, Generator, KeywordIndex, ObjectStorage, Reranker
 from knowledge.repositories.session import new_session
 from knowledge.security import bearer_actor
 
@@ -60,3 +62,12 @@ def get_embedder() -> Embedder:
 @lru_cache
 def get_generator() -> Generator:
     return build_generator(get_settings())
+
+
+@lru_cache
+def get_reranker() -> Reranker | None:
+    return build_reranker(get_settings())
+
+
+def get_keyword_index(settings: Settings = Depends(get_settings_dep)) -> KeywordIndex | None:
+    return build_keyword_index(settings)

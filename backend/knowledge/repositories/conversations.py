@@ -7,7 +7,7 @@ import uuid
 from sqlalchemy import case, select
 from sqlalchemy.orm import Session
 
-from knowledge.domain.entities import Actor
+from knowledge.domain.entities import Actor, Lifecycle
 from knowledge.domain.errors import NotFound
 from knowledge.repositories.tables import Conversation, Message
 
@@ -20,9 +20,13 @@ def get_owned(session: Session, actor: Actor, conversation_id: uuid.UUID) -> Con
 
 
 def list_owned(session: Session, actor: Actor) -> list[Conversation]:
+    """归档会话不进入历史列表；消息保留，可直接改回 active 恢复。"""
     stmt = (
         select(Conversation)
-        .where(Conversation.owner_id == actor.subject_id)
+        .where(
+            Conversation.owner_id == actor.subject_id,
+            Conversation.status == Lifecycle.ACTIVE.value,
+        )
         .order_by(Conversation.created_at.desc())
     )
     return list(session.scalars(stmt))
@@ -33,6 +37,22 @@ def create(session: Session, actor: Actor, title: str = "") -> Conversation:
     session.add(conversation)
     session.flush()
     return conversation
+
+
+def delete_owned(session: Session, actor: Actor, conversation_id: uuid.UUID) -> None:
+    """硬删除会话；messages 外键 ON DELETE CASCADE，消息一并消失。
+
+    归档（mark_archived）用于隐藏但仍可追溯；这里是用户主动删除，不做保留。
+    无权与不存在同样走 get_owned 的 404。
+    """
+    conversation = get_owned(session, actor, conversation_id)
+    session.delete(conversation)
+    session.flush()
+
+
+def mark_archived(session: Session, conversation: Conversation) -> None:
+    """归档：消息与引用保留，仅从历史列表移除。"""
+    conversation.status = Lifecycle.ARCHIVED.value
 
 
 def append(

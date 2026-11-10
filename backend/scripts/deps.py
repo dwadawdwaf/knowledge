@@ -1,8 +1,7 @@
 """启动并校验本机依赖，让一键脚本不必手工先开服务。
 
-数据库由 `LocalRuntime` 每次现起临时实例，不在此模块范围内；
-这里只处理**本机向量服务（Ollama）**，并验证向量维度与生成模型确实可用。
-远程端点不做拉起，只做连通性与鉴权校验。
+启动本机依赖，并校验显式配置的数据库和模型端点是否可用。
+远程端点只做连通性与鉴权校验。
 """
 
 from __future__ import annotations
@@ -355,20 +354,26 @@ def verify_generator(
 def ensure_database(settings, *, progress: Callable[[str], None] = _say) -> str:
     """确定本次运行使用的数据库，返回可直接使用的 URL。
 
-    没有显式配置 `KS_DATABASE_URL` 时用本机内置库（数据落在用户目录），
-    这样在别人的电脑上也不需要任何远端服务；显式配置了才走远端 + 隧道那条老路。
+    默认使用本机内置库，显式连接直连或使用已配置的 SSH 隧道。
     """
-    if "database_url" not in settings.model_fields_set:
-        from scripts import local_db
+    from scripts import local_db
 
+    if "database_url" not in settings.model_fields_set:
         return local_db.ensure(progress)
 
     parsed = urlsplit(settings.database_url)
     if parsed.hostname not in LOOPBACK_HOSTS:
+        if not local_db.can_connect(settings.database_url, timeout=8):
+            raise DependencyError(
+                "远端 PostgreSQL 连接验证失败。请检查 KS_DATABASE_URL、网络与数据库访问权限。"
+            )
+        progress("[依赖] 远端 PostgreSQL 连接已验证")
         return settings.database_url
     port = parsed.port or 5432
     if _port_open(parsed.hostname, port):
-        progress(f"[依赖] 数据库端口已就绪：{parsed.hostname}:{port}")
+        if not local_db.can_connect(settings.database_url):
+            raise DependencyError("本机数据库端口已监听，但 PostgreSQL 连接验证失败。请检查隧道与数据库配置。")
+        progress("[依赖] 本机 PostgreSQL 连接已验证")
         return settings.database_url
     target = settings.tunnel_ssh
     if not target:
@@ -394,8 +399,6 @@ def ensure_database(settings, *, progress: Callable[[str], None] = _say) -> str:
     finally:
         output.close()
     # 端口通了还要能查询：握手未完成就往下走，迁移会撞上连接超时。
-    from scripts import local_db
-
     deadline = time.monotonic() + START_TIMEOUT_SECONDS
     while time.monotonic() < deadline:
         if _port_open(parsed.hostname, port) and local_db.can_connect(settings.database_url):
@@ -417,6 +420,8 @@ def ensure_dependencies(
 ) -> None:
     """启动本机依赖并验证两个模型端点；失败抛 DependencyError。"""
     ensure_database(settings, progress=progress)
+    if settings.retrieval_profile == "bm25-v1" and settings.opensearch_url:
+        ensure_opensearch(settings.opensearch_url, progress=progress)
     # 代理开着又退出是这台机器的常态；明确说出来，不靠看日志才发现走了直连。
     from knowledge.adapters.outbound import dead_local_proxy
 
@@ -450,6 +455,29 @@ def ensure_dependencies(
         progress=progress,
     )
     progress(f"[依赖] 生成自检通过：{settings.generator_model}")
+
+
+def ensure_opensearch(url: str, *, progress: Callable[[str], None]) -> None:
+    from knowledge.adapters.outbound import open_request
+
+    if sys.platform == "win32" and url.rstrip("/") == "http://127.0.0.1:19277":
+        command = BACKEND.parent / "start-opensearch.ps1"
+        try:
+            subprocess.run(
+                ["powershell.exe", "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", str(command)],
+                check=True, timeout=90,
+            )
+        except (OSError, subprocess.SubprocessError):
+            raise DependencyError("本机 OpenSearch 未启动，请检查启动提示与本地日志。") from None
+    try:
+        endpoint = urllib.request.Request(url)
+        with open_request(endpoint, timeout=3, follow_redirects=False) as response:
+            is_opensearch = json.load(response)["version"]["distribution"] == "opensearch"
+    except (OSError, ValueError, KeyError, TypeError):
+        is_opensearch = False
+    if not is_opensearch:
+        raise DependencyError("BM25 检索需要可用的本机 OpenSearch，请检查 KS_OPENSEARCH_URL。")
+    progress("[依赖] OpenSearch BM25 已就绪")
 
 
 def main() -> int:

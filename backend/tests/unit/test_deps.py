@@ -2,6 +2,10 @@
 
 from __future__ import annotations
 
+from unittest.mock import Mock
+
+import pytest
+
 from knowledge.adapters import outbound
 from scripts.deps import _local_service, _matches
 
@@ -10,6 +14,14 @@ def test_loopback_endpoint_is_direct():
     """本机端点必须绕过代理，否则本地模型服务会被代理截走。"""
     assert outbound.uses_direct_connection("http://127.0.0.1:11434/v1")
     assert outbound.uses_direct_connection("http://localhost:11434/v1")
+
+
+def test_private_network_endpoint_is_direct():
+    """内网部署的模型服务直连；经公网代理转发既不可达也不合适。"""
+    assert outbound.uses_direct_connection("http://10.245.226.35:7901/v1")
+    assert outbound.uses_direct_connection("http://192.168.1.20:8000/v1")
+    assert outbound.uses_direct_connection("http://172.16.5.9:8000/v1")
+    assert not outbound.uses_direct_connection("http://8.8.8.8/v1")
 
 
 def test_remote_endpoint_uses_system_route():
@@ -34,17 +46,36 @@ def test_model_tag_matching_ignores_latest_suffix():
     assert not _matches("bge-m3", ["qwen2.5:7b"])
 
 
-def test_ensure_database_skips_remote_host():
+@pytest.mark.parametrize("reachable", [True, False])
+def test_ensure_database_verifies_remote_connection(monkeypatch, reachable):
     from knowledge.config import Settings
-    from scripts.deps import ensure_database
+    from scripts import local_db
+    from scripts.deps import DependencyError, ensure_database
 
     settings = Settings(_env_file=None, database_url="postgresql+psycopg://u:p@db.example.com:5432/knowledge")
-    ensure_database(settings, progress=lambda message: None)  # 远端不归启动器管
+    probe = Mock(return_value=reachable)
+    monkeypatch.setattr(local_db, "can_connect", probe)
+    if reachable:
+        assert ensure_database(settings, progress=lambda message: None) == settings.database_url
+    else:
+        with pytest.raises(DependencyError, match="远端 PostgreSQL 连接验证失败") as caught:
+            ensure_database(settings, progress=lambda message: None)
+        assert settings.database_url not in str(caught.value)
+    probe.assert_called_once_with(settings.database_url, timeout=8)
+
+
+def test_ensure_database_rejects_listening_port_without_valid_postgresql(monkeypatch):
+    from knowledge.config import Settings
+    from scripts import deps, local_db
+
+    settings = Settings(_env_file=None, database_url="postgresql+psycopg://u:p@127.0.0.1:15432/knowledge")
+    monkeypatch.setattr(deps, "_port_open", Mock(return_value=True))
+    monkeypatch.setattr(local_db, "can_connect", Mock(return_value=False))
+    with pytest.raises(deps.DependencyError, match="端口已监听，但 PostgreSQL 连接验证失败"):
+        deps.ensure_database(settings, progress=lambda message: None)
 
 
 def test_ensure_database_requires_tunnel_when_port_closed():
-    import pytest
-
     from knowledge.config import Settings
     from scripts.deps import DependencyError, ensure_database
 

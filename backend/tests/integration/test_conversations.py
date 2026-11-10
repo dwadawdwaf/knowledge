@@ -5,6 +5,7 @@ from __future__ import annotations
 import os
 
 import pytest
+from sqlalchemy import text
 
 from knowledge.adapters.generator import StubGenerator
 from knowledge.domain.entities import Actor
@@ -70,3 +71,51 @@ def test_conversation_history_is_persisted_and_owner_scoped(session, settings, d
     assert conversation_service.list_owned(session, other) == []
     with pytest.raises(NotFound):
         conversation_service.detail(session, other, conversation.id)
+
+
+def test_delete_removes_conversation_and_messages(session, settings, deps):
+    """删除会话要连消息一起消失；他人删不动，删完再读 404。"""
+    actor = Actor(subject_id="del-user", tenant_id="default")
+    other = Actor(subject_id="del-other", tenant_id="default")
+    kb = knowledge_service.create(session, actor, "删除会话库")
+    document_service.upload(
+        session,
+        actor,
+        settings,
+        deps.storage,
+        deps.registry,
+        kb_id=kb.id,
+        filename="meeting-room.md",
+        data=MEETING_RULES,
+        embedder_model=deps.embedder.model,
+        embedder_dim=deps.embedder.dimension,
+    )
+    assert process_next(session, deps) is True
+
+    conversation = conversation_service.create(session, actor, "待删除会话")
+    qa_service.answer(
+        session,
+        actor,
+        settings,
+        deps.embedder,
+        StubGenerator(),
+        question="会议室使用后需要做什么",
+        kb_ids=[kb.id],
+        conversation_id=conversation.id,
+    )
+    _, messages = conversation_service.detail(session, actor, conversation.id)
+    assert messages
+
+    # 他人删除：视为不存在
+    with pytest.raises(NotFound):
+        conversation_service.delete(session, other, conversation.id)
+
+    conversation_service.delete(session, actor, conversation.id)
+    with pytest.raises(NotFound):
+        conversation_service.detail(session, actor, conversation.id)
+    assert conversation_service.list_owned(session, actor) == []
+    leftover = session.execute(
+        text("SELECT count(*) FROM messages WHERE conversation_id = :id"),
+        {"id": conversation.id},
+    ).scalar_one()
+    assert leftover == 0

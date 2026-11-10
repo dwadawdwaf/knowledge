@@ -5,13 +5,21 @@ from __future__ import annotations
 from fastapi import APIRouter, Depends, Request
 from sqlalchemy.orm import Session
 
-from knowledge.api.deps import get_actor, get_embedder, get_session, get_settings_dep, request_id
+from knowledge.api.deps import (
+    get_actor,
+    get_embedder,
+    get_keyword_index,
+    get_reranker,
+    get_session,
+    get_settings_dep,
+    request_id,
+)
 from knowledge.api.v1.schemas.common import Envelope, envelope
 from knowledge.api.v1.schemas.requests import SearchRequest
 from knowledge.api.v1.schemas.responses import SearchHitOut, SearchResultOut
 from knowledge.config import Settings
 from knowledge.domain.entities import Actor
-from knowledge.domain.ports import Embedder
+from knowledge.domain.ports import Embedder, KeywordIndex, Reranker
 from knowledge.services import retrieval
 
 router = APIRouter(tags=["search"])
@@ -25,6 +33,8 @@ def search(
     actor: Actor = Depends(get_actor),
     settings: Settings = Depends(get_settings_dep),
     embedder: Embedder = Depends(get_embedder),
+    reranker: Reranker | None = Depends(get_reranker),
+    keyword_index: KeywordIndex | None = Depends(get_keyword_index),
 ) -> dict:
     hits = retrieval.search(
         session,
@@ -35,6 +45,8 @@ def search(
         kb_ids=payload.knowledge_base_ids,
         mode=payload.mode,
         top_k=payload.top_k,
+        reranker=reranker,
+        keyword_index=keyword_index,
     )
     result = SearchResultOut(
         mode=payload.mode,

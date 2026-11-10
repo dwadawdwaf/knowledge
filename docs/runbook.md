@@ -51,6 +51,7 @@ Real模式自动调用start-mineru.ps1启动或复用已安装的MinerU；-Miner
 未安装时明确提示且不自动安装；已安装但模型/接口检查失败则停止启动，不静默回退。
 
 未显式设置数据库时复用/启动本机PostgreSQL，默认55433端口。
+显式设置 `KS_DATABASE_URL` 时，启动器先执行 `SELECT 1` 验证 PostgreSQL 连接，再检查模型和运行迁移。
 数据目录优先已初始化的backend/.data/pgdata，否则本机应用数据目录；KS_LOCAL_DB_DIR可指定ASCII路径。
 API/Worker退出不等于后台数据库停止，停止用：
 
@@ -71,7 +72,8 @@ API/Worker退出不等于后台数据库停止，停止用：
 .\.venv\Scripts\python.exe -m knowledge.entrypoints.worker
 ```
 
-当前head为0003_chunk_warnings；0002固定任务目标，升级前不能留下未处理旧任务；0003保存块警告。
+当前head为0007_merge_optimization；从0001升级前不能留下未处理旧任务。
+该节点汇合会话归档链与结构分块、全文索引链，任一分支数据库均可用同一命令升级。
 不对未知默认库运行迁移，不改历史迁移，不原地回填已发布片段。
 
 ### 本次数据库回退与备份
@@ -82,24 +84,6 @@ API/Worker退出不等于后台数据库停止，停止用：
 备份在忽略目录 `backend/.data/rollback-backups/20261030T021547Z/`：before.dump是完整custom格式备份，
 manifest.json记录版本和计数，迁移源码副本用于恢复演练。含业务资料，仅本地保存，禁止提交/外发。
 恢复时先用pg_restore到新库验证，再评审切换；不要直接覆盖当前库，也不重复运行一次性降级脚本。
-
-### 建立持久基础评测库（会清空当前业务数据）
-
-仅明确要求替换当前数据时运行，不作为日常启动命令：
-
-```powershell
-.\backend\.venv\Scripts\python.exe -X utf8 -u backend/scripts/retrieval_baseline.py --reset-current --confirm-real --serve
-```
-
-脚本仅接受`.data/db_url`记录的本机knowledge库及项目`.data/objects`卷；备份在
-`backend/.data/evaluation-backups/<UTC时间>/`，包含before.dump、旧objects和校验清单。
-清空前自动停止精确匹配该库/卷的API/Worker，原启动终端将断开；发现其他数据库连接则停止，不强制踢掉。
-先实际恢复到独立副本校验记录数和版本，成功才清空。原件留在配套备份，不外发。
-导入11份自制文件（5种格式），固定24题/8维度，对比4种召回配置并执行24次问答；上限120次检索/问答，
-使用现有真实模型，只有自制资料会被提交。入库和报告发布另需向量调用，费用未知，失败不自动重跑。
-每6题发布一次进度；前端“检索评测”可刷新查看过程、结果、标注、实际来源并跳转知识库复测或历史问答。
-`--serve`使实验后前端继续运行，Ctrl+C停止服务；不加则完成后退出，数据持久保留，下次start.cmd可继续查看。
-报告库应与被测资料库分开选择，不能将含标注答案的报告库纳入被测检索范围。
 
 ## 3. 同模型重建与人工恢复
 
@@ -121,7 +105,7 @@ manifest.json记录版本和计数，迁移源码副本用于恢复演练。含�
 历史DeepDoc构建只读保留，不再新增；新上传只支持基础解析或MinerU。
 MinerU为本机独立Python环境，不通过容器运行，启动方式见§5。
 
-## 5. 验证与评测
+## 5. 验证
 
 ### 解析器选择与MinerU
 
@@ -169,42 +153,18 @@ node --test frontend/core.test.mjs
 浏览器检查仅在相关前端改动收尾运行，需要已有Node/测试浏览器，不自动安装。
 CI定义在.github/workflows/backend.yml，文件存在不等于远端已实跑。
 
-固定12题自制集评测默认离线；真实调用先获得授权，confirm参数不替代授权：
+### 可选分块与检索策略
 
-```powershell
-.\backend\.venv\Scripts\python.exe -u backend/scripts/evaluate_local.py
-.\backend\.venv\Scripts\python.exe -u backend/scripts/evaluate_local.py --real --confirm-real
-```
+先按本手册升级数据库，不清空或重建现有库。默认继续使用 `legacy-v1` 分块、`baseline-v1` 检索。
+以下是可按需配置的独立能力，API 和 Worker 应使用相同配置：
 
-真实模式使用固定自制资料及临时库/API/Worker，48次检索/问答API请求、上限60，不自动重跑。
-上传向量化和轮询是额外调用，不据此推断供应商token或费用。报告在backend/.data/evaluation，
-只存指纹、配置名、指标与耗时，不存正文/密钥/端点。词面覆盖、结构引用有效均不等于事实正确。
-
-### 持久库第二轮公开长文档评测
-
-仅限已批准的六份官方公开资料和已冻结的48题；不清空旧库，不重新下载语料。
-原件、来源清单和标注位于`backend/.data/public-corpus-v1`，不提交；不能替换成私人或甲方资料。
-
-本机16GiB内存的本轮配置：启动MinerU前设置`$env:MINERU_PROCESSING_WINDOW_SIZE='8'`，
-再运行`./start-mineru.ps1`；只缩小批处理窗口，不减少页数或关闭识别功能。已运行服务需核对其启动环境，
-复用服务不会使新环境变量生效。实验进程设置`$env:KS_PARSE_OUTPUT_BYTES='134217728'`（128MiB），
-预检与后台Worker使用同一有界预算，实际值记入预检报告；不修改服务默认16MiB或放开ZIP成员校验。
-
-```powershell
-.\backend\.venv\Scripts\python.exe -X utf8 -u backend/scripts/evaluate_public.py --prepare-only
-.\backend\.venv\Scripts\python.exe -X utf8 -u backend/scripts/evaluate_public.py --confirm-public --serve --port 8013
-```
-
-第一条复用生产解析器做本地预检，不入库或调用模型。第二条保留现有库，新增第二轮资料库，
-发布过程与结果并打开工作台；在“检索评测”选择轮次、开发集或留出集，也可查看实际问答与引用。
-本轮改用MinerU和现有bge-m3/deepseek-flash配置，不做解析器配对对照或调参；检索/问答最多240次，
-入库与报告发布的向量调用另计。`--confirm-public`不替代用户授权。
-本次已批准的入库恢复使用`--resume-ingestion --confirm-public --serve --port 8010`；须先停止同库旧工作台/Worker，
-保留run-started.json，不能删标记重跑。只允许尚无本轮报告的恢复一次，已有报告时停止并核对请求记录。
-`backend/.data/public-round2-mineru`保存预检、启动标记及报告；之前未进入问答的基础解析尝试保留在`backend/.data/public-round2`。
-启动标记存在时拒绝再次执行，
-中断后先核对已有结果，不删标记碰运气重跑。关闭终端会停止本轮工作台，数据库和原件继续保留。
-日常只看结果时用普通启动器，不重新执行评测；报告中词面命中和引用覆盖不等同于答案事实正确率。
+- `KS_CHUNK_STRATEGY=structure-v2`：仅对新构建启用结构分块；普通重建保留旧策略。
+- `KS_PDF_CHUNK_STRATEGY=pdf-layout-v1`：仅对新 PDF 构建启用版面分块。
+- `KS_RETRIEVAL_PROFILE=optimized-v2`：启用查询优化与加权融合；`fts-v1` 选用 PostgreSQL 英文全文检索。
+- `KS_RETRIEVAL_PROFILE=bm25-v1`：同时配置 `KS_OPENSEARCH_URL` 为本机回环地址。
+  Windows 可准备本地 OpenSearch 发行包并使用 `start-opensearch.ps1`；不下载模型或发行包。
+  不同 PostgreSQL 实例使用独立的 `KS_OPENSEARCH_INDEX`。仅在显式配置后才检查或启动此依赖。
+- 在 `optimized-v2` 下，`KS_RERANKER_URL` 和 `KS_RERANKER_MODEL` 可显式指向本机重排服务；未配置时不调用。
 
 ## 6. 排障
 
@@ -214,6 +174,7 @@ CI定义在.github/workflows/backend.yml，文件存在不等于远端已实跑�
 | 401/404 | 本次令牌、资源归属、删除状态；UUID不是凭证 |
 | running停滞 | Worker、stage/attempt、租约、模型等待，不手改任务状态 |
 | 模型故障 | 端点、认证、余额、名称、1024维及索引模型兼容性，不把故障记成无资料 |
+| KEYWORD_INDEX_UNAVAILABLE | 检查本机 OpenSearch 是否已就绪及索引名称，启动日志在 `backend/.data/workbench-opensearch/` |
 | Ollama绑定失败/10013 | 检查Windows保留端口：`netsh interface ipv4 show excludedportrange protocol=tcp`；不要删系统规则。若11434被保留，将backend/.env的KS_EMBEDDING_BASE_URL改为经检查可用的本机端口（如http://127.0.0.1:21434/v1）。启动器为serve/pull同步设置OLLAMA_HOST，不改系统环境，不更换模型或下载资料；手动启动时也需在该终端设置同一OLLAMA_HOST。 |
 | PARSE_FAILED | 格式/加密/资源限制、MinerU网络/接口/模型，不循环重传相同内容 |
 | no_evidence | 范围、发布状态、阈值及原文是否支持，不用降低门槛制造答案 |

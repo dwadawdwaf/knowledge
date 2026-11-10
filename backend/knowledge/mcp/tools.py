@@ -13,7 +13,7 @@ from sqlalchemy.orm import Session
 from knowledge.config import Settings
 from knowledge.domain.entities import Actor
 from knowledge.domain.errors import public_job_error
-from knowledge.domain.ports import Embedder, Generator, ObjectStorage
+from knowledge.domain.ports import Embedder, Generator, KeywordIndex, ObjectStorage, Reranker
 from knowledge.repositories import chunks as chunk_repo
 from knowledge.repositories import jobs as job_repo
 from knowledge.services import document as document_service
@@ -92,9 +92,12 @@ def search(
     kb_ids: list[uuid.UUID],
     mode: str = "hybrid",
     top_k: int | None = None,
+    reranker: Reranker | None = None,
+    keyword_index: KeywordIndex | None = None,
 ) -> dict[str, Any]:
     hits = retrieval.search(
-        session, actor, settings, embedder, query=query, kb_ids=kb_ids, mode=mode, top_k=top_k
+        session, actor, settings, embedder, query=query, kb_ids=kb_ids, mode=mode, top_k=top_k,
+        reranker=reranker, keyword_index=keyword_index,
     )
     return {
         "warnings": sorted({warning for hit in hits for warning in hit.warnings}),
@@ -125,6 +128,8 @@ def ask(
     question: str,
     kb_ids: list[uuid.UUID],
     top_k: int | None = None,
+    reranker: Reranker | None = None,
+    keyword_index: KeywordIndex | None = None,
 ) -> dict[str, Any]:
     result = qa_service.answer(
         session,
@@ -135,6 +140,8 @@ def ask(
         question=question,
         kb_ids=kb_ids,
         top_k=top_k,
+        reranker=reranker,
+        keyword_index=keyword_index,
     )
     return {
         "answer_status": result.status,

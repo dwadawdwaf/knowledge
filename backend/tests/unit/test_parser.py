@@ -55,9 +55,9 @@ def test_unknown_binary_not_text():
     assert detect_media_type(b"\xff\xfe\x00\x00", "x.txt") == "application/octet-stream"
 
 
-@pytest.mark.parametrize("newline", ["\n", "\r\n"])
-def test_text_parser_blocks_keep_offsets(newline):
-    source = f"第一段规定。{newline}{newline}第二段规定。{newline}"
+@pytest.mark.parametrize(("newline", "blank"), [("\n", ""), ("\r\n", ""), ("\r\n", " \t")])
+def test_text_parser_blocks_keep_offsets(newline, blank):
+    source = f"第一段规定。{newline}{blank}{newline}第二段规定。{newline}"
     content = source.encode("utf-8")
     blocks = (
         build_parser_registry().for_file(TEXT_PLAIN, "a.txt").parse(content, TEXT_PLAIN, "a.txt")

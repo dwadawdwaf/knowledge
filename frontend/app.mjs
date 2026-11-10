@@ -5,7 +5,7 @@ import { renderChat } from './chat.mjs';
 import { renderKnowledge, renderKnowledgeDetail, drawDocuments } from './library.mjs';
 import { renderFiles, updateFilesView } from './files.mjs';
 import { renderBrowse, loadBrowse, emptyBrowse, disposeBrowse } from './browse.mjs';
-import { renderEvaluation } from './evaluation.mjs';
+import { renderSearch } from './search.mjs';
 import { openChunks, openSource } from './reader.mjs';
 
 const main = document.querySelector('#content');
@@ -233,7 +233,8 @@ function newSession() {
   navigate('chat');
 }
 
-/** 连接后从后端恢复会话列表；选中最近一条并加载消息。 */
+/** 连接后从后端恢复会话列表；选中最近一条并加载消息。隐藏靠 conversations.status（决策 0028），
+ *  不在前端按标题过滤：展示规则写进文案或 SQL 都已被否过。 */
 async function loadConversations() {
   const result = await api.request('/conversations');
   const items = result.items || [];
@@ -283,6 +284,37 @@ async function ensureConversation(session, title) {
   return session;
 }
 
+/** 删除一段对话：会话与消息一起删，知识库资料不受影响。 */
+function deleteSession(session) {
+  actionDialog({
+    title: '删除这段对话？',
+    description: '对话记录与引用会一并删除，知识库里的资料不受影响。',
+    confirmText: '删除',
+    danger: true,
+    action: async () => {
+      if (session.serverId) {
+        await api.request(`/conversations/${session.id}`, { method: 'DELETE' });
+      }
+      const wasActive = state.sessionId === session.id || state.historySelection === session.id;
+      state.sessions = state.sessions.filter(item => item.id !== session.id);
+      if (!wasActive) {
+        renderSessions();
+        return;
+      }
+      if (state.sessions.length) {
+        await selectSession(state.sessions[0]);
+        return;
+      }
+      const draft = draftSession();
+      state.sessions = [draft];
+      state.sessionId = draft.id;
+      state.historySelection = '';
+      renderSessions();
+      render();
+    },
+  });
+}
+
 async function selectSession(session) {
   state.sessionId = session.id;
   if (!session.loaded) session.loading = true;
@@ -310,13 +342,26 @@ function renderSessions() {
 
   state.sessions.forEach(session => {
     const active = state.page === 'chat' && session.id === state.historySelection;
+    const row = el('div', 'session-row');
     const item = el('button', active ? 'session-item active' : 'session-item');
     if (active) item.setAttribute('aria-current', 'page');
     item.type = 'button';
     item.title = session.title || '新对话';
     item.append(icon('chat'), el('span', '', session.title || '新对话'));
     item.addEventListener('click', () => selectSession(session));
-    list.append(item);
+
+    const remove = el('button', 'session-del');
+    remove.type = 'button';
+    remove.title = '删除对话';
+    remove.setAttribute('aria-label', '删除对话');
+    remove.append(icon('trash'));
+    remove.addEventListener('click', event => {
+      event.stopPropagation();
+      deleteSession(session);
+    });
+
+    row.append(item, remove);
+    list.append(row);
   });
 }
 
@@ -429,7 +474,7 @@ function render() {
   if (state.page === 'chat') main.append(renderChat(app));
   else if (state.page === 'browse' && state.browse.doc) main.append(renderBrowse(app));
   else if (state.page === 'files') main.append(renderFiles(app));
-  else if (state.page === 'search') main.append(renderEvaluation(app));
+  else if (state.page === 'search') main.append(renderSearch(app));
   else if (state.library) main.append(renderKnowledgeDetail(app));
   else main.append(renderKnowledge(app));
   state.renderedKey = viewKey();
@@ -533,7 +578,8 @@ function disconnect(silent = false) {
   state.sessionId = '';
   state.conversationsError = null;
   state.receipts.clear();
-  connectionLabel.textContent = '未连接';
+  connectionLabel.textContent = '知识工作台';
+  document.querySelector('#app').dataset.connected = 'false';
   if (!silent) renderSessions();
   render();
 }
@@ -579,14 +625,6 @@ const app = {
   loadAllFiles,
   openLibrary,
   openLibraryById,
-  openLibrarySearch: (kbId, query = '') => {
-    if (!state.libraries.some(kb => kb.id === kbId)) { notify('评测资料已删除或不再可访问。'); return; }
-    openLibraryById(kbId);
-    state.libraryTab = 'search';
-    state.query = query;
-    state.searchResult = null;
-    render();
-  },
   openKnowledgeList: () => { state.library = null; navigate('knowledge'); },
   openBrowse: (doc, focus) => openBrowse(doc, focus),
   closeBrowse: () => closeBrowse(),
@@ -671,10 +709,11 @@ async function connect(value) {
       // 历史读取失败不应阻断连接；页面会保留新对话入口。
       state.conversationsError = error;
     }
-    // 标签最后再改：冒烟与用户都以「已连接」作为可交互信号，此时列表必须已画好。
+    // 最后再改标签：冒烟以标签作为可交互信号，此时列表必须已画好。
     render();
     renderSessions();
-    connectionLabel.textContent = '已连接 · 开发身份';
+    connectionLabel.textContent = '知识工作台';
+    document.querySelector('#app').dataset.connected = 'true';
     return true;
   } catch (error) {
     api.token = '';

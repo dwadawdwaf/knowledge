@@ -86,6 +86,12 @@ class ModelTimeout(DomainError):
     retryable = True
 
 
+class KeywordIndexUnavailable(DomainError):
+    code = "KEYWORD_INDEX_UNAVAILABLE"
+    http_status = 503
+    retryable = True
+
+
 class TransientError(DomainError):
     """未预期但可重试的失败，例如数据库瞬时错误。"""
 
@@ -107,6 +113,7 @@ _JOB_MESSAGES = {
     "PARSE_FAILED": "文件解析失败",
     "MODEL_UNAVAILABLE": "模型服务不可用",
     "MODEL_TIMEOUT": "模型服务超时",
+    "KEYWORD_INDEX_UNAVAILABLE": "关键词索引暂不可用",
     "STALE_JOB": "任务执行资格已失效",
     "UNKNOWN_KIND": "任务类型不受支持",
 }

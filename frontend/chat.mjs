@@ -1,7 +1,7 @@
 // 对话页：800px 居中列、时间分隔、用户气泡右对齐、助手答案无气泡 + 引用芯片。
 import { el, icon, toast, autoGrow, clockLabel, dayLabel, loading } from './dom.mjs';
 import { warningLabel } from './core.mjs';
-import { scopeControl, scopeIds } from './scope.mjs';
+import { scopeControl, scopeIds, scopeLabel } from './scope.mjs';
 
 const MODE_LABEL = { hybrid: '混合检索', semantic: '语义检索', keyword: '关键词检索' };
 
@@ -44,26 +44,17 @@ function header(app, session) {
   const left = el('div', 'chat-head-left');
   left.append(el('h1', 'chat-title', session?.title || '新对话'));
 
-  const tag = el('span', 'chat-tag', scopeTagText(app));
-  tag.id = 'chat-scope-tag';
-  left.append(tag);
-
   const right = el('div', 'chat-head-right');
-  right.append(scopeControl(app, {
-    onChange: () => {
-      const node = document.querySelector('#chat-scope-tag');
-      if (node) node.textContent = scopeTagText(app);
-    },
-  }));
   right.append(iconButtonNewChat(app));
   head.append(left, right);
   return head;
 }
 
-function scopeTagText(app) {
-  const count = scopeIds(app).length;
-  if (!count) return '尚未选择知识库';
-  return count > 1 ? `依据 ${count} 个知识库` : '单库问答';
+function scopeMetaText(app) {
+  const ids = scopeIds(app);
+  if (!ids.length) return '所选知识库：无';
+  if (ids.length > 1) return `所选知识库：全部 ${ids.length} 个`;
+  return `所选知识库：${scopeLabel(app)}`;
 }
 
 function iconButtonNewChat(app) {
@@ -135,6 +126,8 @@ function composer(app) {
   const bar = el('div', 'composer-bar');
   bar.append(el('span', 'composer-hint', 'Enter 发送 · Shift + Enter 换行'));
   const tools = el('div', 'composer-tools');
+  // 检索范围紧挨发送按钮：提问前顺手确认这次依据哪些资料
+  tools.append(scopeControl(app));
   const send = el('button', 'send-btn');
   send.type = 'submit';
   send.setAttribute('aria-label', '发送问题');
@@ -177,12 +170,16 @@ async function ask(app, question) {
   thread.append(node);
   scrollToEnd();
   app.state.busy = true;
+  // 提问这一刻的知识范围：之后切换范围不应该改写历史消息上的标注
+  turn.scope = scopeMetaText(app);
 
   try {
     await app.ensureConversation(session, question);
     app.renderSessions();
     const answer = await app.api.request('/qa', {
       method: 'POST',
+      // 本地部署的生成模型单次可能跑到 40–90 秒，留足与后端 KS_GENERATOR_TIMEOUT_SECONDS 对齐的余量。
+      timeout: 180000,
       body: {
         question,
         knowledge_base_ids: scopeIds(app),
@@ -230,7 +227,7 @@ function turnNode(app, turn, previousAt) {
   } else if (turn.status === 'error') {
     answer.append(headBlock('请求未完成'), app.errorBox(turn.error));
   } else {
-    answer.append(...answerBlocks(app, turn.answer));
+    answer.append(...answerBlocks(app, turn.answer, turn.scope));
   }
   wrap.append(answer);
   return wrap;
@@ -245,13 +242,14 @@ function headBlock(title, extra) {
   return head;
 }
 
-function answerBlocks(app, answer) {
+function answerBlocks(app, answer, scope) {
   const noEvidence = answer.answer_status === 'no_evidence';
   const conflict = answer.answer_status === 'conflicting_evidence';
   const blocks = [];
 
   const meta = el('span', 'meta');
   const parts = [];
+  if (scope) parts.push(scope);
   const hits = answer.retrieval?.hits;
   if (typeof hits === 'number' && hits > 0) parts.push(`命中 ${hits} 个片段`);
   if (answer.retrieval?.mode) parts.push(MODE_LABEL[answer.retrieval.mode] || answer.retrieval.mode);

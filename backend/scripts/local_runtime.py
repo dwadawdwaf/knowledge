@@ -154,7 +154,7 @@ class LocalRuntime:
             if self.model_settings is not None:
                 self.env.update(real_model_environment(self.model_settings))
             self.stack.callback(self._stop_all)
-            self.say("[migration] Applying schema 0001 -> 0002")
+            self.say("[migration] Checking and upgrading database schema to Alembic head")
             code = (
                 "import sys; from alembic.config import Config; from alembic import command; "
                 "c=Config(); c.set_main_option('script_location',sys.argv[1]); command.upgrade(c,'head')"

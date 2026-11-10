@@ -11,6 +11,8 @@ from knowledge.api.deps import (
     get_actor,
     get_embedder,
     get_generator,
+    get_keyword_index,
+    get_reranker,
     get_session,
     get_settings_dep,
     request_id,
@@ -21,7 +23,7 @@ from knowledge.api.v1.schemas.responses import AnswerOut, CitationOut
 from knowledge.config import Settings
 from knowledge.domain.entities import Actor
 from knowledge.domain.errors import NotImplementedYet
-from knowledge.domain.ports import Embedder, Generator
+from knowledge.domain.ports import Embedder, Generator, KeywordIndex, Reranker
 from knowledge.services import conversations as conversation_service
 from knowledge.services import qa
 
@@ -37,6 +39,8 @@ def ask(
     settings: Settings = Depends(get_settings_dep),
     embedder: Embedder = Depends(get_embedder),
     generator: Generator = Depends(get_generator),
+    reranker: Reranker | None = Depends(get_reranker),
+    keyword_index: KeywordIndex | None = Depends(get_keyword_index),
 ) -> dict:
     if payload.stream:
         raise NotImplementedYet("当前版本不支持流式输出")
@@ -51,6 +55,8 @@ def ask(
         kb_ids=payload.knowledge_base_ids,
         top_k=payload.top_k,
         conversation_id=payload.conversation_id,
+        reranker=reranker,
+        keyword_index=keyword_index,
     )
 
     body = AnswerOut(
@@ -91,6 +97,21 @@ def list_conversations(
         for conversation in conversation_service.list_owned(session, actor)
     ]
     return envelope({"items": items}, request_id(request))
+
+
+@router.delete("/conversations/{conversation_id}", response_model=Envelope)
+def delete_conversation(
+    conversation_id: uuid.UUID,
+    request: Request,
+    session: Session = Depends(get_session),
+    actor: Actor = Depends(get_actor),
+) -> dict:
+    """删除会话与消息。回答问题本身不删，知识库资料不受影响。
+
+    用 200 + envelope 而不是 204：前端统一按 JSON 解析响应，空体需要额外分支。
+    """
+    conversation_service.delete(session, actor, conversation_id)
+    return envelope({"id": str(conversation_id), "deleted": True}, request_id(request))
 
 
 @router.get("/conversations/{conversation_id}", response_model=Envelope)

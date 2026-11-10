@@ -9,6 +9,7 @@ const messages = {
   VALIDATION_ERROR: '请求参数不符合要求，请检查输入。',
   MODEL_UNAVAILABLE: '模型服务暂不可用，未返回答案。',
   MODEL_TIMEOUT: '模型服务超时，未返回答案。',
+  KEYWORD_INDEX_UNAVAILABLE: '关键词索引暂不可用，请检查本机检索服务后重试。',
   CITATION_VALIDATION_FAILED: '答案未通过引用校验，未返回正文。这不是正常拒答；已知同主题无答案场景也可能触发此错误。',
 };
 export class ApiError extends Error {
@@ -83,10 +84,20 @@ export function jobLabel(document) {
 }
 export function locatorText(locator = {}) {
   const parts = [];
+  if (locator.precision === 'composite' && Array.isArray(locator.sources)) {
+    const pages = [...new Set(locator.sources.map(source => source.locator?.page).filter(Number.isInteger))].sort((a, b) => a - b);
+    return pages.length ? `第 ${pages.join('、')} 页 · ${locator.sources.length} 处原文`
+      : `${locator.sources.length} 处原文 · 分段定位`;
+  }
   if (locator.type === 'pptx' && locator.page != null) {
     parts.push(`第 ${locator.page} 张幻灯片`);
   } else if (locator.page != null) {
     parts.push(`第 ${locator.page} 页`);
+  }
+  if (locator.type === 'pdf') {
+    if (locator.pdf_column === 'left') parts.push('左栏');
+    if (locator.pdf_column === 'right') parts.push('右栏');
+    if (locator.pdf_column === 'full') parts.push('通栏');
   }
   if (locator.paragraph != null) parts.push(`段落索引 ${locator.paragraph}`);
   if (locator.sheet) {
@@ -99,27 +110,42 @@ export function locatorText(locator = {}) {
   if (locator.char_start != null && locator.precision !== 'sheet') {
     const range = `[${locator.char_start}, ${locator.char_end})`;
     // 解析器与 DOCX 只给块/段内偏移，标成“字符”会被误读成文档级位置。
-    const scope = locator.precision !== 'block' ? '字符'
+    const scope = !['block', 'page'].includes(locator.precision) ? '字符'
       : locator.paragraph != null ? '段落内' : '块内';
     parts.push(`${scope} ${range}`);
   }
   return parts.join(' · ') || '原文分块';
 }
 
+// 解析器的内部实现细节不在界面上提示：这些码仍会出现在接口里，但不再翻译成文案。
+const HIDDEN_WARNING_CODES = new Set([
+  'mineru_requires_review',
+  'mineru_geometry_unavailable',
+  'mineru_native_location_unavailable',
+]);
+
 const WARNING_LABELS = {
   parser_direct_text: '所选方案对纯文本直接读取，未使用 OCR',
-  mineru_requires_review: 'MinerU 结果需复核',
-  mineru_geometry_unavailable: 'MinerU 未使用精确字框定位',
-  mineru_native_location_unavailable: 'MinerU 原生结果无可靠原文件页码/行列',
   mineru_table_linearized: 'MinerU 表格/HTML已转纯文本',
   mineru_content_skipped: 'MinerU存在未提取的非文本或不支持块，内容可能不完整',
   mineru_nul_replaced: 'MinerU 无效 NUL 字符已替换为 �，对应文字需复核',
   xlsx_rows_truncated: '表格行数超上限，仅索引前若干行',
   csv_rows_truncated: '表格行数超上限，仅索引前若干行',
+  table_header_candidate: '按首行关联候选表头，需核对列名与单位',
+  cross_page_continuation_candidate: '按章节和续句线索关联跨页内容，需核对阅读顺序',
+  cross_column_continuation_candidate: '跨栏续接，需核对阅读顺序',
+  pdf_layout_uncertain: 'PDF 版面无法确认，已保留解析顺序',
+  pdf_ocr_requires_review: 'PDF 使用了文字识别，需核对原页',
+  running_matter_omitted: '检索已排除解析器明确标注的页眉页脚，原件保留',
 };
 
 export function warningLabel(code) {
   return WARNING_LABELS[code] || code;
+}
+
+/** 过滤掉只属于解析实现细节、不需要展示给使用者的提示码。 */
+export function visibleWarnings(codes = []) {
+  return (codes || []).filter(code => !HIDDEN_WARNING_CODES.has(code));
 }
 // 分块视图只做度量与相对定位；缺字符偏移时退化为等宽，不伪造覆盖比例。
 export function chunkMetrics(items = []) {
@@ -141,7 +167,7 @@ export function chunkMetrics(items = []) {
   for (let index = 1; index < spans.length; index += 1) {
     if (usable && spans[index].start < spans[index - 1].end) overlaps += spans[index - 1].end - spans[index].start;
   }
-  const pages = [...new Set(spans.map(span => span.page).filter(page => page != null))].sort((left, right) => left - right);
+  const pages = [...new Set(items.flatMap(item => item.locator?.pages || [item.locator?.page]).filter(page => page != null))].sort((left, right) => left - right);
   const step = spans.length ? 100 / spans.length : 0;
   const segments = spans.map((span, index) => {
     if (!usable) return { ordinal: span.ordinal, left: index * step, width: Math.max(step - 0.5, 1), start: null, end: null, chars: span.chars, page: span.page };
@@ -208,7 +234,7 @@ export function uploadForm(file, profile = '') {
 export function sharedWarnings(items = []) {
   if (!items.length) return [];
   const [first, ...rest] = items.map(item => new Set(item.warnings || []));
-  return [...first].filter(code => rest.every(set => set.has(code))).sort();
+  return visibleWarnings([...first].filter(code => rest.every(set => set.has(code)))).sort();
 }
 
 /**
