@@ -155,7 +155,7 @@ conversation_id用于存档，本轮生成不读取历史答复；无通用回�
 | GET /documents/{id}/sheets、/documents/{id}/docx | 受限只读预览200，不代表完整解析结构 |
 | GET /jobs/{id} | 阶段/尝试/错误200，无真实进度时不虚构百分比 |
 | POST /search、/qa | 检索/问答200 |
-| POST/GET /conversations、GET /conversations/{id} | 新会话201/列表200/历史200 |
+| POST/GET /conversations、GET/DELETE /conversations/{id} | 新会话201/列表200/历史200；删除200（消息级联，他人与不存在404，不用204） |
 
 文件响应private/no-store/nosniff，Office原件attachment，不伪装HTML。引用预览仍需授权。
 成功包装 `{data,meta:{request_id}}`；错误 `{error:{code,message,retryable},meta:{request_id}}`。
