@@ -104,6 +104,11 @@ class ParsedBlock:
     text: str
     locator: Locator
     warnings: tuple[str, ...] = ()
+    # 解析器确实提供的结构；未识别时为空，不根据文件类型伪造标题或坐标。
+    kind: str = "text"
+    heading_level: int | None = None
+    table_id: str | None = None
+    metadata: dict[str, Any] = field(default_factory=dict)
 
 
 @dataclass(frozen=True)
@@ -170,6 +175,8 @@ class SearchHit:
     score: float
     score_type: str = "rrf"
     warnings: tuple[str, ...] = ()
+    structure: dict[str, Any] = field(default_factory=dict)
+    diagnostics: dict[str, Any] = field(default_factory=dict)
 
     @property
     def excerpt(self) -> str:

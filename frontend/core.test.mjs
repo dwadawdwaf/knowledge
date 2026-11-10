@@ -4,6 +4,20 @@ import { ApiClient, ApiError, reindexTarget, jobLabel, locatorText, chunkMetrics
   readableSize, mediaLabel, parserLabel, groupByPage, splitHighlight, sharedWarnings,
   turnsFromMessages, uploadForm, PARSER_OPTIONS } from './core.mjs';
 
+test('跨页片段展示全部来源页，不冒充单一字符区间', () => {
+  const locator = { type: 'pdf', precision: 'composite', page: 12, pages: [12, 13], sources: [
+    { chunk_start: 0, chunk_end: 5, locator: { page: 12, char_start: 100, char_end: 105 } },
+    { chunk_start: 6, chunk_end: 9, locator: { page: 13, char_start: 0, char_end: 3 } },
+  ] };
+  assert.equal(locatorText(locator), '第 12、13 页 · 2 处原文');
+  const metrics = chunkMetrics([{ ordinal: 0, text: '跨页自制片段', locator }]);
+  assert.deepEqual(metrics.pages, [12, 13]);
+  assert.equal(metrics.usable, false);
+  assert.equal(locatorText({ type: 'pdf', page: 13, precision: 'page', char_start: 0, char_end: 8 }), '第 13 页 · 块内 [0, 8)');
+  assert.equal(locatorText({ type: 'pdf', page: 13, pdf_column: 'left' }), '第 13 页 · 左栏');
+  assert.equal(locatorText({ type: 'pdf', page: 13, pdf_column: 'right' }), '第 13 页 · 右栏');
+});
+
 test('上传和新版本显式选择解析器，默认请求不偷偷改策略', () => {
   const file = new Blob(['synthetic']);
   for (const [profile] of PARSER_OPTIONS) {

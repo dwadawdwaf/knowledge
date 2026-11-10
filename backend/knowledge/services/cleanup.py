@@ -8,7 +8,7 @@ from sqlalchemy import delete, select, text
 from sqlalchemy.orm import Session
 
 from knowledge.domain.entities import JobState, Lifecycle
-from knowledge.domain.ports import ObjectStorage
+from knowledge.domain.ports import KeywordIndex, ObjectStorage
 from knowledge.logging import get_logger
 from knowledge.repositories import chunks as chunk_repo
 from knowledge.repositories import documents as doc_repo
@@ -61,11 +61,15 @@ def run(
     lease_token: uuid.UUID,
     document_id: uuid.UUID,
     storage: ObjectStorage,
+    keyword_index: KeywordIndex | None = None,
 ) -> None:
     document = session.get(Document, document_id)
     if document is None:
         job_repo.finish(session, job_id, lease_token, JobState.SUCCEEDED, "cleaning")
         return
+
+    if keyword_index is not None:
+        keyword_index.delete_document(document_id)
 
     versions = doc_repo.versions_of(session, document_id)
     for version in versions:

@@ -14,6 +14,7 @@ from knowledge.config import Settings
 from knowledge.domain.chunking import chunk_blocks
 from knowledge.domain.entities import BuildState, JobState
 from knowledge.domain.errors import DomainError, ModelUnavailable, ParseFailed, StaleJob
+from knowledge.domain.pdf_layout import PDF_LAYOUT_STRATEGY
 from knowledge.domain.ports import Embedder, ObjectStorage
 from knowledge.logging import get_logger
 from knowledge.repositories import builds as build_repo
@@ -54,6 +55,7 @@ def run(
     build_id, version_id, title = build.id, version.id, document.title
     object_key, media_type = version.object_key, version.media_type
     chunk_config = dict(build.chunk_config)
+    strategy = chunk_config.get("strategy", "legacy-v1")
     build.state = BuildState.RUNNING
     session.commit()
 
@@ -89,14 +91,19 @@ def run(
     except Exception as exc:  # 解析器内部异常统一归为失败
         raise ParseFailed(f"解析失败：{type(exc).__name__}") from exc
 
-    if not blocks or not any(block.text.strip() for block in blocks):
+    if not blocks or (
+        strategy != PDF_LAYOUT_STRATEGY and not any(block.text.strip() for block in blocks)
+    ):
         raise EmptyContent("未提取到正文")
 
     # 2) 分段
     if not job_repo.set_stage(session, job_id, lease_token, "chunking"):
         raise DomainError("租约已失效")
     _enter_stage("chunking")
-    pieces = chunk_blocks(blocks, chunk_config["max_chars"], chunk_config["overlap_chars"])
+    pieces = chunk_blocks(
+        blocks, chunk_config["max_chars"], chunk_config["overlap_chars"],
+        strategy=strategy, title=title,
+    )
     if not pieces:
         raise EmptyContent("分段结果为空")
 
@@ -104,7 +111,7 @@ def run(
     if not job_repo.set_stage(session, job_id, lease_token, "embedding"):
         raise DomainError("租约已失效")
     _enter_stage("embedding")
-    vectors = embedder.embed([piece.text for piece in pieces])
+    vectors = embedder.embed([piece.retrieval_text or piece.text for piece in pieces])
     if len(vectors) != len(pieces):
         raise ModelUnavailable("向量数量与分块数量不一致")
     for vector in vectors:
@@ -115,7 +122,7 @@ def run(
     _, _, locked_build, _ = build_repo.lock_execution(session, job_id, lease_token)
     if locked_build.id != build_id:
         raise StaleJob("任务构建已变化")
-    locked_build.warnings = sorted({warning for block in blocks for warning in block.warnings})
+    locked_build.warnings = sorted({warning for piece in pieces for warning in piece.warnings})
     build_repo.guard_vector_index(session, job_id, lease_token)
     chunk_repo.insert_many(
         session,
@@ -127,7 +134,8 @@ def run(
                 "locator": piece.locator,
                 "warnings": piece.warnings,
                 "embedding": vector,
-                "tsv": piece.text,
+                "tsv": piece.retrieval_text or piece.text,
+                "structure": piece.structure,
             }
             for piece, vector in zip(pieces, vectors)
         ],

@@ -18,7 +18,7 @@ from knowledge.domain.entities import (
     SearchHit,
 )
 from knowledge.domain.errors import CitationValidationFailed, SourceChanged
-from knowledge.domain.ports import Embedder, Generator
+from knowledge.domain.ports import Embedder, Generator, KeywordIndex, Reranker
 from knowledge.logging import get_logger
 from knowledge.repositories import conversations as conversation_repo
 from knowledge.services import retrieval
@@ -121,6 +121,8 @@ def answer(
     kb_ids: list[uuid.UUID],
     top_k: int | None = None,
     conversation_id: uuid.UUID | None = None,
+    reranker: Reranker | None = None,
+    keyword_index: KeywordIndex | None = None,
 ) -> Answer:
     hits = retrieval.search(
         session,
@@ -131,9 +133,12 @@ def answer(
         kb_ids=kb_ids,
         mode="hybrid",
         top_k=top_k,
+        reranker=reranker,
+        candidate_limit=settings.evidence_candidate_limit,
+        keyword_index=keyword_index,
     )
 
-    best = hits[0].score if hits else 0.0
+    best = float(hits[0].diagnostics.get("fusion_score", hits[0].score)) if hits else 0.0
     if not hits or best < settings.evidence_min_score:
         log.info("qa_no_evidence", extra={"hits": len(hits)})
         result = Answer(
@@ -144,7 +149,12 @@ def answer(
         _persist(session, actor, conversation_id, question, result, model_revision="")
         return result
 
-    evidence = _build_evidence(hits, settings.evidence_max_items)
+    evidence_hits = retrieval.select_evidence(session, actor, settings, kb_ids, hits)
+    if not evidence_hits:
+        result = Answer(status=AnswerStatus.NO_EVIDENCE.value, text="资料中未找到足够依据。", hits=len(hits))
+        _persist(session, actor, conversation_id, question, result, model_revision="")
+        return result
+    evidence = _build_evidence(evidence_hits, settings.evidence_max_items)
     generated = generator.generate(question, evidence)
 
     if not generated.sections:
@@ -164,10 +174,11 @@ def answer(
 
     body, citations, warnings = _assemble(generated, evidence)
     warnings = sorted(set(warnings) | {
-        warning for hit in hits[:settings.evidence_max_items] for warning in hit.warnings
+        warning for hit in evidence_hits for warning in hit.warnings
     })
 
-    if not _sources_unchanged(session, hits):
+    sources = hits if settings.retrieval_profile == "baseline-v1" else evidence_hits
+    if not _sources_unchanged(session, sources):
         log.warning("qa_source_changed", extra={"hits": len(hits)})
         raise SourceChanged("资料已更新或不可访问，请重新提问")
 
@@ -186,6 +197,7 @@ def answer(
         citations=citations,
         warnings=warnings,
         hits=len(hits),
+        degraded=any(hit.warnings for hit in evidence_hits),
     )
     _persist(session, actor, conversation_id, question, result, generated.model_revision)
     return result

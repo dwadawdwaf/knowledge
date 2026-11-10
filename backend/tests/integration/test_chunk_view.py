@@ -36,6 +36,8 @@ def _publish(session, settings, deps, actor: Actor, *, process: bool = True):
 
 
 def test_chunks_are_ordered_and_carry_locators(session, settings, deps):
+    # 独立段落短于默认800；显式缩小窗口，确保实际覆盖长段落重叠，而非依赖换行识别失败。
+    settings = settings.model_copy(update={"chunk_max_chars": 120, "chunk_overlap_chars": 20})
     actor = Actor(subject_id="ui-owner", tenant_id="default")
     _, upload = _publish(session, settings, deps, actor)
 

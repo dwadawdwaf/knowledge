@@ -15,16 +15,19 @@
 
 ## 优先处理
 
-MinerU 4.1.2已在D:\MinerU独立安装并验证basic/ONNX模型，两个本机服务已启动；DeepDoc已更新v2镜像。
+MinerU 4.1.2 已在 D:\MinerU 独立安装并验证 basic/ONNX 模型。DeepDoc 与 Docker 依赖已移除。以下 DeepDoc 记录保留为历史对照。
 真实自制验收：MinerU、DeepDoc v2各通过TXT/MD/CSV/DOCX/XLSX/PPTX/PDF/PNG/JPEG/TIFF的10类样本；
 基础解析7类文档成功，3类图片明确不支持。DeepDoc横幅图片在版面为空时需同版OCR恢复，附版面缺失告警，v1行为不变。
 报告在忽略目录backend/.data/parser-acceptance-*.json，只存格式/计数/告警与结果。尚未重建或复验用户原文档。
+2026-11-06本机复验：Docker 4.98 + WSL 3.0.3下DeepDoc v2边车构建启动成功，/health返回alive；smoke仍按空格判定failed，
+改用Noto Sans Mono 40px生成同内容样本时同一路径可识别出带空格的正文，说明词间空格与样本字体相关，P1-PARSE未关闭。
+本轮拉取的是infiniflow/ragflow:v0.22.0标签（digest sha256:afed9dd6bcc6389b64e8e651fa67781f7f6bac57dcb16543b33113b73c52f3c2），未按digest固定。
 以上不是Office完整性或复杂表格效果验收，不因此开启表格聚合。
 
 | 编号 | 问题 | 下一步与完成条件 |
 | --- | --- | --- |
 | P1-ANSWER | 有引用不等于支持答案；同主题但无答案问题仍可能误答 | 明确可回答性与无效引用策略，补反例并人工核对；不将所有引用错误一律转no_evidence |
-| P1-PARSE | DeepDoc已有自制样本推理，但空格、阅读顺序、多栏及跨页表格仍有边界 | 扩大自制样本核对文本/位置/警告，不以health通过当识别通过 |
+| P1-PARSE | MinerU 的阅读顺序、多栏及跨页表格仍需核验 | 扩大自制样本核对文本/位置/警告，不以health通过当识别通过 |
 | P1-LONGPDF | 长文档入库阻塞已修复，但空白页、插图页与跨页表格仍可能漏内容 | 逐页核对识别、线性化与分块结果，不据入库成功宣称完整解析 |
 
 pg_trgm只作候选召回，相关性阈值不能保证答案支持；后续先建立效果基线，再比较算法变化。

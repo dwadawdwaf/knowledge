@@ -69,6 +69,7 @@ def ask_once(
         allowed = {
             "MODEL_UNAVAILABLE",
             "MODEL_TIMEOUT",
+            "KEYWORD_INDEX_UNAVAILABLE",
             "CITATION_VALIDATION_FAILED",
             "SOURCE_CHANGED",
             "VALIDATION_ERROR",

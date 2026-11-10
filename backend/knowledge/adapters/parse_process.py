@@ -87,6 +87,10 @@ class BoundedParser:
                             text=block["text"],
                             locator=Locator(**block["locator"]),
                             warnings=tuple(block.get("warnings", ())),
+                            kind=block.get("kind", "text"),
+                            heading_level=block.get("heading_level"),
+                            table_id=block.get("table_id"),
+                            metadata=block.get("metadata", {}),
                         )
                         for block in result["blocks"]
                     ]

@@ -71,8 +71,8 @@ API/Worker退出不等于后台数据库停止，停止用：
 .\.venv\Scripts\python.exe -m knowledge.entrypoints.worker
 ```
 
-当前head为0006_conversation_archived；从0001升级前不能留下未处理旧任务。
-0004扩展模型标识字段，0005支持知识库归档，0006将已有会话初始化为active并保留消息。
+当前head为0007_merge_optimization；从0001升级前不能留下未处理旧任务。
+该节点汇合会话归档链与结构分块、全文索引链，任一分支数据库均可用同一命令升级。
 不对未知默认库运行迁移，不改历史迁移，不原地回填已发布片段。
 
 ### 本次数据库回退与备份
@@ -152,6 +152,19 @@ node --test frontend/core.test.mjs
 浏览器检查仅在相关前端改动收尾运行，需要已有Node/测试浏览器，不自动安装。
 CI定义在.github/workflows/backend.yml，文件存在不等于远端已实跑。
 
+### 可选分块与检索策略
+
+先按本手册升级数据库，不清空或重建现有库。默认继续使用 `legacy-v1` 分块、`baseline-v1` 检索。
+以下是可按需配置的独立能力，API 和 Worker 应使用相同配置：
+
+- `KS_CHUNK_STRATEGY=structure-v2`：仅对新构建启用结构分块；普通重建保留旧策略。
+- `KS_PDF_CHUNK_STRATEGY=pdf-layout-v1`：仅对新 PDF 构建启用版面分块。
+- `KS_RETRIEVAL_PROFILE=optimized-v2`：启用查询优化与加权融合；`fts-v1` 选用 PostgreSQL 英文全文检索。
+- `KS_RETRIEVAL_PROFILE=bm25-v1`：同时配置 `KS_OPENSEARCH_URL` 为本机回环地址。
+  Windows 可准备本地 OpenSearch 发行包并使用 `start-opensearch.ps1`；不下载模型或发行包。
+  不同 PostgreSQL 实例使用独立的 `KS_OPENSEARCH_INDEX`。仅在显式配置后才检查或启动此依赖。
+- 在 `optimized-v2` 下，`KS_RERANKER_URL` 和 `KS_RERANKER_MODEL` 可显式指向本机重排服务；未配置时不调用。
+
 ## 6. 排障
 
 | 现象 | 先检查 |
@@ -160,6 +173,7 @@ CI定义在.github/workflows/backend.yml，文件存在不等于远端已实跑�
 | 401/404 | 本次令牌、资源归属、删除状态；UUID不是凭证 |
 | running停滞 | Worker、stage/attempt、租约、模型等待，不手改任务状态 |
 | 模型故障 | 端点、认证、余额、名称、1024维及索引模型兼容性，不把故障记成无资料 |
+| KEYWORD_INDEX_UNAVAILABLE | 检查本机 OpenSearch 是否已就绪及索引名称，启动日志在 `backend/.data/workbench-opensearch/` |
 | Ollama绑定失败/10013 | 检查Windows保留端口：`netsh interface ipv4 show excludedportrange protocol=tcp`；不要删系统规则。若11434被保留，将backend/.env的KS_EMBEDDING_BASE_URL改为经检查可用的本机端口（如http://127.0.0.1:21434/v1）。启动器为serve/pull同步设置OLLAMA_HOST，不改系统环境，不更换模型或下载资料；手动启动时也需在该终端设置同一OLLAMA_HOST。 |
 | PARSE_FAILED | 格式/加密/资源限制、MinerU网络/接口/模型，不循环重传相同内容 |
 | no_evidence | 范围、发布状态、阈值及原文是否支持，不用降低门槛制造答案 |
