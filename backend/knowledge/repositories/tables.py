@@ -120,7 +120,7 @@ class IndexBuild(Base):
         _enum(BuildState, "build_state"), default=BuildState.QUEUED
     )
     chunk_config: Mapped[dict] = mapped_column(JSONB, default=dict)
-    embedding_model: Mapped[str] = mapped_column(String(120), nullable=False, default="")
+    embedding_model: Mapped[str] = mapped_column(String(200), nullable=False, default="")
     embedding_dim: Mapped[int] = mapped_column(Integer, nullable=False, default=EMBEDDING_DIM)
     warnings: Mapped[list] = mapped_column(JSONB, default=list)
     created_at: Mapped[datetime] = _created_at()
@@ -202,7 +202,13 @@ class Conversation(Base):
     id: Mapped[uuid.UUID] = _uuid_pk()
     owner_id: Mapped[str] = mapped_column(String(64), nullable=False)
     title: Mapped[str] = mapped_column(String(200), default="")
+    # 归档会话保留消息，只是不进历史列表；与知识库的 archived 语义一致。
+    status: Mapped[str] = mapped_column(
+        String(16), nullable=False, default="active", server_default="active"
+    )
     created_at: Mapped[datetime] = _created_at()
+
+    __table_args__ = (CheckConstraint("status IN ('active', 'archived')", name="ck_conversation_status"),)
 
 
 class Message(Base):
@@ -216,7 +222,7 @@ class Message(Base):
     body: Mapped[str] = mapped_column(Text, default="")
     answer_status: Mapped[str] = mapped_column(String(32), default="")
     citations: Mapped[list] = mapped_column(JSONB, default=list)
-    model_revision: Mapped[str] = mapped_column(String(64), default="")
+    model_revision: Mapped[str] = mapped_column(String(200), default="")
     created_at: Mapped[datetime] = _created_at()
 
     __table_args__ = (Index("ix_msg_conversation", "conversation_id", "created_at"),)

@@ -20,11 +20,12 @@ def create(session: Session, actor: Actor, name: str) -> KnowledgeBase:
 
 
 def list_owned(session: Session, actor: Actor) -> list[KnowledgeBase]:
+    """归档库不进入列表；删除中的库仍显示，便于前端提示进度。"""
     stmt = (
         select(KnowledgeBase)
         .where(
             KnowledgeBase.owner_id == actor.subject_id,
-            KnowledgeBase.status != Lifecycle.DELETED,
+            KnowledgeBase.status.in_([Lifecycle.ACTIVE, Lifecycle.DELETING]),
         )
         .order_by(KnowledgeBase.created_at.desc())
     )
@@ -53,6 +54,11 @@ def get_active(session: Session, actor: Actor, kb_ids: list[uuid.UUID]) -> list[
 
 def mark_deleting(session: Session, kb: KnowledgeBase) -> None:
     kb.status = Lifecycle.DELETING
+
+
+def mark_archived(session: Session, kb: KnowledgeBase) -> None:
+    """归档：保留文档与分块，只从列表和检索范围中移除。"""
+    kb.status = Lifecycle.ARCHIVED
 
 
 def mark_deleted(session: Session, kb_id: uuid.UUID) -> None:

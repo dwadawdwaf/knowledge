@@ -13,6 +13,8 @@ class Lifecycle(str, enum.Enum):
     ACTIVE = "active"
     DELETING = "deleting"
     DELETED = "deleted"
+    # 归档：数据与分块保留，但不出现在列表、不能作为检索或上传范围。
+    ARCHIVED = "archived"
 
 
 class BuildState(str, enum.Enum):
