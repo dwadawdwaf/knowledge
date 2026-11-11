@@ -25,6 +25,10 @@ def main() -> int:
             stream.reconfigure(encoding="utf-8")
     # 远端隧道抖动时可用 --temporary-database 改跑本机临时库，只验证界面与流程。
     temporary_database = "--temporary-database" in sys.argv[1:]
+    ragflow = "--ragflow" in sys.argv[1:]
+    if ragflow and not temporary_database:
+        print("新检索方案的浏览器验收必须使用临时库。", flush=True)
+        return 1
     database_url = None if temporary_database else smoke_database_url_from_file()
     if temporary_database:
         print("[database] 使用本机临时库（--temporary-database）", flush=True)
@@ -60,6 +64,7 @@ def main() -> int:
         env.update(
             KS_UI_BROWSER=str(browser),
             KS_UI_URL=runtime.workbench_url(),
+            KS_UI_RAGFLOW="1",
             PYTHONIOENCODING="utf-8",
         )
         code = subprocess.call(

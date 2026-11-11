@@ -16,7 +16,7 @@ from scripts.ask_console import ask_once, run_console
 from scripts.deps import DependencyError, ensure_database, ensure_dependencies
 from scripts.http_scenario import expect, upload_sample, wait_job
 from scripts.local_runtime import WORKBENCH_OBJECTS, LocalRuntime
-from scripts.real_model import load_real_settings
+from scripts.real_model import check_ragflow_resources, load_real_settings
 from scripts.workbench import open_workbench
 
 
@@ -53,6 +53,8 @@ def main() -> int:
         print(f"向量模型：{settings.embedding_model}（{settings.embedding_dim} 维）", flush=True)
         print(f"生成模型：{settings.generator_model}", flush=True)
         print(f"检索方案：{settings.retrieval_profile}", flush=True)
+        if args.check and settings.retrieval_profile == "ragflow-v1":
+            check_ragflow_resources()
         print("模型配置检查通过；未输出 API 密钥。", flush=True)
         if args.check:
             return 0

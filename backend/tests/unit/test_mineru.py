@@ -11,8 +11,10 @@ import pytest
 
 from knowledge.adapters.mineru import PROFILE, MinerUParser, normalize_archive
 from knowledge.adapters.parser import DirectTextParser, build_parser_registry
+from knowledge.adapters.ragflow_text import search_fields
 from knowledge.config import Settings
 from knowledge.domain.errors import ParseFailed
+from knowledge.domain.ragflow_chunking import chunk_ragflow
 
 
 def test_missing_service_is_not_reported_as_document_damage():
@@ -60,6 +62,52 @@ def test_archive_keeps_source_pages_and_explicit_loss_of_geometry():
     csv = normalize_archive(archive(), "text/csv", 100000)
     assert csv[0].locator.type == "csv" and csv[0].locator.page is None
     assert "mineru_native_location_unavailable" in csv[0].warnings
+
+
+def test_ragflow_mineru_rows_preserve_hierarchical_headers_and_source_ranges():
+    html = (
+        "<table><caption>工况记录</caption><thead>"
+        '<tr><th rowspan="2">设备</th><th colspan="2">工况</th></tr>'
+        "<tr><th>温度</th><th>压力</th></tr></thead><tbody>"
+        '<tr><td rowspan="2">RX-001</td><td>145<br>摄氏度</td><td>5</td></tr>'
+        "<tr><td>130</td><td>4</td></tr></tbody></table>"
+    )
+
+    def mutate(content):
+        content["pages"] = [{"page_idx": 2, "blocks": [{"type": "table", "content": html}]}]
+
+    parsed = normalize_archive(archive(mutate=mutate), "application/pdf", 100000)
+    chunks = chunk_ragflow(parsed, len, mineru_pdf=True)
+    assert [chunk.text for chunk in chunks] == [
+        "工况记录", "设备\t工况", "温度\t压力", "RX-001\t145\n摄氏度\t5", "130\t4",
+    ]
+    assert all(chunk.structure["table_header"] == "" for chunk in chunks[:3])
+    assert chunks[3].structure["table_header"] == "设备\t工况-温度\t工况-压力"
+    assert chunks[3].structure["table_fields"] == ["设备: RX-001", "工况-温度: 145 摄氏度", "工况-压力: 5"]
+    assert chunks[4].structure["table_fields"] == ["工况-温度: 130", "工况-压力: 4"]
+    for chunk in chunks:
+        locator = chunk.locator["sources"][0]["locator"]
+        assert locator["page"] == 3
+        assert parsed[0].text[locator["char_start"]:locator["char_end"]] == chunk.text
+    terms = search_fields(
+        chunks[3].text, "巡检", [], chunks[3].structure["table_header"],
+        row_fields=chunks[3].structure["table_fields"],
+    )
+    assert "pair:温度 145" in terms.terms
+
+
+def test_ragflow_malformed_mineru_table_preserves_text_without_pairing():
+    def mutate(content):
+        content["pages"][0]["blocks"][1]["content"] = (
+            '<table><tr><th colspan="999">设备</th></tr><tr><td>RX-001</td></tr></table>'
+        )
+
+    parsed = normalize_archive(archive(mutate=mutate), "application/pdf", 100000)
+    chunks = chunk_ragflow(parsed, len, mineru_pdf=True)
+    table = next(chunk for chunk in chunks if chunk.structure["kind"] == "table")
+    assert table.text == parsed[1].text
+    assert not table.structure["table_fields"]
+    assert "mineru_table_structure_unavailable" in table.warnings
 
 
 @pytest.mark.parametrize("variant", ["valid", "wrong_type", "missing_box", "wrong_version", "over_budget"])

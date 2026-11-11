@@ -93,7 +93,7 @@ print('Python ' + sys.version.split()[0] + '：开发依赖检查通过')
     if ($Mode -eq 'Real') {
         & $python -X utf8 -u $entry --check
         if ($LASTEXITCODE -ne 0) {
-            throw '真实模型配置未通过检查，请修改 backend\.env；不会自动切换到模型桩。'
+            throw '启动预检未通过，请按上方提示检查模型配置或本地词表资源；不会自动切换到模型桩。'
         }
     }
     else {
@@ -117,6 +117,15 @@ print('Python ' + sys.version.split()[0] + '：开发依赖检查通过')
         & $python -X utf8 -u $deps $depsArgs
         if ($LASTEXITCODE -ne 0) {
             throw '依赖服务未就绪，请按上方提示处理后重试；不会回退到模型桩。'
+        }
+        $nativeEngine = & $python -X utf8 -c "import sys; sys.path.insert(0,'backend'); from scripts.real_model import _RealSettings; print(_RealSettings().search_engine)"
+        if ($nativeEngine -eq 'opensearch') {
+            try {
+                & (Join-Path $PSScriptRoot 'start-opensearch.ps1')
+            }
+            catch {
+                Write-Host '[OpenSearch] 未就绪；文件管理仍可启动，检索页面将提示索引状态。请检查本机搜索服务。' -ForegroundColor Yellow
+            }
         }
         $env:KS_DEPS_READY = '1'
     }

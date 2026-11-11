@@ -1,0 +1,82 @@
+﻿Asset code,Category,Name,Custodian,Location,Quantity,Original value (CNY),Status,Note
+CC-CSV-EN-04-R001,Compute device,ember-146 aux 1,Owen Zhou,Aisle B3-07,1,1000,闲置,Routine record
+CC-CSV-EN-04-R002,Network device,ember-146 aux 2,Iris Gu,Cabinet A2-11,2,1037,在用,Routine record
+CC-CSV-EN-04-R003,Furniture,ember-146 aux 3,Leo Xu,Records Room C1-03,3,1074,在用,Routine record
+CC-CSV-EN-04-R004,Software license,ember-146 aux 4,Nina Holt,Aisle B3-07,4,1111,在用,Routine record
+CC-CSV-EN-04-R005,Compute device,ember-146 aux 5,Mira Chen,Cabinet A2-11,5,1148,在用,Routine record
+CC-CSV-EN-04-R006,Network device,ember-146 aux 6,Owen Zhou,Records Room C1-03,1,1185,闲置,Routine record
+CC-CSV-EN-04-R007,Furniture,ember-146 aux 7,Iris Gu,Aisle B3-07,2,1222,在用,Routine record
+CC-CSV-EN-04-R008,Software license,ember-146 aux 8,Leo Xu,Cabinet A2-11,3,1259,在用,Routine record
+CC-CSV-EN-04-R009,Compute device,ember-146 aux 9,Nina Holt,Records Room C1-03,4,1296,在用,Routine record
+CC-CSV-EN-04-R010,Network device,ember-146 aux 10,Mira Chen,Aisle B3-07,5,1333,在用,Routine record
+CC-CSV-EN-04-R011,Furniture,ember-146 aux 11,Owen Zhou,Cabinet A2-11,1,1370,闲置,Routine record
+CC-CSV-EN-04-R012,Software license,ember-146 aux 12,Iris Gu,Records Room C1-03,2,1407,在用,Routine record
+CC-CSV-EN-04-R013,Compute device,ember-146 aux 13,Leo Xu,Aisle B3-07,3,1444,在用,Routine record
+CC-CSV-EN-04-R014,Network device,ember-146 aux 14,Nina Holt,Cabinet A2-11,4,1481,在用,Routine record
+CC-CSV-EN-04-R015,Furniture,ember-146 aux 15,Mira Chen,Records Room C1-03,5,1518,在用,Routine record
+CC-CSV-EN-04-R016,Software license,ember-146 aux 16,Owen Zhou,Aisle B3-07,1,1555,闲置,Routine record
+CC-CSV-EN-04-R20,Compute device,ember-146 node,Owen Zhou,Cabinet A2-11,4,12302,In use,Program code CC-CSV-EN-04
+CC-CSV-EN-04-R018,Network device,ember-146 aux 18,Leo Xu,Records Room C1-03,3,1629,在用,Routine record
+CC-CSV-EN-04-R019,Furniture,ember-146 aux 19,Nina Holt,Aisle B3-07,4,1666,在用,Routine record
+CC-CSV-EN-04-R020,Software license,ember-146 aux 20,Mira Chen,Cabinet A2-11,5,1703,在用,Routine record
+CC-CSV-EN-04-R021,Compute device,ember-146 aux 21,Owen Zhou,Records Room C1-03,1,1740,闲置,Routine record
+CC-CSV-EN-04-R022,Network device,ember-146 aux 22,Iris Gu,Aisle B3-07,2,1777,在用,Routine record
+CC-CSV-EN-04-R023,Furniture,ember-146 aux 23,Leo Xu,Cabinet A2-11,3,1814,在用,Routine record
+CC-CSV-EN-04-R024,Software license,ember-146 aux 24,Nina Holt,Records Room C1-03,4,1851,在用,Routine record
+CC-CSV-EN-04-R025,Compute device,ember-146 aux 25,Mira Chen,Aisle B3-07,5,1888,在用,Routine record
+CC-CSV-EN-04-R026,Network device,ember-146 aux 26,Owen Zhou,Cabinet A2-11,1,1925,闲置,Routine record
+CC-CSV-EN-04-R027,Furniture,ember-146 aux 27,Iris Gu,Records Room C1-03,2,1962,在用,Routine record
+CC-CSV-EN-04-R028,Software license,ember-146 aux 28,Leo Xu,Aisle B3-07,3,1999,在用,Routine record
+CC-CSV-EN-04-R029,Compute device,ember-146 aux 29,Nina Holt,Cabinet A2-11,4,2036,在用,Routine record
+CC-CSV-EN-04-R030,Network device,ember-146 aux 30,Mira Chen,Records Room C1-03,5,2073,在用,Routine record
+CC-CSV-EN-04-R031,Furniture,ember-146 aux 31,Owen Zhou,Aisle B3-07,1,2110,闲置,"first line
+second line, with comma, and ""quotes"""
+CC-CSV-EN-04-R032,Software license,ember-146 aux 32,Iris Gu,Cabinet A2-11,2,2147,在用,Routine record
+CC-CSV-EN-04-R033,Compute device,ember-146 aux 33,Leo Xu,Records Room C1-03,3,2184,在用,Routine record
+CC-CSV-EN-04-R034,Network device,ember-146 aux 34,Nina Holt,Aisle B3-07,4,2221,在用,Routine record
+CC-CSV-EN-04-R035,Furniture,ember-146 aux 35,Mira Chen,Cabinet A2-11,5,2258,在用,Routine record
+CC-CSV-EN-04-R036,Software license,ember-146 aux 36,Owen Zhou,Records Room C1-03,1,2295,闲置,Routine record
+CC-CSV-EN-04-R037,Compute device,ember-146 aux 37,Iris Gu,Aisle B3-07,2,2332,在用,Routine record
+CC-CSV-EN-04-R038,Network device,ember-146 aux 38,Leo Xu,Cabinet A2-11,3,2369,在用,Routine record
+CC-CSV-EN-04-R039,Furniture,ember-146 aux 39,Nina Holt,Records Room C1-03,4,2406,在用,Routine record
+CC-CSV-EN-04-R040,Software license,ember-146 aux 40,Mira Chen,Aisle B3-07,5,2443,在用,Routine record
+CC-CSV-EN-04-R041,Compute device,ember-146 aux 41,Owen Zhou,Cabinet A2-11
+CC-CSV-EN-04-R042,Network device,ember-146 aux 42,Iris Gu,Records Room C1-03
+CC-CSV-EN-04-R043,Furniture,ember-146 aux 43,Leo Xu,Aisle B3-07,3,2554,在用,Routine record,额外列1,额外列2
+CC-CSV-EN-04-R044,Software license,ember-146 aux 44,Nina Holt,Cabinet A2-11,4,2591,在用,Routine record
+CC-CSV-EN-04-R045,Compute device,ember-146 aux 45,Mira Chen,Records Room C1-03,5,2628,在用,Routine record
+CC-CSV-EN-04-R046,Network device,ember-146 aux 46,Owen Zhou,Aisle B3-07,1,2665,闲置,Routine record
+CC-CSV-EN-04-R047,Furniture,ember-146 aux 47,Iris Gu,Cabinet A2-11,2,2702,在用,Routine record
+CC-CSV-EN-04-R048,Software license,ember-146 aux 48,Leo Xu,Records Room C1-03,3,2739,在用,Routine record
+CC-CSV-EN-04-R049,Compute device,ember-146 aux 49,Nina Holt,Aisle B3-07,4,2776,在用,Routine record
+CC-CSV-EN-04-R050,Network device,ember-146 aux 50,Mira Chen,Cabinet A2-11,5,2813,在用,Routine record
+CC-CSV-EN-04-R051,Furniture,ember-146 aux 51,Owen Zhou,Records Room C1-03,1,2850,闲置,Routine record
+CC-CSV-EN-04-R052,Software license,ember-146 aux 52,Iris Gu,Aisle B3-07,2,2887,在用,Routine record
+CC-CSV-EN-04-R053,Compute device,ember-146 aux 53,Leo Xu,Cabinet A2-11,3,2924,在用,Routine record
+CC-CSV-EN-04-R054,Network device,ember-146 aux 54,Nina Holt,Records Room C1-03,4,2961,在用,Routine record
+CC-CSV-EN-04-R055,Furniture,ember-146 aux 55,Mira Chen,Aisle B3-07,5,2998,在用,Routine record
+CC-CSV-EN-04-R056,Software license,ember-146 aux 56,Owen Zhou,Cabinet A2-11,1,3035,闲置,note with a	tab
+CC-CSV-EN-04-R057,Compute device,ember-146 aux 57,Iris Gu,Records Room C1-03,2,3072,在用,Routine record
+CC-CSV-EN-04-R058,Network device,ember-146 aux 58,Leo Xu,Aisle B3-07,3,3109,在用,Routine record
+CC-CSV-EN-04-R059,Furniture,ember-146 aux 59,Nina Holt,Cabinet A2-11,4,3146,在用,Routine record
+CC-CSV-EN-04-R060,Software license,ember-146 aux 60,Mira Chen,Records Room C1-03,5,3183,在用,Routine record
+CC-CSV-EN-04-R061,Compute device,ember-146 aux 61,Owen Zhou,Aisle B3-07,1,3220,闲置,Routine record
+CC-CSV-EN-04-R062,Network device,ember-146 aux 62,Iris Gu,Cabinet A2-11,2,3257,在用,Routine record
+CC-CSV-EN-04-R063,Furniture,ember-146 aux 63,Leo Xu,Records Room C1-03,3,3294,在用,Routine record
+CC-CSV-EN-04-R064,Software license,ember-146 aux 64,Nina Holt,Aisle B3-07,4,3331,在用,Routine record
+CC-CSV-EN-04-R065,Compute device,ember-146 aux 65,Mira Chen,Cabinet A2-11,5,3368,在用,Routine record
+CC-CSV-EN-04-R066,Network device,ember-146 aux 66,Owen Zhou,Records Room C1-03,1,3405,闲置,Routine record
+CC-CSV-EN-04-R067,Furniture,ember-146 aux 67,Iris Gu,Aisle B3-07,2,3442,在用,Routine record
+CC-CSV-EN-04-R068,Software license,ember-146 aux 68,Leo Xu,Cabinet A2-11,3,3479,在用,Routine record
+CC-CSV-EN-04-R069,Compute device,ember-146 aux 69,Nina Holt,Records Room C1-03,4,3516,在用,Routine record
+CC-CSV-EN-04-R070,Network device,ember-146 aux 70,Mira Chen,Aisle B3-07,5,3553,在用,Routine record
+CC-CSV-EN-04-R071,Furniture,ember-146 aux 71,Owen Zhou,Cabinet A2-11,1,3590,闲置,Routine record
+CC-CSV-EN-04-R072,Software license,ember-146 aux 72,Iris Gu,Records Room C1-03,2,3627,在用,Routine record
+CC-CSV-EN-04-R073,Compute device,ember-146 aux 73,Leo Xu,Aisle B3-07,3,3664,在用,Routine record
+CC-CSV-EN-04-R074,Network device,ember-146 aux 74,Nina Holt,Cabinet A2-11,4,3701,在用,Routine record
+CC-CSV-EN-04-R075,Furniture,ember-146 aux 75,Mira Chen,Records Room C1-03,5,3738,在用,Routine record
+CC-CSV-EN-04-R076,Software license,ember-146 aux 76,Owen Zhou,Aisle B3-07,1,3775,闲置,Routine record
+CC-CSV-EN-04-R077,Compute device,ember-146 aux 77,Iris Gu,Cabinet A2-11,2,3812,在用,Routine record
+CC-CSV-EN-04-R078,Network device,ember-146 aux 78,Leo Xu,Records Room C1-03,3,3849,在用,Routine record
+CC-CSV-EN-04-R079,Furniture,ember-146 aux 79,Nina Holt,Aisle B3-07,4,3886,在用,Routine record
+CC-CSV-EN-04-R080,Software license,ember-146 aux 80,Mira Chen,Cabinet A2-11,5,3923,在用,Routine record

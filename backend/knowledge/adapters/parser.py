@@ -6,13 +6,16 @@ import csv
 import io
 import re
 import zipfile
-from dataclasses import replace
+from collections.abc import Iterator
+from dataclasses import dataclass, replace
 from datetime import datetime, time
 
+from knowledge.adapters.markdown_layout import markdown_tables
 from knowledge.config import Settings
 from knowledge.domain.entities import Locator, ParsedBlock
 from knowledge.domain.errors import ParseFailed, PasswordProtected, UnsupportedFormat
 from knowledge.domain.ports import Parser
+from knowledge.domain.ragflow_table import TableRow
 
 TEXT_PLAIN = "text/plain"
 TEXT_MARKDOWN = "text/markdown"
@@ -97,17 +100,28 @@ def _split_paragraphs(text: str) -> list[tuple[int, int]]:
     return spans
 
 
+@dataclass(frozen=True)
+class _TextSection:
+    start: int
+    end: int
+    kind: str = "text"
+    rows: list[TableRow] | None = None
+
+
 class TextParser:
     name = "text"
 
     def supports(self, media_type: str, filename: str) -> bool:
         return media_type in (TEXT_PLAIN, TEXT_MARKDOWN)
 
+    def _sections(self, text: str) -> Iterator[_TextSection]:
+        yield from (_TextSection(start, end) for start, end in _split_paragraphs(text))
+
     def parse(self, data: bytes, media_type: str, filename: str) -> list[ParsedBlock]:
         text = data.decode("utf-8", errors="replace")
         blocks: list[ParsedBlock] = []
-        for index, (start, end) in enumerate(_split_paragraphs(text)):
-            piece = text[start:end]
+        for index, section in enumerate(self._sections(text)):
+            piece = text[section.start:section.end]
             if not piece.strip():
                 continue
             blocks.append(
@@ -115,14 +129,58 @@ class TextParser:
                     text=piece,
                     locator=Locator(
                         type="md" if media_type == TEXT_MARKDOWN else "txt",
-                        char_start=start,
-                        char_end=end,
+                        char_start=section.start,
+                        char_end=section.end,
                         precision="char",
                         block=index,
                     ),
+                    kind=section.kind,
+                    table_id=f"markdown-{section.start}" if section.rows is not None else None,
+                    metadata={"table_rows": section.rows} if section.rows is not None else {},
                 )
             )
         return blocks
+
+
+_MARKDOWN_FENCE = re.compile(r"(?:\A\ufeff?|(?<=\n)|(?<=\r)) {0,3}(`{3,}|~{3,})([^\r\n]*)(?:\r\n|[\r\n]|\Z)")
+
+
+class MarkdownStructureParser(TextParser):
+    """先识别代码围栏，再解析外围表格与正文，保留原始解码文本的范围。"""
+
+    name = "markdown-structure"
+
+    def supports(self, media_type: str, filename: str) -> bool:
+        return media_type == TEXT_MARKDOWN
+
+    def _prose_sections(self, text: str, origin: int) -> Iterator[_TextSection]:
+        cursor = 0
+        for start, end, rows in markdown_tables(text):
+            yield from (replace(part, start=origin + cursor + part.start, end=origin + cursor + part.end)
+                        for part in super()._sections(text[cursor:start]))
+            yield _TextSection(origin + start, origin + end, "table", rows)
+            cursor = end
+        yield from (replace(part, start=origin + cursor + part.start, end=origin + cursor + part.end)
+                    for part in super()._sections(text[cursor:]))
+
+    def _sections(self, text: str) -> Iterator[_TextSection]:
+        cursor = 0
+        opened: tuple[str, int] | None = None
+        for match in _MARKDOWN_FENCE.finditer(text):
+            fence, trailing = match.groups()
+            if opened is not None:
+                marker, start = opened
+                if fence[0] == marker[0] and len(fence) >= len(marker) and not trailing.strip(" \t"):
+                    yield _TextSection(start, match.end(), "code")
+                    cursor = match.end()
+                    opened = None
+            elif fence[0] != "`" or "`" not in trailing:
+                yield from self._prose_sections(text[cursor:match.start()], cursor)
+                opened = fence, match.start()
+        if opened is not None:
+            yield _TextSection(opened[1], len(text), "code")
+        else:
+            yield from self._prose_sections(text[cursor:], cursor)
 
 
 class PdfParser:
@@ -137,29 +195,70 @@ class PdfParser:
         reader = PdfReader(io.BytesIO(data))
         if reader.is_encrypted:
             raise PasswordProtected("PDF 已加密，无法解析")
-        blocks: list[ParsedBlock] = []
+        return [
+            block
+            for index, page in enumerate(reader.pages, start=1)
+            for block in self._page_blocks(index, page.extract_text() or "")
+        ]
 
-        for page_index, page in enumerate(reader.pages, start=1):
-            page_text = page.extract_text() or ""
-            if not page_text.strip():
-                continue
-            for local_index, (start, end) in enumerate(_split_paragraphs(page_text)):
-                piece = page_text[start:end]
-                if not piece.strip():
-                    continue
-                blocks.append(
-                    ParsedBlock(
-                        text=piece,
-                        locator=Locator(
-                            type="pdf",
-                            page=page_index,
-                            block=local_index,
-                            char_start=start,
-                            char_end=end,
-                            precision="block",
-                        ),
-                    )
+    @staticmethod
+    def _page_blocks(page_index: int, page_text: str) -> Iterator[ParsedBlock]:
+        for index, (start, end) in enumerate(_split_paragraphs(page_text)):
+            piece = page_text[start:end]
+            if piece.strip():
+                yield ParsedBlock(
+                    text=piece,
+                    locator=Locator(
+                        type="pdf", page=page_index, block=index,
+                        char_start=start, char_end=end, precision="block",
+                    ),
                 )
+
+
+class PlainPdfProbe(PdfParser):
+    """仅接受可确认的单栏、可见文本。空列表表示交给 MinerU。"""
+
+    def parse(self, data: bytes, media_type: str, filename: str) -> list[ParsedBlock]:
+        from pypdf import PdfReader
+
+        reader = PdfReader(io.BytesIO(data))
+        if reader.is_encrypted:
+            raise PasswordProtected("PDF 已加密，无法解析")
+        if not 0 < len(reader.pages) <= 64:
+            return []
+        blocks: list[ParsedBlock] = []
+        for index, page in enumerate(reader.pages, start=1):
+            stream = page.get_contents()
+            if page.rotation or stream is None:
+                return []
+            for operands, operator in stream.operations:
+                if operator in {
+                    b"Do", b"INLINE IMAGE", b"S", b"s", b"f", b"F", b"f*",
+                    b"B", b"B*", b"b", b"b*", b"sh",
+                }:
+                    return []
+                if operator == b"Tr" and operands[0] != 0:
+                    return []
+                if operator in {b"Tm", b"cm"} and (
+                    operands[1] or operands[2] or operands[0] <= 0 or operands[3] <= 0
+                ):
+                    return []
+            layout = page.extract_text(extraction_mode="layout")
+            lines = [line.rstrip() for line in layout.splitlines() if line.strip()]
+            if not lines or sum(char.isalnum() for char in layout) < 12 or "\ufffd" in layout:
+                return []
+            margins = [len(line) - len(line.lstrip()) for line in lines]
+            if max(margins) - min(margins) > 4 or any(
+                re.search(r"\S {4,}\S|[∑∫√]", line) for line in lines
+            ):
+                return []
+            plain = page.extract_text() or ""
+            if not plain.strip() or "\ufffd" in plain or "\x00" in plain:
+                return []
+            # 绘制顺序和视觉顺序不一致时，简单本地提取不能保留可靠的阅读顺序。
+            if "".join(plain.split()) != "".join(layout.split()):
+                return []
+            blocks.extend(self._page_blocks(index, plain))
         return blocks
 
 
@@ -175,6 +274,7 @@ class DocxParser:
 
     def parse(self, data: bytes, media_type: str, filename: str) -> list[ParsedBlock]:
         import docx
+        from docx.oxml.ns import qn
 
         with zipfile.ZipFile(io.BytesIO(data)) as archive:
             entries = archive.infolist()
@@ -206,20 +306,33 @@ class DocxParser:
                     ),
                 )
             )
-        # 表格按行展平：结构化表格解析不在首期范围（AGENTS §3.6），
-        # 但单元格内容必须参与索引，不得静默丢弃（硬约束 C8）。
+        # 正文沿用原来的行文本，网格和表头标记供结构分块使用。
         for table_index, table in enumerate(document.tables, start=1):
+            width = len(table.columns)
             for row_index, row in enumerate(table.rows, start=1):
-                cells = [cell.text.strip() for cell in row.cells]
-                if not any(cells):
+                cells = row.cells
+                values = [cell.text.strip() for cell in cells]
+                if not any(values):
                     continue
-                text = f"表格{table_index} 第{row_index}行：" + "｜".join(cells)
+                text = f"表格{table_index} 第{row_index}行：" + "｜".join(values)
+                header = row._tr.find(f"{qn('w:trPr')}/{qn('w:tblHeader')}")
+                explicit_header = header is not None and header.get(qn("w:val")) not in {"0", "false", "off"}
+                grid = None
+                if 0 < width <= 256 and len(cells) == width and not (row.grid_cols_before or row.grid_cols_after):
+                    grid = [
+                        (value, cell._tc.grid_span == 1 and cell._tc.getparent() is row._tr)
+                        for value, cell in zip(values, cells, strict=True)
+                    ]
                 blocks.append(
                     ParsedBlock(
                         text=text,
                         kind="table_row",
                         table_id=f"docx-table-{table_index}",
-                        metadata={"order": order.get(table._element, len(order)), "row": row_index},
+                        metadata={
+                            "order": order.get(table._element, len(order)), "row": row_index,
+                            "is_header": row_index == 1 and explicit_header,
+                            "docx_header": explicit_header, "docx_grid": grid,
+                        },
                         locator=Locator(
                             type="docx",
                             block=table_index,
@@ -233,13 +346,14 @@ class DocxParser:
 
 
 XLSX_TRUNCATED = "xlsx_rows_truncated"
+XLSX_MERGE_UNAVAILABLE = "xlsx_merge_structure_unavailable"
 
 
 class XlsxParser:
     """把工作表按行展开为文本：一行一条记录，制表符分隔单元格。
 
-    不重建表头语境：块头标注工作表名与行区间，检索命中后能回到具体行。
-    合并单元格只保留左上角的值（openpyxl 行为），其余为空。
+    块头标注工作表和行区间，正文仅保留原单元格的值。
+    合并范围和单元格边界单独作为分块元数据。
     """
 
     name = "xlsx"
@@ -254,6 +368,8 @@ class XlsxParser:
     def parse(self, data: bytes, media_type: str, filename: str) -> list[ParsedBlock]:
         import openpyxl
 
+        from knowledge.adapters.xlsx_layout import MERGE_SCAN_BYTES, read_sheet_merges
+
         try:
             workbook = openpyxl.load_workbook(io.BytesIO(data), read_only=True, data_only=True)
         except Exception as exc:
@@ -261,17 +377,26 @@ class XlsxParser:
 
         blocks: list[ParsedBlock] = []
         read_rows = 0
+        merge_budget = MERGE_SCAN_BYTES
         truncated = False
         try:
             for sheet in workbook.worksheets:
                 title = sheet.title or "Sheet"
+                merges, merge_budget = read_sheet_merges(sheet, merge_budget)
+                structured = bool(merges and any(first_row <= 2 for _, first_row, _, _ in merges))
+                first_block = len(blocks)
+                preview: list[list[str]] = []
                 batch: list[str] = []
                 row_numbers: list[int] = []
+                cell_lengths: list[list[int] | None] = []
                 batch_start = 0
                 row_number = 0
                 for row in sheet.iter_rows(values_only=True):
                     row_number += 1
                     cells = [cell_text(value) for value in row]
+                    supported_width = not structured or not any(cells[256:])
+                    if structured and row_number <= 6:
+                        preview.append(cells[:256] if supported_width and all(len(cell) <= 512 for cell in cells) else [])
                     if not any(cells):
                         continue
                     if read_rows >= self.max_rows:
@@ -282,12 +407,29 @@ class XlsxParser:
                         batch_start = row_number
                     batch.append("\t".join(cells).rstrip())
                     row_numbers.append(row_number)
+                    if structured:
+                        # 普通行可从制表符恢复。仅单元格内已有制表符时记录真实列边界。
+                        if not supported_width:
+                            cell_lengths.append([])
+                        elif any("\t" in cell for cell in cells):
+                            cell_lengths.append(list(map(len, cells[:256])))
+                        else:
+                            cell_lengths.append(None)
                     if len(batch) >= self.rows_per_block:
-                        blocks.append(_sheet_block(title, batch_start, row_number, batch, row_numbers))
+                        blocks.append(_sheet_block(title, batch_start, row_number, batch, row_numbers, cell_lengths))
                         batch = []
                         row_numbers = []
+                        cell_lengths = []
                 if batch:
-                    blocks.append(_sheet_block(title, batch_start, row_number, batch, row_numbers))
+                    blocks.append(_sheet_block(title, batch_start, row_number, batch, row_numbers, cell_lengths))
+                if first_block < len(blocks):
+                    block = blocks[first_block]
+                    if structured:
+                        blocks[first_block] = replace(
+                            block, metadata={**block.metadata, "xlsx_merge_ranges": merges, "xlsx_preview": preview},
+                        )
+                    elif merges is None:
+                        blocks[first_block] = replace(block, warnings=(*block.warnings, XLSX_MERGE_UNAVAILABLE))
                 if truncated:
                     break
         finally:
@@ -331,7 +473,7 @@ class CsvParser:
         if text is None:
             raise ParseFailed("表格文本编码无法识别")
         blocks: list[ParsedBlock] = []
-        batch: list[str] = []
+        batch: list[list[str]] = []
         row_numbers: list[int] = []
         batch_start = 0
         row_number = 0
@@ -348,7 +490,7 @@ class CsvParser:
             read_rows += 1
             if not batch:
                 batch_start = row_number
-            batch.append("\t".join(cells).rstrip())
+            batch.append(cells)
             row_numbers.append(row_number)
             if len(batch) >= self.rows_per_block:
                 blocks.append(_csv_block(batch_start, row_number, batch, row_numbers))
@@ -364,13 +506,22 @@ class CsvParser:
         return blocks
 
 
-def _csv_block(start: int, end: int, rows: list[str], row_numbers: list[int] | None = None) -> ParsedBlock:
-    text = f"CSV 第{start}-{end}行\n" + "\n".join(rows)
+def _csv_block(start: int, end: int, rows: list[list[str]], row_numbers: list[int]) -> ParsedBlock:
+    prefix = f"CSV 第{start}-{end}行\n"
+    rendered = []
+    spans = []
+    cursor = len(prefix)
+    for cells in rows:
+        line = "\t".join(cells).rstrip()
+        rendered.append(line)
+        spans.append((cursor, cursor + len(line), [len(cell) for cell in cells]))
+        cursor += len(line) + 1
+    text = prefix + "\n".join(rendered)
     return ParsedBlock(
         text=text,
         kind="table",
         table_id="CSV",
-        metadata={"row_numbers": row_numbers or []},
+        metadata={"row_numbers": row_numbers, "csv_row_spans": spans},
         locator=Locator(
             type="csv",
             sheet="CSV",
@@ -451,6 +602,7 @@ class PptxParser:
 
 def _sheet_block(
     sheet: str, start: int, end: int, rows: list[str], row_numbers: list[int] | None = None,
+    cell_lengths: list[list[int] | None] | None = None,
 ) -> ParsedBlock:
     header = f"工作表《{sheet}》第{start}-{end}行"
     text = header + "\n" + "\n".join(rows)
@@ -458,7 +610,7 @@ def _sheet_block(
         text=text,
         kind="table",
         table_id=sheet,
-        metadata={"row_numbers": row_numbers or []},
+        metadata={"row_numbers": row_numbers or [], **({"xlsx_cell_lengths": cell_lengths} if cell_lengths else {})},
         locator=Locator(
             type="xlsx",
             sheet=sheet,
@@ -479,16 +631,32 @@ class ParserRegistry:
         profile: str = "legacy-v1",
         mineru: Parser | None = None,
         direct_text: Parser | None = None,
+        pdf_probe: Parser | None = None,
+        structured_markdown: Parser | None = None,
     ) -> None:
         self._parsers = parsers
         self.profile = profile
         self._mineru = mineru
         self._direct_text = direct_text or DirectTextParser()
+        self._pdf_probe = pdf_probe
+        self._structured_markdown = structured_markdown
 
-    def for_file(self, media_type: str, filename: str, *, profile: str | None = None):
+    def probe_pdf(self, data: bytes, filename: str) -> list[ParsedBlock]:
+        if self._pdf_probe is None:
+            return []
+        try:
+            return self._pdf_probe.parse(data, APPLICATION_PDF, filename)
+        except ParseFailed:
+            return []
+
+    def for_file(
+        self, media_type: str, filename: str, *, profile: str | None = None, structured_markdown: bool = False,
+    ):
         selected = profile or self.profile
         if selected not in {"legacy-v1", "mineru-api4.1-v1"}:
             raise ParseFailed("处理策略版本不受支持")
+        if structured_markdown and media_type == TEXT_MARKDOWN and self._structured_markdown is not None:
+            return self._structured_markdown
         if selected == "mineru-api4.1-v1":
             if media_type in {TEXT_PLAIN, TEXT_MARKDOWN}:
                 return self._direct_text
@@ -530,4 +698,9 @@ def build_parser_registry(settings: Settings | None = None) -> ParserRegistry:
         profile=resolved.document_parser_profile,
         mineru=MinerUParser(resolved),
         direct_text=BoundedParser(DirectTextParser(), resolved),
+        structured_markdown=BoundedParser(MarkdownStructureParser(), resolved),
+        pdf_probe=BoundedParser(PlainPdfProbe(), resolved.model_copy(update={
+            "parse_timeout_seconds": min(5.0, resolved.parse_timeout_seconds),
+            "parse_cpu_seconds": min(5.0, resolved.parse_cpu_seconds),
+        })),
     )

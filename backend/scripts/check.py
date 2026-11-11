@@ -23,6 +23,9 @@ SCRIPTS = (
     "test_policy",
     "workbench",
     "browser_smoke",
+    "backfill_ragflow_terms",
+    "prepare_ragflow_resources",
+    "sync_native_index",
 )
 
 

@@ -61,7 +61,7 @@ def test_reindex_preserves_original_until_atomic_publication(session, actor, set
     version = session.get(DocumentVersion, old.version_id)
     original = (version.object_key, version.sha256, deps.storage.get(version.object_key))
     changed_settings = settings.model_copy(
-        update={"chunk_max_chars": settings.chunk_max_chars + 17}
+        update={"evidence_max_chars": settings.evidence_max_chars + 100}
     )
     new = reindex(session, actor, changed_settings, deps, old)
     assert new.generation == 2 and new.version_id == old.version_id

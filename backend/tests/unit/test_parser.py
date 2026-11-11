@@ -20,13 +20,12 @@ def test_pdf_upload_default_and_explicit_override():
 
     settings = Settings(_env_file=None)
     registry = Mock()
-    assert settings.pdf_parser_profile == "mineru-api4.1-v1"
     assert _validate(b"%PDF-1.7 synthetic", settings, registry, "disguised.txt") == (
         APPLICATION_PDF,
-        "mineru-api4.1-v1",
+        "pdf-auto-v1",
     )
     registry.for_file.assert_called_with(
-        APPLICATION_PDF, "disguised.txt", profile="mineru-api4.1-v1"
+        APPLICATION_PDF, "disguised.txt", profile="legacy-v1"
     )
     for explicit in ("legacy-v1", "mineru-api4.1-v1"):
         assert (
@@ -137,6 +136,30 @@ def test_xlsx_reports_truncation_instead_of_silently_dropping():
 
     assert len(blocks) == 1
     assert "xlsx_rows_truncated" in blocks[-1].warnings
+
+
+def test_xlsx_merge_scan_budget_preserves_ordinary_rows(monkeypatch):
+    from knowledge.adapters import xlsx_layout
+    from knowledge.adapters.parser import XLSX, XlsxParser
+
+    monkeypatch.setattr(xlsx_layout, "MERGE_SCAN_BYTES", 32)
+    blocks = XlsxParser().parse(_xlsx_bytes([["设备", "额度"], ["RX-001", 145]]), XLSX, "账册.xlsx")
+    assert "RX-001\t145" in blocks[0].text
+    assert blocks[0].metadata["row_numbers"] == [1, 2]
+    assert "xlsx_merge_ranges" not in blocks[0].metadata
+    assert "xlsx_merge_structure_unavailable" in blocks[0].warnings
+
+
+def test_markdown_structure_parser_keeps_fence_type_width_and_original_offsets():
+    from knowledge.adapters.parser import MarkdownStructureParser
+
+    first = "  ````python\r\n# 代码注释\r\n\r\n```\r\n~~~\r\n内容\r\n```` \t\r\n"
+    last = "~~~text\n# 文件尾部的代码注释"
+    source = "# 真标题\r\n\r\n" + first + "\r\n## 下一节\n\n" + last
+    blocks = MarkdownStructureParser().parse(source.encode(), TEXT_MARKDOWN, "notes.md")
+    assert [block.kind for block in blocks] == ["text", "code", "text", "code"]
+    assert [blocks[1].text, blocks[3].text] == [first, last]
+    assert all(source[b.locator.char_start:b.locator.char_end] == b.text for b in blocks)
 
 
 def test_xlsx_without_content_is_a_clear_failure():

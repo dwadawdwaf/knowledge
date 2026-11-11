@@ -37,6 +37,7 @@ def _upload_processed(session, actor, settings, deps, kb, filename: str, data: b
         kb_id=kb.id,
         filename=filename,
         data=data,
+        parser_profile="legacy-v1",
         embedder_model=deps.embedder.model,
         embedder_dim=deps.embedder.dimension,
     )
@@ -200,7 +201,7 @@ def test_blank_pdf_fails_with_empty_content(session, settings, deps):
     ],
     ids=["xls", "doc", "jpg"],
 )
-def test_non_whitelisted_formats_rejected(session, settings, deps, filename, data):
+def test_basic_parser_rejects_unsupported_formats(session, settings, deps, filename, data):
     actor = Actor(subject_id="fmt-user", tenant_id="default")
     kb = knowledge_service.create(session, actor, "白名单库")
     with pytest.raises(UnsupportedFormat):
@@ -213,6 +214,7 @@ def test_non_whitelisted_formats_rejected(session, settings, deps, filename, dat
             kb_id=kb.id,
             filename=filename,
             data=data,
+            parser_profile="legacy-v1",
             embedder_model=deps.embedder.model,
             embedder_dim=deps.embedder.dimension,
         )
@@ -245,10 +247,11 @@ def test_xlsx_is_indexed_with_sheet_and_row_locators(session, settings, deps):
     assert job.state is JobState.SUCCEEDED, job.last_error
 
     view = document_service.chunks(session, actor, result.document_id)
-    assert view["total"] == 1
-    item = view["items"][0]
+    assert view["total"] == 3
+    assert [item["locator"]["row_start"] for item in view["items"]] == [1, 2, 3]
+    item = view["items"][1]
     assert item["locator"]["sheet"] == "人员名单"
-    assert (item["locator"]["row_start"], item["locator"]["row_end"]) == (1, 3)
+    assert (item["locator"]["row_start"], item["locator"]["row_end"]) == (2, 2)
     assert item["locator"]["precision"] == "sheet"
     # 单元格内容必须可检索，不能只留表名
     assert "陈建工" in item["text"] and "B-201" in item["text"]
@@ -289,10 +292,10 @@ def test_csv_and_pptx_are_indexed_with_their_locators(session, settings, deps):
     )
 
     csv_view = document_service.chunks(session, actor, csv_result.document_id)
-    assert csv_view["total"] == 1
-    csv_item = csv_view["items"][0]
+    assert csv_view["total"] == 3
+    csv_item = csv_view["items"][1]
     assert csv_item["locator"]["type"] == "csv"
-    assert (csv_item["locator"]["row_start"], csv_item["locator"]["row_end"]) == (1, 3)
+    assert (csv_item["locator"]["row_start"], csv_item["locator"]["row_end"]) == (2, 2)
     assert "陈建工" in csv_item["text"]
 
     pptx_view = document_service.chunks(session, actor, pptx_result.document_id)

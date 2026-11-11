@@ -18,7 +18,7 @@ from knowledge.domain.entities import (
     SearchHit,
 )
 from knowledge.domain.errors import CitationValidationFailed, SourceChanged
-from knowledge.domain.ports import Embedder, Generator, KeywordIndex, Reranker
+from knowledge.domain.ports import Embedder, Generator
 from knowledge.logging import get_logger
 from knowledge.repositories import conversations as conversation_repo
 from knowledge.services import retrieval
@@ -121,9 +121,9 @@ def answer(
     kb_ids: list[uuid.UUID],
     top_k: int | None = None,
     conversation_id: uuid.UUID | None = None,
-    reranker: Reranker | None = None,
-    keyword_index: KeywordIndex | None = None,
+    document_ids: list[uuid.UUID] | None = None,
 ) -> Answer:
+    query_warnings: set[str] = set()
     hits = retrieval.search(
         session,
         actor,
@@ -133,11 +133,12 @@ def answer(
         kb_ids=kb_ids,
         mode="hybrid",
         top_k=top_k,
-        reranker=reranker,
         candidate_limit=settings.evidence_candidate_limit,
-        keyword_index=keyword_index,
+        document_ids=document_ids,
+        query_warnings=query_warnings,
     )
 
+    degraded = bool(query_warnings)
     best = float(hits[0].diagnostics.get("fusion_score", hits[0].score)) if hits else 0.0
     if not hits or best < settings.evidence_min_score:
         log.info("qa_no_evidence", extra={"hits": len(hits)})
@@ -145,13 +146,18 @@ def answer(
             status=AnswerStatus.NO_EVIDENCE.value,
             text="资料中未找到相关依据。",
             hits=len(hits),
+            warnings=sorted(query_warnings),
+            degraded=degraded,
         )
         _persist(session, actor, conversation_id, question, result, model_revision="")
         return result
 
     evidence_hits = retrieval.select_evidence(session, actor, settings, kb_ids, hits)
     if not evidence_hits:
-        result = Answer(status=AnswerStatus.NO_EVIDENCE.value, text="资料中未找到足够依据。", hits=len(hits))
+        result = Answer(
+            status=AnswerStatus.NO_EVIDENCE.value, text="资料中未找到足够依据。", hits=len(hits),
+            warnings=sorted(query_warnings), degraded=degraded,
+        )
         _persist(session, actor, conversation_id, question, result, model_revision="")
         return result
     evidence = _build_evidence(evidence_hits, settings.evidence_max_items)
@@ -165,6 +171,8 @@ def answer(
             status=AnswerStatus.NO_EVIDENCE.value,
             text="所选资料中没有足够依据回答这个问题。可以换一种问法，或把检索范围放宽到更多知识库。",
             hits=len(hits),
+            warnings=sorted(query_warnings),
+            degraded=degraded,
         )
         _persist(
             session, actor, conversation_id, question, result,
@@ -173,11 +181,11 @@ def answer(
         return result
 
     body, citations, warnings = _assemble(generated, evidence)
-    warnings = sorted(set(warnings) | {
+    warnings = sorted(set(warnings) | query_warnings | {
         warning for hit in evidence_hits for warning in hit.warnings
     })
 
-    sources = hits if settings.retrieval_profile == "baseline-v1" else evidence_hits
+    sources = evidence_hits
     if not _sources_unchanged(session, sources):
         log.warning("qa_source_changed", extra={"hits": len(hits)})
         raise SourceChanged("资料已更新或不可访问，请重新提问")
@@ -197,7 +205,7 @@ def answer(
         citations=citations,
         warnings=warnings,
         hits=len(hits),
-        degraded=any(hit.warnings for hit in evidence_hits),
+        degraded=degraded or any(hit.warnings for hit in evidence_hits),
     )
     _persist(session, actor, conversation_id, question, result, generated.model_revision)
     return result

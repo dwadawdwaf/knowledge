@@ -262,7 +262,7 @@ def test_upload_form_optional_profile_is_strict_and_returned(session, actor, set
 def test_pdf_default_is_frozen_for_upload_and_new_version(session, actor, settings, deps):
     with parser_server() as (url, state):
         settings = settings.model_copy(
-            update={"pdf_parser_profile": "mineru-api4.1-v1", "mineru_url": url}
+            update={"mineru_url": url}
         )
         registry = build_parser_registry(settings)
         deps = replace(deps, settings=settings, registry=registry)
@@ -282,7 +282,7 @@ def test_pdf_default_is_frozen_for_upload_and_new_version(session, actor, settin
             data=b"%PDF-1.7 synthetic v1",
             **common,
         )
-        assert result.parser_profile == "mineru-api4.1-v1"
+        assert result.parser_profile == "pdf-auto-v1"
         assert process_next(session, deps)
         session.expire_all()
         info = document.detail(session, actor, result.document_id)
@@ -298,11 +298,11 @@ def test_pdf_default_is_frozen_for_upload_and_new_version(session, actor, settin
             data=b"%PDF-1.7 synthetic v2",
             **common,
         )
-        assert updated.parser_profile == "mineru-api4.1-v1"
+        assert updated.parser_profile == "pdf-auto-v1"
         assert process_next(session, deps)
         session.expire_all()
         assert state["calls"] == 2
         assert (
-            session.get(IndexBuild, result.build_id).chunk_config["parser_profile"]
+            session.get(IndexBuild, result.build_id).chunk_config["resolved_parser_profile"]
             == "mineru-api4.1-v1"
         )

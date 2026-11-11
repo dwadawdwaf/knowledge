@@ -10,12 +10,14 @@ import os
 import uuid
 
 import pytest
+from sqlalchemy import select
 
 from knowledge.adapters.generator import StubGenerator
 from knowledge.domain.entities import Actor, JobState
 from knowledge.domain.errors import NotFound
 from knowledge.repositories import chunks as chunk_repo
 from knowledge.repositories import jobs as job_repo
+from knowledge.repositories.tables import Chunk
 from knowledge.services import document as document_service
 from knowledge.services import knowledge as knowledge_service
 from knowledge.services import qa as qa_service
@@ -31,7 +33,7 @@ pytestmark = [
 ]
 
 
-def test_upload_to_citation(session, settings, deps):
+def test_upload_to_citation(session, settings, deps, query_vector):
     actor = Actor(subject_id="user-a", tenant_id="default")
     kb = knowledge_service.create(session, actor, "制度库")
 
@@ -57,6 +59,11 @@ def test_upload_to_citation(session, settings, deps):
     detail = document_service.detail(session, actor, upload.document_id)
     assert detail["active_build_id"] == str(upload.build_id)
     assert detail["pending_build_id"] is None
+    expected = session.scalar(select(Chunk).where(
+        Chunk.build_id == upload.build_id, Chunk.text.contains("清理现场"),
+    ))
+    query_vector("使用后需要做什么", expected.embedding)
+    query_vector("会议室使用后需要做什么", expected.embedding)
 
     hits = retrieval.search(
         session,
@@ -134,7 +141,7 @@ def test_unrelated_question_returns_no_evidence(session, settings, deps):
     assert answer.citations == []
 
 
-def test_cross_user_access_denied(session, settings, deps):
+def test_cross_user_access_denied(session, settings, deps, query_vector):
     """M04：他人 ID 一律 404，不泄露资源是否存在。"""
     owner = Actor(subject_id="user-d", tenant_id="default")
     kb = knowledge_service.create(session, owner, "隔离库")
@@ -153,6 +160,10 @@ def test_cross_user_access_denied(session, settings, deps):
     with pytest.raises(NotFound):
         job_repo.get_owned(session, intruder, upload.job_id)
 
+    expected = session.scalar(select(Chunk).where(
+        Chunk.build_id == upload.build_id, Chunk.text.contains("清理现场"),
+    ))
+    query_vector("使用后需要做什么", expected.embedding)
     hits = retrieval.search(
         session, owner, settings, deps.embedder,
         query="使用后需要做什么", kb_ids=[kb.id],

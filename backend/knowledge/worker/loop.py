@@ -11,13 +11,12 @@ from typing import Self
 from sqlalchemy.orm import Session
 
 from knowledge.adapters.embedding import build_embedder
-from knowledge.adapters.opensearch import build_keyword_index
 from knowledge.adapters.parser import build_parser_registry
 from knowledge.adapters.storage import LocalStorage
 from knowledge.config import Settings, get_settings
 from knowledge.domain.entities import JobKind, JobState
 from knowledge.domain.errors import DomainError, StaleJob, TransientError, public_job_error
-from knowledge.domain.ports import Embedder, KeywordIndex, ObjectStorage
+from knowledge.domain.ports import Embedder, ObjectStorage
 from knowledge.logging import get_logger
 from knowledge.repositories import jobs as job_repo
 from knowledge.repositories.session import new_session
@@ -40,7 +39,6 @@ class WorkerDeps:
     storage: ObjectStorage
     registry: object
     embedder: Embedder
-    keyword_index: KeywordIndex | None = None
 
 
 def build_deps(settings: Settings | None = None) -> WorkerDeps:
@@ -50,7 +48,6 @@ def build_deps(settings: Settings | None = None) -> WorkerDeps:
         storage=LocalStorage(resolved.storage_root),
         registry=build_parser_registry(resolved),
         embedder=build_embedder(resolved),
-        keyword_index=build_keyword_index(resolved),
     )
 
 
@@ -129,7 +126,7 @@ def process_next(session: Session, deps: WorkerDeps) -> bool:
                     lease_token=token,
                     document_id=resource_id,
                     storage=deps.storage,
-                    keyword_index=deps.keyword_index,
+                    settings=deps.settings,
                 )
             else:
                 job_repo.finish(

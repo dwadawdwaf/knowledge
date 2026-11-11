@@ -22,6 +22,7 @@ from knowledge.domain.errors import (
     public_job_error,
 )
 from knowledge.domain.ports import ObjectStorage
+from knowledge.domain.ragflow_chunking import STRATEGY, TITLE_DEPTH, TOKEN_CAP
 from knowledge.repositories import chunks as chunk_repo
 from knowledge.repositories import documents as doc_repo
 from knowledge.repositories import jobs as job_repo
@@ -75,6 +76,8 @@ def reindex(
         embedder_dim,
     ):
         raise VersionConflict("重建须使用原向量配置")
+    if source.chunk_config.get("strategy") != STRATEGY:
+        raise VersionConflict("请上传新文件版本以使用新的分块流程")
     build, job, generation = reindex_repo.enqueue(
         session,
         actor,
@@ -100,10 +103,10 @@ def _new_build(
         version_id=version_id,
         state=BuildState.QUEUED,
         chunk_config={
-            "strategy": (settings.pdf_chunk_strategy or settings.chunk_strategy)
-            if media_type == "application/pdf" else settings.chunk_strategy,
-            "max_chars": settings.chunk_max_chars,
-            "overlap_chars": settings.chunk_overlap_chars,
+            "strategy": STRATEGY,
+            "token_cap": TOKEN_CAP,
+            "title_depth": TITLE_DEPTH,
+            "overlap_tokens": 0,
             "parser_profile": parser_profile,
         },
         embedding_model=embedder_model,
@@ -124,11 +127,12 @@ def _validate(data: bytes, settings: Settings, registry, filename: str, profile:
         raise FileTooLarge("文件超过大小上限")
 
     media_type = detect_media_type(data, filename)
-    selected = profile or (
-        settings.pdf_parser_profile
-        if media_type == "application/pdf"
-        else settings.document_parser_profile
-    )
+    if profile is None:
+        if media_type == "application/pdf":
+            registry.for_file(media_type, filename, profile="legacy-v1")
+            return media_type, "pdf-auto-v1"
+        profile = "mineru-api4.1-v1" if media_type.startswith("image/") else "legacy-v1"
+    selected = profile
     if selected not in get_args(ParserProfile):
         raise ValidationFailed("未知解析方案")
     registry.for_file(media_type, filename, profile=selected)
@@ -142,7 +146,8 @@ def _existing_profile(session: Session, document: Document, *, pending_first: bo
         else (document.active_build_id or document.pending_build_id)
     )
     build = session.get(IndexBuild, build_id) if build_id else None
-    return (build.chunk_config or {}).get("parser_profile", "legacy-v1") if build else "legacy-v1"
+    config = (build.chunk_config or {}) if build else {}
+    return config.get("resolved_parser_profile", config.get("parser_profile", "legacy-v1"))
 
 
 def upload(
@@ -316,9 +321,10 @@ def detail(session: Session, actor: Actor, document_id: uuid.UUID) -> dict:
         # 已发布方案优先；首次处理尚未发布时仍显示冻结方案，避免失败文件隐藏选择。
         "media_type": version.media_type if version else None,
         "byte_size": version.byte_size if version else None,
-        "parser_profile": (visible_build.chunk_config or {}).get("parser_profile")
-        if visible_build
-        else None,
+        "parser_profile": (
+            visible_build.chunk_config.get("resolved_parser_profile")
+            or visible_build.chunk_config.get("parser_profile")
+        ) if visible_build else None,
         "job": _job_dict(latest) if latest else None,
     }
 

@@ -21,7 +21,7 @@ import httpx
 from knowledge.config import Settings
 from knowledge.security import issue_token
 from scripts.local_db import prepare_embedded_env
-from scripts.real_model import real_model_environment
+from scripts.real_model import check_ragflow_resources, real_model_environment
 
 BACKEND = pathlib.Path(__file__).resolve().parents[1]
 
@@ -72,12 +72,14 @@ class LocalRuntime:
         lease_seconds: int | None = None,
         heartbeat_seconds: int | None = None,
         storage_root: str | None = None,
+        retrieval_profile: str | None = None,
     ) -> None:
         self.database_url = database_url
         self.embedding_url = embedding_url
         self.generator_url = generator_url
         self.port = port
         self.model_settings = model_settings
+        self.retrieval_profile = retrieval_profile
         # 外部库的资料卷必须跟着库走：数据库持久而对象留在临时目录，
         # 下一次运行就只剩元数据，原文与下载一律 404。
         self.storage_root = storage_root
@@ -90,6 +92,7 @@ class LocalRuntime:
         self.started = time.monotonic()
         self.stack = ExitStack()
         self.processes: dict[str, tuple[subprocess.Popen, BinaryIO]] = {}
+        self.legacy_jobs_pending = False
         self.log_dir = BACKEND / ".data" / "e2e" / uuid.uuid4().hex[:12]
         self.owner = "demo-owner"
         # 每次运行用新密钥签发令牌：上一轮落在浏览器历史里的令牌对下一次无效。
@@ -105,6 +108,12 @@ class LocalRuntime:
 
     def __enter__(self) -> Self:
         try:
+            profile = self.retrieval_profile
+            if profile is None and self.model_settings is not None:
+                profile = self.model_settings.retrieval_profile
+            profile = profile or "ragflow-v1"
+            if profile == "ragflow-v1":
+                check_ragflow_resources()
             self.directory = pathlib.Path(
                 self.stack.enter_context(
                     tempfile.TemporaryDirectory(
@@ -145,7 +154,6 @@ class LocalRuntime:
                     "KS_EMBEDDING_BASE_URL": self.embedding_url,
                     "KS_GENERATOR_BASE_URL": self.generator_url,
                     "KS_GENERATOR_MODEL": "fixture",
-                    "KS_PDF_PARSER_PROFILE": "legacy-v1",
                     "KS_LEASE_SECONDS": str(lease),
                     "KS_HEARTBEAT_SECONDS": str(heartbeat),
                     "KS_WORKER_POLL_SECONDS": "0.2",
@@ -153,6 +161,14 @@ class LocalRuntime:
             )
             if self.model_settings is not None:
                 self.env.update(real_model_environment(self.model_settings))
+            if self.retrieval_profile is not None:
+                self.env["KS_RETRIEVAL_PROFILE"] = self.retrieval_profile
+            if profile == "ragflow-v1":
+                # 子进程从临时目录启动，沿用预检时解析出的资源位置。
+                for name in ("NLTK_DATA", "TIKTOKEN_CACHE_DIR", "DATA_GYM_CACHE_DIR"):
+                    if value := self.env.get(name):
+                        paths = value.split(os.pathsep) if name == "NLTK_DATA" else [value]
+                        self.env[name] = os.pathsep.join(str(pathlib.Path(path).resolve()) for path in paths if path)
             self.stack.callback(self._stop_all)
             self.say("[migration] Applying schema 0001 -> 0002")
             code = (
@@ -171,6 +187,8 @@ class LocalRuntime:
                     timeout=240,
                 )
             self.say("[migration] Schema ready")
+            if profile == "ragflow-v1":
+                self._check_ragflow_index(self.database_url)
             with socket.socket() as listener:
                 listener.bind(("127.0.0.1", self.port))
                 self.port = listener.getsockname()[1]
@@ -191,12 +209,42 @@ class LocalRuntime:
                 ],
             )
             self._wait_api()
-            self.start_worker()
+            if self.legacy_jobs_pending:
+                self.say("[warning] 旧策略任务尚未处理，文件处理暂不启动；可打开工作台查看提示")
+            else:
+                self.start_worker()
             self.say(f"[logs] {self.log_dir}")
             return self
         except BaseException:
             self.stack.close()
             raise
+
+    def _check_ragflow_index(self, database_url: str) -> None:
+        from sqlalchemy import create_engine
+        from sqlalchemy.exc import SQLAlchemyError
+        from sqlalchemy.orm import Session
+
+        from scripts.backfill_ragflow_terms import count_legacy_jobs, count_missing_terms
+
+        engine = create_engine(database_url, hide_parameters=True)
+        try:
+            with Session(engine) as session:
+                legacy_jobs = count_legacy_jobs(session)
+                missing = count_missing_terms(session)
+        except SQLAlchemyError:
+            raise ValueError("无法检查 ragflow-v1 词项索引，请核对数据库连接和迁移状态") from None
+        finally:
+            engine.dispose()
+        self.legacy_jobs_pending = bool(legacy_jobs)
+        if legacy_jobs:
+            self.say(f"[warning] 仍有 {legacy_jobs} 个旧分块策略任务，请先用原版本排空任务")
+        if missing:
+            self.say(
+                f"[warning] ragflow-v1 有 {missing} 个已发布分块缺少当前词项索引；"
+                "工作台仍可使用，请按运行手册执行 backfill_ragflow_terms.py --apply"
+            )
+        if not missing and not legacy_jobs:
+            self.say("[index] ragflow-v1 词项索引已就绪")
 
     def _objects_root(self, external_database: bool) -> pathlib.Path:
         """对象存储目录：显式指定优先，否则用本次运行的临时卷。

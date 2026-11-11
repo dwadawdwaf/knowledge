@@ -1,5 +1,5 @@
 // 应用装配：状态、路由、数据加载、连接与轮询。视图逻辑在各自模块中。
-import { ApiClient, ApiError, turnsFromMessages } from './core.mjs';
+import { ApiClient, ApiError, turnsFromMessages, retrievalStatusMessage } from './core.mjs';
 import { el, icon, hydrateIcons, toast, openMenu, menuItem } from './dom.mjs';
 import { renderChat } from './chat.mjs';
 import { renderKnowledge, renderKnowledgeDetail, drawDocuments } from './library.mjs';
@@ -45,10 +45,13 @@ const state = {
   connected: false,
   busy: false,
   pollError: false,
+  retrievalStatus: null,
+  retrievalStatusError: null,
 };
 
 let pollTimer = null;
 let pollBusy = false;
+let statusTimer = null;
 
 /* ------------------------------------------------------------ 错误与提示 */
 
@@ -73,6 +76,40 @@ function notify(message) {
 }
 
 /* -------------------------------------------------------------- 数据加载 */
+
+function renderRetrievalNotice() {
+  main.querySelector('#retrieval-notice')?.remove();
+  if (!state.connected) return;
+  const message = state.retrievalStatusError
+    ? '暂时无法检查检索索引状态，文件管理仍可使用。请稍后重新检查。'
+    : retrievalStatusMessage(state.retrievalStatus);
+  if (!message) return;
+  const box = el('section', 'retrieval-notice');
+  box.id = 'retrieval-notice';
+  box.setAttribute('role', 'status');
+  box.setAttribute('aria-live', 'polite');
+  box.append(el('p', '', message));
+  const refresh = el('button', 'btn secondary', '重新检查');
+  refresh.type = 'button';
+  refresh.addEventListener('click', () => loadRetrievalStatus());
+  box.append(refresh);
+  main.prepend(box);
+}
+
+async function loadRetrievalStatus() {
+  const token = api.token;
+  try {
+    const result = await api.request('/search/status', { timeout: 15000 });
+    if (!state.connected || api.token !== token) return;
+    state.retrievalStatus = result;
+    state.retrievalStatusError = null;
+  } catch (error) {
+    if (!state.connected || api.token !== token) return;
+    if (error.status === 401) { disconnect(true); return; }
+    state.retrievalStatusError = error;
+  }
+  renderRetrievalNotice();
+}
 
 async function loadLibraries() {
   const result = await api.request('/knowledge-bases');
@@ -477,6 +514,7 @@ function render() {
   else if (state.page === 'search') main.append(renderSearch(app));
   else if (state.library) main.append(renderKnowledgeDetail(app));
   else main.append(renderKnowledge(app));
+  renderRetrievalNotice();
   state.renderedKey = viewKey();
   main.scrollTop = 0;
 }
@@ -564,6 +602,10 @@ function requireConnection() {
 }
 
 function disconnect(silent = false) {
+  if (statusTimer) clearInterval(statusTimer);
+  statusTimer = null;
+  state.retrievalStatus = null;
+  state.retrievalStatusError = null;
   stopPolling();
   api.token = '';
   state.connected = false;
@@ -702,6 +744,12 @@ async function connect(value) {
   try {
     await loadLibraries();
     state.connected = true;
+    await loadRetrievalStatus();
+    if (!state.connected) return false;
+    if (statusTimer) clearInterval(statusTimer);
+    statusTimer = setInterval(() => {
+      if (!document.hidden && state.connected) loadRetrievalStatus();
+    }, 30000);
     try {
       await loadConversations();
       state.conversationsError = null;
