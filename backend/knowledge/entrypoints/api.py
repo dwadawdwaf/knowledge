@@ -9,6 +9,8 @@ from pathlib import Path
 from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse
 from fastapi.staticfiles import StaticFiles
+from starlette.responses import Response
+from starlette.types import Scope
 
 from knowledge.api import errors
 from knowledge.api.v1.routers import chunks, documents, events, jobs, knowledge_bases, qa, search
@@ -17,6 +19,19 @@ from knowledge.logging import get_logger, setup_logging
 API_PREFIX = "/api/v1"
 
 log = get_logger("api")
+
+
+class _RevalidatedStatic(StaticFiles):
+    """前端资源允许缓存但每次重新验证。
+
+    默认的 StaticFiles 不发 Cache-Control，浏览器会按「最后修改时间的 10%」自己算新鲜期，
+    开发时改完前端普通刷新仍拿到旧模块，表现为「改了页面没变」。ETag 仍在，命中时是 304。
+    """
+
+    async def get_response(self, path: str, scope: Scope) -> Response:
+        response = await super().get_response(path, scope)
+        response.headers["Cache-Control"] = "no-cache"
+        return response
 
 
 def create_app() -> FastAPI:
@@ -49,7 +64,7 @@ def create_app() -> FastAPI:
 
     frontend = Path(__file__).resolve().parents[3] / "frontend"
     if frontend.is_dir():
-        app.mount("/workbench", StaticFiles(directory=frontend, html=True), name="workbench")
+        app.mount("/workbench", _RevalidatedStatic(directory=frontend, html=True), name="workbench")
 
     for module in (knowledge_bases, documents, events, jobs, search, chunks, qa):
         app.include_router(module.router, prefix=API_PREFIX)
