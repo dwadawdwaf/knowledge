@@ -10,7 +10,7 @@ export function renderFiles(app) {
   const text = el('div');
   text.append(el('h1', '', '全部文件'));
   const actions = el('div', 'head-actions');
-  actions.append(actionButton('刷新', 'btn ghost', () => app.loadAllFiles(true), 'refresh'));
+  actions.append(actionButton('刷新', 'btn ghost', () => app.loadAllFiles(), 'refresh'));
   head.append(text, actions);
   page.append(head);
 
@@ -23,6 +23,17 @@ export function renderFiles(app) {
   }
 
   if (!app.state.libraries.length) {
+    if (app.state.fileLoading) {
+      page.append(loading('正在读取知识库列表…'));
+      return page;
+    }
+    if (app.state.fileErrors.length) {
+      const errors = el('div');
+      errors.id = 'file-errors';
+      paintErrors(app, errors);
+      page.append(errors);
+      return page;
+    }
     page.append(emptyState('还没有知识库', '先创建一个知识库，再上传资料。',
       actionButton('新建知识库', 'btn primary', () => app.createLibrary(), 'plus')));
     return page;
@@ -145,7 +156,9 @@ function kbFilter(app) {
 }
 
 export function updateFilesView(app) {
-  paint(app, document.querySelector('#file-list'));
+  const panel = document.querySelector('#file-list');
+  if (!panel && app.state.page === 'files' && app.state.fileLoaded) { app.render(); return; }
+  paint(app, panel);
 }
 
 function paint(app, panel) {
@@ -222,6 +235,7 @@ function paintErrors(app, target) {
 
 function fileRow(app, item) {
   const tr = el('tr');
+  tr.dataset.documentId = item.id;
 
   const nameCell = el('td');
   const cell = el('div', 'file-cell');

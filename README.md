@@ -33,7 +33,7 @@ MinerU已准备D盘独立环境时，start.cmd自动启动或复用服务；默�
 
 ```powershell
 .\backend\.venv\Scripts\python.exe -u backend/scripts/check.py
-node --test frontend/core.test.mjs
+node --test frontend/core.test.mjs frontend/events.test.mjs frontend/documents.test.mjs frontend/browse.test.mjs
 ```
 
 后端完整入口包括依赖预检、lint、类型检查、隔离库、迁移和HTTP验收，不调用真实模型。

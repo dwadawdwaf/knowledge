@@ -80,6 +80,12 @@ class ModelUnavailable(DomainError):
     retryable = True
 
 
+class EventStreamUnavailable(DomainError):
+    code = "EVENT_STREAM_UNAVAILABLE"
+    http_status = 503
+    retryable = True
+
+
 class ModelTimeout(DomainError):
     code = "MODEL_TIMEOUT"
     http_status = 504

@@ -58,6 +58,7 @@ class Settings(BaseSettings):
     mineru_output_bytes: int = 64 * 1024 * 1024
     query_max_chars: int = 2000
     top_k_default: int = 5
+    event_stream_limit: int = Field(default=8, ge=1, le=16)
     top_k_max: int = 20
     kb_scope_max: int = 20
 

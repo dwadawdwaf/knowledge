@@ -1,12 +1,14 @@
 // 应用装配：状态、路由、数据加载、连接与轮询。视图逻辑在各自模块中。
 import { ApiClient, ApiError, turnsFromMessages } from './core.mjs';
-import { el, icon, hydrateIcons, toast, openMenu, menuItem } from './dom.mjs';
+import { el, icon, hydrateIcons, toast, openMenu, menuItem, closeMenu } from './dom.mjs';
 import { renderChat } from './chat.mjs';
 import { renderKnowledge, renderKnowledgeDetail, drawDocuments } from './library.mjs';
 import { renderFiles, updateFilesView } from './files.mjs';
 import { renderBrowse, loadBrowse, emptyBrowse, disposeBrowse } from './browse.mjs';
-import { renderSearch } from './search.mjs';
-import { openChunks, openSource } from './reader.mjs';
+import { renderSearch, disposeSearch } from './search.mjs';
+import { openChunks, openSource, disposeReaders } from './reader.mjs';
+
+import { createDocumentData } from './documents.mjs';
 
 const main = document.querySelector('#content');
 const api = new ApiClient();
@@ -44,11 +46,9 @@ const state = {
   receipts: new Map(),
   connected: false,
   busy: false,
-  pollError: false,
+  liveStatus: 'connecting',
 };
 
-let pollTimer = null;
-let pollBusy = false;
 
 /* ------------------------------------------------------------ 错误与提示 */
 
@@ -74,127 +74,17 @@ function notify(message) {
 
 /* -------------------------------------------------------------- 数据加载 */
 
-async function loadLibraries() {
-  const result = await api.request('/knowledge-bases');
-  state.libraries = (result.items || []).filter(kb => kb.status === 'active');
-  if (state.scope && !state.libraries.some(kb => kb.id === state.scope)) state.scope = '';
-  if (state.library && !state.libraries.some(kb => kb.id === state.library.id)) state.library = null;
-  if (state.fileKb && !state.libraries.some(kb => kb.id === state.fileKb)) state.fileKb = '';
-  // 知识库集合变化后，全部文件的汇总结果也要重新读取。
-  state.fileLoaded = false;
-}
-
-/**
- * 列表内容指纹：轮询只在数据真的变了才重绘。
- * 每 2.5 秒无差别重建表格，会把用户正要点的按钮换成新节点，表现就是「点了没反应」。
- */
-function documentsSignature(items) {
-  return items
-    .map(doc => [
-      doc.id, doc.status, doc.generation, doc.version_no, doc.active_build_id,
-      doc.job?.state, doc.job?.stage, doc.job?.last_error?.code,
-    ].join(':'))
-    .join('|');
-}
-
-async function loadDocuments(quiet = false) {
-  const library = state.library;
-  if (!library || !state.connected) return;
-  // 只有显式加载才占用「空列表」的占位；轮询静默进行，避免空库每 2.5 秒闪一次读取中
-  if (!quiet) state.docLoading = true;
-  pollBusy = true;
-  try {
-    const result = await api.request(`/knowledge-bases/${library.id}/documents`, { timeout: 15000 });
-    if (state.library?.id !== library.id) return;
-    const items = (result.items || []).filter(doc => doc.status === 'active');
-    const signature = documentsSignature(items);
-    const unchanged = signature === state.docSignature;
-    state.documents = items;
-    state.docSignature = signature;
-    state.docError = null;
-    state.pollError = false;
-    if (state.page === 'knowledge' && !unchanged) {
-      drawDocuments(app);
-      const counter = document.querySelector('#doc-count');
-      if (counter) counter.textContent = `${state.documents.length} 个文档`;
-      const tabCount = document.querySelector('#doc-tab-count');
-      if (tabCount) tabCount.textContent = String(state.documents.length);
-    }
-  } catch (error) {
-    if (error.status !== 401 && (!quiet || !state.pollError)) notify(errorText(error));
-    state.docError = error;
-    state.pollError = true;
-  } finally {
-    pollBusy = false;
-  }
-}
-
-const sleep = ms => new Promise(resolve => setTimeout(resolve, ms));
-
-/**
- * 汇总一个知识库的文档；超时/抖动重试一次再判失败。
- * 远端库经隧道访问时会偶发慢查询，单次失败不足以说明这个库是空的。
- */
-async function fetchKbDocuments(kb) {
-  let lastError = null;
-  for (let attempt = 0; attempt < 2; attempt += 1) {
-    try {
-      const data = await api.request(`/knowledge-bases/${kb.id}/documents`, { timeout: 20000 });
-      return { kb, items: data.items || [], error: null };
-    } catch (error) {
-      lastError = error;
-      if (error.status === 401) break;
-      if (attempt === 0) await sleep(400);
-    }
-  }
-  return { kb, items: [], error: lastError };
-}
-
-let filesRequest = 0;
-
-async function loadAllFiles(quiet = false) {
-  if (!state.connected || !state.libraries.length) return;
-  // 连点刷新会并发两轮：只让最后发起的那一轮写结果，避免旧结果覆盖新结果。
-  const seq = ++filesRequest;
-  state.fileLoading = true;
-  state.fileErrors = [];
-  updateFilesView(app);
-  try {
-    const results = await Promise.all(state.libraries.map(fetchKbDocuments));
-    if (seq !== filesRequest) return;
-    state.fileErrors = results
-      .filter(result => result.error)
-      .map(result => ({ name: result.kb.name, message: errorText(result.error) }));
-    state.allFiles = results.flatMap(({ kb, items }) => items
-      .filter(doc => doc.status === 'active')
-      .map(doc => ({ ...doc, kb_name: kb.name })));
-    if (!quiet && state.fileErrors.length) {
-      notify(`有 ${state.fileErrors.length} 个知识库未能读取，列表只是部分结果。`);
-    }
-  } finally {
-    if (seq === filesRequest) {
-      state.fileLoading = false;
-      state.fileLoaded = true;
-      updateFilesView(app);
-    }
-  }
-}
-
-function startPolling() {
-  stopPolling();
-  pollTimer = setInterval(() => {
-    // 避免刷新移除正在操作的按钮、打断键盘焦点，或在弹窗打开时重绘。
-    if (document.hidden || pollBusy || state.busy) return;
-    if (document.querySelector('dialog[open]')) return;
-    if (document.activeElement?.closest('#document-list')) return;
-    loadDocuments(true);
-  }, 2500);
-}
-
-function stopPolling() {
-  if (pollTimer) clearInterval(pollTimer);
-  pollTimer = null;
-}
+const documentData = createDocumentData({
+  api, state, render, notify, errorText,
+  expired: () => { disconnect(true); openConnection(); },
+  drawDocuments: () => {
+    drawDocuments(app);
+    const count = document.querySelector('#doc-tab-count');
+    if (count) count.textContent = String(state.documents.length);
+  },
+  drawFiles: () => updateFilesView(app),
+});
+const { loadLibraries, loadDocuments, loadAllFiles, stopUpdates } = documentData;
 
 /* ---------------------------------------------------------------- 会话 */
 
@@ -272,6 +162,7 @@ async function loadSession(session) {
 /** 首次提问时创建会话，之后的问题都带 conversation_id 写入历史。 */
 async function ensureConversation(session, title) {
   if (session.serverId) return session;
+  const previousId = session.id;
   const created = await api.request('/conversations', {
     method: 'POST',
     body: { title: String(title || '').slice(0, 200) },
@@ -280,7 +171,7 @@ async function ensureConversation(session, title) {
   session.serverId = true;
   session.loaded = true;
   if (!session.title) session.title = created.title || String(title || '').slice(0, 40);
-  state.sessionId = session.id;
+  if (state.sessionId === previousId && state.sessions.includes(session)) state.sessionId = session.id;
   return session;
 }
 
@@ -316,6 +207,7 @@ function deleteSession(session) {
 }
 
 async function selectSession(session) {
+  const revision = api.revision;
   state.sessionId = session.id;
   if (!session.loaded) session.loading = true;
   navigate('chat', { historySelection: session.id });
@@ -324,11 +216,11 @@ async function selectSession(session) {
   try {
     await loadSession(session);
   } catch (error) {
-    notify(`对话历史读取失败：${errorText(error)}`);
+    if (revision === api.revision) notify(`对话历史读取失败：${errorText(error)}`);
   } finally {
     session.loading = false;
   }
-  if (state.sessionId === session.id) render();
+  if (revision === api.revision && state.sessionId === session.id && state.sessions.includes(session)) render();
 }
 
 function renderSessions() {
@@ -389,12 +281,10 @@ function navigate(page, { historySelection = '' } = {}) {
     state.browse = emptyBrowse();
     state.browsePushed = false;
   }
-  stopPolling();
+  stopUpdates();
   state.page = page;
-  state.pollError = false;
   history.replaceState(null, '', `#${page}`);
   render();
-  if (page === 'knowledge' && state.library) startPolling();
   closeMobileNav();
 }
 
@@ -412,7 +302,7 @@ function openBrowse(doc, focus = null) {
     returnLabel: fromLibrary ? `返回「${fromLibrary.name}」` : '全部文件',
   };
   state.page = 'browse';
-  stopPolling();
+  stopUpdates();
   // 压入历史而不是替换：浏览器返回键与页面内的「全部文件」都能回到列表。
   history.pushState({ page: 'browse' }, '', '#browse');
   state.browsePushed = true;
@@ -444,10 +334,9 @@ function openLibrary(kb) {
   state.docError = null;
   state.docFilter = '';
   state.page = 'knowledge';
-  stopPolling();
+  stopUpdates();
   history.replaceState(null, '', '#knowledge');
   render();
-  startPolling();
   loadDocuments();
   closeMobileNav();
 }
@@ -458,6 +347,9 @@ function openLibraryById(kbId) {
 }
 
 function render() {
+  const scrollTop = state.renderedKey === viewKey() ? main.scrollTop : 0;
+  closeMenu();
+  disposeSearch(app);
   renderSessions();
   // 浏览页高亮来源入口：从知识库进来就高亮「知识库」，从全部文件进来就高亮「全部文件」。
   const activePage = state.page === 'browse'
@@ -477,13 +369,26 @@ function render() {
   else if (state.page === 'search') main.append(renderSearch(app));
   else if (state.library) main.append(renderKnowledgeDetail(app));
   else main.append(renderKnowledge(app));
+  if (state.connected && ['knowledge', 'files'].includes(state.page)) {
+    const live = el('div', 'notice-line', state.liveStatus === 'retrying'
+      ? '实时更新连接中断，正在重连。也可手动刷新。' : '正在连接实时更新…');
+    live.id = 'live-status';
+    live.setAttribute('role', 'status');
+    live.hidden = state.liveStatus === 'connected';
+    main.prepend(live);
+  }
   state.renderedKey = viewKey();
-  main.scrollTop = 0;
+  main.scrollTop = scrollTop;
+  documentData.updateSubscription();
 }
 
 /* -------------------------------------------------------------- 交互弹窗 */
 
+let actionRevision = 0;
+
 function actionDialog({ title, description = '', input = false, value = '', placeholder = '', confirmText = '确认', danger = false, validate, action }) {
+  const revision = ++actionRevision;
+  const identity = api.revision;
   const dialog = document.querySelector('#action-dialog');
   const form = document.querySelector('#action-form');
   const desc = document.querySelector('#action-description');
@@ -502,6 +407,7 @@ function actionDialog({ title, description = '', input = false, value = '', plac
   field.placeholder = placeholder || '';
   error.textContent = '';
   submit.textContent = confirmText;
+  submit.disabled = false;
   submit.className = danger ? 'btn danger' : 'btn primary';
 
   form.onsubmit = async event => {
@@ -511,11 +417,11 @@ function actionDialog({ title, description = '', input = false, value = '', plac
     try {
       if (validate) validate(field.value);
       await action(field.value);
-      dialog.close();
+      if (revision === actionRevision && identity === api.revision) dialog.close();
     } catch (error_) {
-      error.textContent = errorText(error_);
+      if (revision === actionRevision && identity === api.revision) error.textContent = errorText(error_);
     } finally {
-      submit.disabled = false;
+      if (revision === actionRevision && identity === api.revision) submit.disabled = false;
     }
   };
 
@@ -564,7 +470,16 @@ function requireConnection() {
 }
 
 function disconnect(silent = false) {
-  stopPolling();
+  stopUpdates();
+  disposeBrowse(app);
+  disposeReaders();
+  disposeSearch(app);
+  state.browse = emptyBrowse();
+  state.browsePushed = false;
+  if (state.page === 'browse') {
+    state.page = 'files';
+    history.replaceState(null, '', '#files');
+  }
   api.token = '';
   state.connected = false;
   state.libraries = [];
@@ -573,7 +488,16 @@ function disconnect(silent = false) {
   state.docSignature = '';
   state.allFiles = [];
   state.fileLoaded = false;
+  state.fileLoading = false;
+  state.fileErrors = [];
+  state.docLoading = false;
+  state.docError = null;
+  state.busy = false;
   state.searchResult = null;
+  state.query = '';
+  state.scope = '';
+  state.fileFilter = state.fileKb = state.docFilter = state.kbFilter = '';
+  state.liveStatus = 'connecting';
   state.sessions = [];
   state.sessionId = '';
   state.conversationsError = null;
@@ -623,6 +547,7 @@ const app = {
   loadLibraries,
   loadDocuments,
   loadAllFiles,
+  flushUpdates: documentData.flushView,
   openLibrary,
   openLibraryById,
   openKnowledgeList: () => { state.library = null; navigate('knowledge'); },
@@ -698,7 +623,9 @@ document.querySelectorAll('dialog').forEach(dialog => {
 });
 
 async function connect(value) {
+  disconnect(true);
   api.token = String(value || '').trim().replace(/^Bearer\s+/i, '');
+  const revision = api.revision;
   try {
     await loadLibraries();
     state.connected = true;
@@ -706,6 +633,7 @@ async function connect(value) {
       await loadConversations();
       state.conversationsError = null;
     } catch (error) {
+      if (revision !== api.revision) throw error;
       // 历史读取失败不应阻断连接；页面会保留新对话入口。
       state.conversationsError = error;
     }
@@ -716,7 +644,7 @@ async function connect(value) {
     document.querySelector('#app').dataset.connected = 'true';
     return true;
   } catch (error) {
-    api.token = '';
+    if (revision === api.revision) disconnect(true);
     throw error;
   }
 }
@@ -783,5 +711,21 @@ async function bootstrap() {
     openConnection();
   }
 }
+
+document.addEventListener('visibilitychange', () => documentData.updateSubscription());
+document.addEventListener('focusin', () => queueMicrotask(documentData.flushView));
+document.addEventListener('close', () => queueMicrotask(documentData.flushView), true);
+document.addEventListener('click', () => queueMicrotask(documentData.flushView));
+window.addEventListener('pagehide', () => {
+  stopUpdates();
+  api.cancelAll();
+  disposeBrowse(app);
+  disposeReaders();
+  closeMenu();
+});
+window.addEventListener('pageshow', event => {
+  documentData.updateSubscription();
+  if (event.persisted && state.page === 'browse') loadBrowse(app);
+});
 
 bootstrap();

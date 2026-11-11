@@ -15,6 +15,8 @@ const PLAIN_TEXT_LIMIT = 512 * 1024;
 
 export function emptyBrowse() {
   return {
+    controller: new AbortController(),
+    downloadUrls: [],
     doc: null, detail: null, items: [], total: 0, truncated: false,
     loading: false, error: null, query: '', grouped: true,
     focusOrdinal: null, focusLocator: null,
@@ -33,14 +35,22 @@ export function emptyBrowse() {
 export async function loadBrowse(app) {
   const browse = app.state.browse;
   if (!browse?.doc) return;
+  disposeBrowse(app);
+  browse.controller = new AbortController();
+  const signal = browse.controller.signal;
+  browse.original = { url: null, loading: false, error: null, mediaType: null, text: null };
+  browse.sheets = browse.docx = null;
+  browse.sheetsLoading = browse.docxLoading = false;
+  browse.sheetsError = browse.docxError = null;
   browse.loading = true;
   browse.error = null;
   paint(app);
   try {
     const [detail, chunks] = await Promise.all([
-      app.api.request(`/documents/${browse.doc.id}`),
-      app.api.request(`/documents/${browse.doc.id}/chunks?limit=${LIMIT}`),
+      app.api.request(`/documents/${browse.doc.id}`, { signal }),
+      app.api.request(`/documents/${browse.doc.id}/chunks?limit=${LIMIT}`, { signal }),
     ]);
+    if (!isCurrent(app, browse, signal)) return;
     browse.detail = detail;
     browse.items = chunks.items || [];
     browse.total = chunks.total || browse.items.length;
@@ -48,13 +58,14 @@ export async function loadBrowse(app) {
     // 用户没手动切换时，PDF/图片默认看原文，其余看正文。
     if (!browse.tabChosen) browse.tab = previewable(detail.media_type) ? 'original' : 'text';
   } catch (error) {
+    if (!isCurrent(app, browse, signal)) return;
     browse.error = error;
     browse.items = [];
   } finally {
-    browse.loading = false;
+    if (browse.controller.signal === signal) browse.loading = false;
     // 默认视图可能从「正文」改为「原文」，工具条上的选中态要一起重建。
-    app.render();
-    if (browse.tab === 'original') {
+    if (isCurrent(app, browse, signal)) app.render();
+    if (isCurrent(app, browse, signal) && browse.tab === 'original') {
       if (isDocx(browse.detail?.media_type)) loadDocx(app);
       else if (!isSheet(browse.detail?.media_type)) loadOriginal(app);
     }
@@ -86,46 +97,71 @@ function isTiff(mediaType) {
 export async function downloadOriginal(app) {
   const browse = app.state.browse;
   if (!browse?.doc) return;
-  if (!browse.original.url) await loadOriginal(app);
-  const url = app.state.browse.original.url;
-  if (!url) return;
-  const link = document.createElement('a');
-  link.href = url;
-  link.download = browse.doc.title || 'document';
-  document.body.append(link);
-  link.click();
-  link.remove();
+  const signal = browse.controller.signal;
+  try {
+    // TIFF 的预览可以是 PNG，下载必须读取未经转换的原始文件。
+    const response = await app.api.raw(`/documents/${browse.doc.id}/file`, { signal });
+    const blob = await response.blob();
+    if (!isCurrent(app, browse, signal)) return;
+    const url = URL.createObjectURL(blob);
+    browse.downloadUrls.push(url);
+    const link = document.createElement('a');
+    link.href = url;
+    link.download = browse.doc.title || 'document';
+    document.body.append(link);
+    link.click();
+    link.remove();
+    setTimeout(() => {
+      URL.revokeObjectURL(url);
+      browse.downloadUrls = browse.downloadUrls.filter(item => item !== url);
+    }, 1000);
+  } catch (error) {
+    if (isCurrent(app, browse, signal)) app.notify(app.errorText(error));
+  }
 }
 
 export function disposeBrowse(app) {
-  const url = app.state.browse?.original?.url;
+  const browse = app.state.browse;
+  browse?.controller?.abort();
+  browse?.downloadUrls?.forEach(url => URL.revokeObjectURL(url));
+  if (browse) browse.downloadUrls = [];
+  const url = browse?.original?.url;
   if (url) URL.revokeObjectURL(url);
+  if (browse?.original) browse.original.url = null;
+}
+
+function isCurrent(app, browse, signal) {
+  return app.state.page === 'browse' && app.state.browse === browse && !signal.aborted;
 }
 
 export async function loadOriginal(app) {
   const browse = app.state.browse;
-  if (!browse?.doc || browse.original.url || browse.original.loading) return;
+  if (!browse?.doc || browse.loading || browse.original.url || browse.original.loading) return;
+  const signal = browse.controller.signal;
   browse.original.loading = true;
   paint(app);
   try {
     // TIFF 等浏览器不支持的位图：让服务端转码后再内联展示，原件仍可单独下载
     const convert = isTiff(browse.detail?.media_type || browse.original.mediaType);
-    const response = await app.api.raw(`/documents/${browse.doc.id}/file${convert ? '?as=png' : ''}`);
+    const response = await app.api.raw(`/documents/${browse.doc.id}/file${convert ? '?as=png' : ''}`, { signal });
     const blob = await response.blob();
-    if (browse.original.url) URL.revokeObjectURL(browse.original.url);
-    browse.original.url = URL.createObjectURL(blob);
-    browse.original.mediaType = response.headers.get('content-type') || browse.detail?.media_type || '';
+    const mediaType = response.headers.get('content-type') || browse.detail?.media_type || '';
     // 纯文本与 Markdown 浏览器能直接显示，取一次解码结果，避免「原文」标签下只有一句看得见却打不开的解释。
-    browse.original.text = browse.original.mediaType.startsWith('text/') && blob.size <= PLAIN_TEXT_LIMIT
+    const text = mediaType.startsWith('text/') && blob.size <= PLAIN_TEXT_LIMIT
       ? await blob.text()
       : null;
+    if (!isCurrent(app, browse, signal)) return;
+    if (browse.original.url) URL.revokeObjectURL(browse.original.url);
+    browse.original.url = URL.createObjectURL(blob);
+    browse.original.mediaType = mediaType;
+    browse.original.text = text;
     browse.original.error = null;
   } catch (error) {
-    browse.original.error = error;
+    if (isCurrent(app, browse, signal)) browse.original.error = error;
   } finally {
-    browse.original.loading = false;
+    if (browse.controller.signal === signal) browse.original.loading = false;
     // 下载入口与内嵌预览都依赖 blob 地址，取到后要重建工具条。
-    app.render();
+    if (isCurrent(app, browse, signal)) app.render();
   }
 }
 
@@ -325,7 +361,7 @@ function paint(app, target) {
   if (browse.truncated) {
     const note = el('div', 'notice-line warn');
     note.append(icon('alert'),
-      el('span', '', `文件共 ${browse.total} 个分块，当前只读前 ${browse.items.length} 个；超出部分请在分块视图查看。`));
+      el('span', '', `文件共 ${browse.total} 个分块，当前只读前 ${browse.items.length} 个；完整内容请查看或下载原文件。`));
     body.append(note);
   }
 
@@ -374,16 +410,18 @@ function paint(app, target) {
 export async function loadDocx(app) {
   const browse = app.state.browse;
   if (!browse?.doc || browse.docx || browse.docxLoading) return;
+  const signal = browse.controller.signal;
   browse.docxLoading = true;
   browse.docxError = null;
   paint(app);
   try {
-    browse.docx = await app.api.request(`/documents/${browse.doc.id}/docx`);
+    const docx = await app.api.request(`/documents/${browse.doc.id}/docx`, { signal });
+    if (isCurrent(app, browse, signal)) browse.docx = docx;
   } catch (error) {
-    browse.docxError = error;
+    if (isCurrent(app, browse, signal)) browse.docxError = error;
   } finally {
-    browse.docxLoading = false;
-    paint(app);
+    if (browse.controller.signal === signal) browse.docxLoading = false;
+    if (isCurrent(app, browse, signal)) paint(app);
   }
 }
 
@@ -442,16 +480,18 @@ function paintDocx(app, body) {
 export async function loadSheets(app) {
   const browse = app.state.browse;
   if (!browse?.doc || browse.sheets || browse.sheetsLoading) return;
+  const signal = browse.controller.signal;
   browse.sheetsLoading = true;
   browse.sheetsError = null;
   paint(app);
   try {
-    browse.sheets = await app.api.request(`/documents/${browse.doc.id}/sheets`);
+    const sheets = await app.api.request(`/documents/${browse.doc.id}/sheets`, { signal });
+    if (isCurrent(app, browse, signal)) browse.sheets = sheets;
   } catch (error) {
-    browse.sheetsError = error;
+    if (isCurrent(app, browse, signal)) browse.sheetsError = error;
   } finally {
-    browse.sheetsLoading = false;
-    paint(app);
+    if (browse.controller.signal === signal) browse.sheetsLoading = false;
+    if (isCurrent(app, browse, signal)) paint(app);
   }
 }
 
@@ -534,6 +574,7 @@ function paintSheets(app, body) {
 function paintOriginal(app, body) {
   const browse = app.state.browse;
   const original = browse.original;
+  if (browse.loading) { body.append(loading('正在读取文件…')); return; }
 
   // DOCX 不取原件字节：走 /docx 的段落与表格；表格走 /sheets 的二维数据
   if (isDocx(browse.detail?.media_type)) {

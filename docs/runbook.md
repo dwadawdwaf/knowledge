@@ -72,7 +72,7 @@ API/Worker退出不等于后台数据库停止，停止用：
 .\.venv\Scripts\python.exe -m knowledge.entrypoints.worker
 ```
 
-当前head为0007_merge_optimization；从0001升级前不能留下未处理旧任务。
+当前head为0008_document_events；从0001升级前不能留下未处理旧任务。
 该节点汇合会话归档链与结构分块、全文索引链，任一分支数据库均可用同一命令升级。
 不对未知默认库运行迁移，不改历史迁移，不原地回填已发布片段。
 
@@ -145,7 +145,7 @@ KS_MINERU_TIMEOUT_SECONDS为总等待预算（默认330秒），而非性能承�
 
 ```powershell
 .\backend\.venv\Scripts\python.exe -u backend/scripts/check.py
-node --test frontend/core.test.mjs
+node --test frontend/core.test.mjs frontend/events.test.mjs frontend/documents.test.mjs frontend/browse.test.mjs
 .\backend\.venv\Scripts\python.exe -u backend/scripts/browser_smoke.py
 ```
 
@@ -191,3 +191,13 @@ CI定义在.github/workflows/backend.yml，文件存在不等于远端已实跑�
 
 按request_id关联请求，任务再看job_id/build_id、阶段与耗时。日志不加正文或密钥，外发前脱敏。
 生产硬配额与身份接入另配置，不把采样资源保护当安全沙箱。
+
+### 工作台实时连接
+
+升级至 0008 后，API 为资料页提供 /api/v1/events。原有 REST 接口继续使用。
+反向代理应关闭该路径的响应缓冲，空闲超时应大于 45 秒，允许 text/event-stream 长连接。
+PostgreSQL 连接地址应支持会话级 LISTEN，事务池模式会破坏订阅。
+每个可见资料页维持一个订阅，退出身份、切换到其他功能或隐藏页面时关闭。
+KS_EVENT_STREAM_LIMIT 设置每个 API 进程的 SSE 上限，默认 8，范围 1–16，超限返回 503 并退避重试。
+断线提示会保留旧列表，重连成功后自动重读快照，用户也可手动刷新。
+通知不持久化，不以心跳代表任务进度。Windows 使用线程池等待数据库 socket，取消后最多一个等待周期释放连接。

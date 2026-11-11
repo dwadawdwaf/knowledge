@@ -11,7 +11,7 @@ from fastapi.responses import JSONResponse
 from fastapi.staticfiles import StaticFiles
 
 from knowledge.api import errors
-from knowledge.api.v1.routers import chunks, documents, jobs, knowledge_bases, qa, search
+from knowledge.api.v1.routers import chunks, documents, events, jobs, knowledge_bases, qa, search
 from knowledge.logging import get_logger, setup_logging
 
 API_PREFIX = "/api/v1"
@@ -51,7 +51,7 @@ def create_app() -> FastAPI:
     if frontend.is_dir():
         app.mount("/workbench", StaticFiles(directory=frontend, html=True), name="workbench")
 
-    for module in (knowledge_bases, documents, jobs, search, chunks, qa):
+    for module in (knowledge_bases, documents, events, jobs, search, chunks, qa):
         app.include_router(module.router, prefix=API_PREFIX)
 
     @app.get("/", include_in_schema=False)

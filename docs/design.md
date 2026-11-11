@@ -43,6 +43,16 @@ MinerU输出正文中的NUL等长替换为U+FFFD，块及build标记mineru_nul_r
 MinerU结果ZIP读取上限为KS_MINERU_OUTPUT_BYTES，正文JSON仍受parse_output_bytes限制。
 工作台只有显式选择历史会话才高亮该历史项；点击对话/文件等页面入口清除历史高亮，不删除会话内容。
 
+### 工作台实时同步
+
+`GET /api/v1/events` 使用与 REST 相同的 Authorization。单向 SSE 发送 `sync`、`change`、`heartbeat`、`expired` 事件，data 固定为 `{"version":1}`，不传正文、资源路径或令牌。连接先订阅，再发 sync，使客户端重读权威 REST 快照。事件是失效信号，不保证逐条回放。
+
+PostgreSQL 迁移 `0008_document_events` 为知识库、文档和任务状态建立事务通知。通道从已验证 Actor 的 subject_id 推导，与现有 owner 授权一致。任务续租不通知。每条 SSE 使用独立 LISTEN 连接，15 秒无变更发送心跳，退出或断线关闭连接，不持有业务事务。数据库需支持会话级 LISTEN，连接池的事务模式不能代替该连接。
+
+每个 API 进程最多接受 KS_EVENT_STREAM_LIMIT 条资料连接，默认 8，配置范围 1–16。超限返回可重试 503，普通 REST 保持可用。该上限用于资源保护，不代表已经验证的部署容量。
+
+资料页面保持一条 SSE，隐藏、离开资料页、退出身份时取消。重连采用 1–30 秒退避，每次重连重读快照，45 秒无流量终止旧连接。变更合并后刷新，列表没有变化不重绘。失去实时连接显示提示，手动刷新始终可用。问答仍在证据与引用校验完成后一次性返回。
+
 运行单元：API、Worker、PostgreSQL、原件目录，MinerU按需启用。
 依赖方向：`entrypoints → {api, mcp, worker} → services → domain ← repositories / adapters`。
 API/MCP/Worker并列不互相依赖；services编排事务，repositories只访问数据库，adapters访问文件、模型与解析器。

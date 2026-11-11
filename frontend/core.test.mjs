@@ -5,6 +5,16 @@ import { ApiClient, ApiError, reindexTarget, jobLabel, locatorText, chunkMetrics
   visibleWarnings,
   turnsFromMessages, uploadForm, PARSER_OPTIONS } from './core.mjs';
 
+test('重新连接同一令牌也会隔离旧请求', async () => {
+  let finish;
+  const api = new ApiClient(() => new Promise(resolve => { finish = resolve; }));
+  api.token = 'synthetic';
+  const pending = api.request('/knowledge-bases');
+  api.token = 'synthetic';
+  finish(Response.json({ data: { items: [{ id: 'stale' }] } }));
+  await assert.rejects(pending, error => error.code === 'STALE_SESSION');
+});
+
 test('跨页片段展示全部来源页，不冒充单一字符区间', () => {
   const locator = { type: 'pdf', precision: 'composite', page: 12, pages: [12, 13], sources: [
     { chunk_start: 0, chunk_end: 5, locator: { page: 12, char_start: 100, char_end: 105 } },

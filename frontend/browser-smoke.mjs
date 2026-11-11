@@ -146,6 +146,7 @@ try {
     '检索页应为上下分布');
   console.log('[浏览器 6/9] 小屏布局无横向溢出');
   await send('Emulation.setDeviceMetricsOverride', { width: 390, height: 844, deviceScaleFactor: 1, mobile: true });
+  await wait(`getComputedStyle(document.querySelector('.mobile-bar')).display === 'flex' && document.querySelector('.sidebar').getBoundingClientRect().right <= 1`);
   assert.ok(await js(`document.documentElement.scrollWidth <= innerWidth`)); await shot('mobile');
   await send('Emulation.clearDeviceMetricsOverride');
   console.log('[浏览器 7/9] 文档重建、版本更新和删除经真实接口生效');
@@ -165,10 +166,47 @@ try {
   await wait(`document.querySelector('.chat-compose textarea')`);
   await js(`document.querySelector('.chat-compose textarea').value='会议室使用后需要做什么？'; document.querySelector('.chat-compose').requestSubmit()`);
   await wait(`[...document.querySelectorAll('.answer-body')].at(-1)?.textContent.includes('关闭空调')`);
+  console.log('[实时更新] 全部文件自动接收其他客户端新增库、上传、完成及删除');
+  const startup = new URL(process.env.KS_UI_URL);
+  const authorization = `Bearer ${decodeURIComponent(startup.hash.slice(3))}`;
+  async function apiRequest(endpoint, options = {}) {
+    const response = await fetch(new URL('/api/v1' + endpoint, startup), {
+      ...options, headers: { Authorization: authorization, ...options.headers },
+    });
+    assert.ok(response.ok, `自制实时验收接口应成功 ${response.status}`);
+    return (await response.json()).data;
+  }
+  await js(`document.querySelector('[data-page=files]').click()`);
+  await wait(`document.querySelector('#file-list tbody tr') && document.querySelector('#live-status').hidden`);
+  const pushedKb = await apiRequest('/knowledge-bases', {
+    method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ name: '实时同步 · 自制样本' }),
+  });
+  const form = new FormData();
+  form.append('file', new Blob(['完全自制的实时同步验收内容。']), '实时刷新.txt');
+  const pushed = await apiRequest(`/knowledge-bases/${pushedKb.id}/documents`, { method: 'POST', body: form });
+  await wait(`!![...document.querySelectorAll('#file-list tbody tr')].find(row => row.textContent.includes('实时刷新.txt') && row.textContent.includes('已就绪'))`, 120000);
+  let listReads = 0;
+  const countReads = event => {
+    const message = JSON.parse(event.data);
+    if (message.method === 'Network.requestWillBeSent' && /\/knowledge-bases(?:\/[^/]+\/documents)?$/.test(new URL(message.params.request.url).pathname)) listReads += 1;
+  };
+  socket.addEventListener('message', countReads);
+  await send('Network.enable');
+  await delay(600);
+  const idleReads = listReads;
+  await delay(3000);
+  assert.equal(listReads, idleReads, '没有资料变化时不应定时 GET 列表');
+  socket.removeEventListener('message', countReads);
+  await clickText('实时刷新.txt');
+  await wait(`document.querySelector('.browse-page') && document.querySelector('.browse-block')`);
+  await js(`document.querySelector('.browse-head .back-link').click()`);
+  await wait(`document.querySelector('#file-list tbody tr') && document.querySelector('#live-status').hidden`);
+  await apiRequest(`/documents/${pushed.document_id}`, { method: 'DELETE' });
+  await wait(`![...document.querySelectorAll('#file-list tbody tr')].some(row => row.textContent.includes('实时刷新.txt'))`);
   console.log('[浏览器 8/9] 文件名/库名作为文本渲染，不执行 HTML');
   await js(`document.querySelector('[data-page=knowledge]').click()`); await clickText('新建知识库');
   await js(`document.querySelector('#action-input').value='<img src=x onerror="window.uiXss=true">'; document.querySelector('#action-form').requestSubmit()`);
-  await wait(`!document.querySelector('#action-dialog').open && document.querySelectorAll('.kb-card').length===${kbBefore + 2}`);
+  await wait(`!document.querySelector('#action-dialog').open && document.querySelectorAll('.kb-card').length===${kbBefore + 3}`);
   assert.equal(await js(`Boolean(window.uiXss || document.querySelector('.kb-card img'))`), false);
   console.log('[浏览器 9/9] 刷新清空身份和内容，浏览器存储中没有令牌');
   assert.equal(await js(`localStorage.length + sessionStorage.length`), 0);
@@ -186,6 +224,18 @@ try {
     '重连后最后一条回答应仍是 v2 内容');
   assert.ok(await js(`document.querySelectorAll('#session-list .session-item').length >= 1`));
   await shot('history');
+  console.log('[身份清理] 从文件预览断开连接，清空原件、正文与抽屉');
+  await js(`document.querySelector('[data-page=files]').click()`);
+  await wait(`!![...document.querySelectorAll('#file-list tbody tr')].find(row=>row.textContent.includes('meeting-room.md'))`);
+  await rowButton('meeting-room.md', '浏览');
+  await wait(`document.querySelector('.browse-page') && document.querySelector('.browse-block')`);
+  await js(`document.querySelector('#connection').click()`);
+  await clickText('断开连接');
+  await wait(`document.querySelector('#app').dataset.connected === 'false'`);
+  assert.equal(await js(`document.querySelector('.browse-page')`), null);
+  assert.equal(await js(`document.querySelector('#source-content').textContent`), '');
+  assert.equal(await js(`document.querySelector('#chunks-content').textContent`), '');
+  assert.equal(await js(`document.querySelectorAll('#session-list .session-item').length`), 0);
   console.log(`PASS: 浏览器全链路验证；截图目录 ${output}`);
 } finally {
   socket?.close(); browser.kill();

@@ -114,6 +114,7 @@ def real_model_environment(settings: Settings) -> dict[str, str]:
         "lease_seconds",
         "heartbeat_seconds",
         "max_attempts",
+        "event_stream_limit",
         "document_parser_profile",
         "pdf_parser_profile",
         "mineru_url",

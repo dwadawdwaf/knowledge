@@ -9,6 +9,8 @@ const messages = {
   VALIDATION_ERROR: '请求参数不符合要求，请检查输入。',
   MODEL_UNAVAILABLE: '模型服务暂不可用，未返回答案。',
   MODEL_TIMEOUT: '模型服务超时，未返回答案。',
+  CANCELLED: '请求等待已取消。',
+  STALE_SESSION: '连接身份已变化，请重新读取。',
   KEYWORD_INDEX_UNAVAILABLE: '关键词索引暂不可用，请检查本机检索服务后重试。',
   CITATION_VALIDATION_FAILED: '答案未通过引用校验，未返回正文。这不是正常拒答；已知同主题无答案场景也可能触发此错误。',
 };
@@ -19,45 +21,62 @@ export class ApiError extends Error {
   }
 }
 export class ApiClient {
-  constructor(fetcher = globalThis.fetch.bind(globalThis)) { this.fetcher = fetcher; this.token = ''; }
-  async request(path, { method = 'GET', body, timeout = 120000 } = {}) {
-    // 开发态服务端不校验令牌，无令牌也照常发起；需要令牌时由 401 引导用户连接。
+  constructor(fetcher = globalThis.fetch.bind(globalThis)) {
+    this.fetcher = fetcher;
+    this._token = '';
+    this.revision = 0;
+    this.pending = new Set();
+  }
+  get token() { return this._token; }
+  set token(value) {
+    this.cancelAll();
+    this._token = value;
+    this.revision += 1;
+  }
+  cancelAll() { this.pending.forEach(controller => controller.abort()); }
+  async request(path, { method = 'GET', body, timeout = 120000, signal } = {}) {
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), timeout);
-    const token = this.token;
+    const revision = this.revision;
+    this.pending.add(controller);
     try {
-      const headers = token ? { Authorization: `Bearer ${token}` } : {};
+      const headers = this.token ? { Authorization: `Bearer ${this.token}` } : {};
       const isFile = body instanceof FormData;
       if (body !== undefined && !isFile) headers['Content-Type'] = 'application/json';
       const response = await this.fetcher(`/api/v1${path}`, { method, headers,
         body: body === undefined ? undefined : isFile ? body : JSON.stringify(body),
-        signal: controller.signal, credentials: 'omit', cache: 'no-store' });
+        signal: signal ? AbortSignal.any([signal, controller.signal]) : controller.signal,
+        credentials: 'omit', cache: 'no-store' });
       let data;
       try { data = await response.json(); } catch { throw new ApiError('INVALID_RESPONSE', response.status); }
-      if (this.token !== token) throw new ApiError('STALE_SESSION');
+      if (this.revision !== revision) throw new ApiError('STALE_SESSION');
       if (!response.ok) throw new ApiError(data?.error?.code, response.status, data?.meta?.request_id || '');
       if (!data || !Object.hasOwn(data, 'data')) throw new ApiError('INVALID_RESPONSE', response.status);
       return data.data;
     } catch (error) {
+      if (this.revision !== revision) throw new ApiError('STALE_SESSION');
+      if (signal?.aborted) throw new ApiError('CANCELLED');
       if (error instanceof ApiError) throw error;
       throw new ApiError('NETWORK_ERROR');
-    } finally { clearTimeout(timer); }
+    } finally { clearTimeout(timer); this.pending.delete(controller); }
   }
 
   /**
    * 取原始响应（文件字节用）。错误仍然按统一错误信封解析，
    * 避免把 404 的 JSON 当成文件内容。
    */
-  async raw(path, { method = 'GET', timeout = 120000 } = {}) {
+  async raw(path, { method = 'GET', timeout = 120000, signal } = {}) {
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), timeout);
-    const token = this.token;
+    const revision = this.revision;
+    this.pending.add(controller);
     try {
-      const headers = token ? { Authorization: `Bearer ${token}` } : {};
+      const headers = this.token ? { Authorization: `Bearer ${this.token}` } : {};
       const response = await this.fetcher(`/api/v1${path}`, {
-        method, headers, signal: controller.signal, credentials: 'omit', cache: 'no-store',
+        method, headers, signal: signal ? AbortSignal.any([signal, controller.signal]) : controller.signal,
+        credentials: 'omit', cache: 'no-store',
       });
-      if (this.token !== token) throw new ApiError('STALE_SESSION');
+      if (this.revision !== revision) throw new ApiError('STALE_SESSION');
       if (!response.ok) {
         let payload = null;
         try { payload = await response.json(); } catch { payload = null; }
@@ -65,9 +84,11 @@ export class ApiClient {
       }
       return response;
     } catch (error) {
+      if (this.revision !== revision) throw new ApiError('STALE_SESSION');
+      if (signal?.aborted) throw new ApiError('CANCELLED');
       if (error instanceof ApiError) throw error;
       throw new ApiError('NETWORK_ERROR');
-    } finally { clearTimeout(timer); }
+    } finally { clearTimeout(timer); this.pending.delete(controller); }
   }
 }
 export function reindexTarget(document, receipts) {

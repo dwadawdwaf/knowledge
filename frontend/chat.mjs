@@ -1,6 +1,6 @@
 // 对话页：800px 居中列、时间分隔、用户气泡右对齐、助手答案无气泡 + 引用芯片。
 import { el, icon, toast, autoGrow, clockLabel, dayLabel, loading } from './dom.mjs';
-import { warningLabel } from './core.mjs';
+import { warningLabel, visibleWarnings } from './core.mjs';
 import { scopeControl, scopeIds, scopeLabel } from './scope.mjs';
 
 const MODE_LABEL = { hybrid: '混合检索', semantic: '语义检索', keyword: '关键词检索' };
@@ -145,13 +145,14 @@ function composer(app) {
     if (!question) return;
     if (!app.state.connected) { app.openConnection(); return; }
     if (!scopeIds(app).length) { toast('还没有可用的知识库，先创建并上传资料。'); return; }
+    if (scopeIds(app).length > 20) { toast('一次最多检索 20 个知识库，请先选择一个知识库。'); return; }
     if (app.state.busy) { toast('上一个问题还在处理中，请稍候。'); return; }
     input.value = '';
     autoGrow(input);
     ask(app, question);
   });
 
-  setTimeout(() => { if (document.activeElement?.tagName !== 'TEXTAREA') input.focus({ preventScroll: true }); }, 0);
+  setTimeout(() => { if (input.isConnected && document.activeElement?.tagName !== 'TEXTAREA') input.focus({ preventScroll: true }); }, 0);
   return wrap;
 }
 
@@ -161,6 +162,8 @@ async function ask(app, question) {
   document.querySelector('.chat-hero')?.remove();
 
   const session = app.currentSession() || app.ensureSession();
+  const ids = [...scopeIds(app)];
+  const revision = app.api.revision;
   const turn = { id: uid(), question, at: new Date(), status: 'pending' };
   session.turns.push(turn);
   if (!session.title) session.title = question.slice(0, 40);
@@ -182,7 +185,7 @@ async function ask(app, question) {
       timeout: 180000,
       body: {
         question,
-        knowledge_base_ids: scopeIds(app),
+        knowledge_base_ids: ids,
         conversation_id: session.id,
       },
     });
@@ -193,13 +196,18 @@ async function ask(app, question) {
     turn.status = 'error';
     turn.error = error;
   } finally {
-    app.state.busy = false;
-    const fresh = turnNode(app, turn, session.turns.at(-2)?.at || null);
-    node.replaceWith(fresh);
-    const title = document.querySelector('.chat-title');
-    if (title) title.textContent = session.title || '新对话';
-    app.renderSessions();
-    scrollToEnd();
+    if (revision === app.api.revision) {
+      app.state.busy = false;
+      if (app.state.page === 'chat' && app.currentSession() === session) {
+        const target = [...document.querySelectorAll('#thread .turn')].find(item => item.dataset.turnId === turn.id);
+        target?.replaceWith(turnNode(app, turn, session.turns.at(-2)?.at || null));
+        const title = document.querySelector('.chat-title');
+        if (title) title.textContent = session.title || '新对话';
+        scrollToEnd();
+      }
+      app.renderSessions();
+      app.flushUpdates();
+    }
   }
 }
 
@@ -211,6 +219,7 @@ function scrollToEnd() {
 
 function turnNode(app, turn, previousAt) {
   const wrap = el('article', 'turn');
+  wrap.dataset.turnId = turn.id;
   const gap = previousAt ? turn.at - previousAt : null;
   if (!previousAt || gap > 10 * 60 * 1000) {
     wrap.append(el('div', 'turn-index', `${dayLabel(turn.at)} · ${clockLabel(turn.at)}`));
@@ -282,7 +291,7 @@ function answerBlocks(app, answer, scope) {
     blocks.push(foot);
   }
 
-  (answer.warnings || []).forEach(warning => {
+  visibleWarnings(answer.warnings).forEach(warning => {
     const line = el('div', 'notice-line warn');
     line.append(icon('alert'), el('span', '', warningLabel(warning)));
     blocks.push(line);

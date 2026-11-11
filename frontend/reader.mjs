@@ -3,14 +3,39 @@ import { el, icon, emptyState, loading } from './dom.mjs';
 import { chunkMetrics, locatorText, warningLabel, visibleWarnings } from './core.mjs';
 import { sheetTable } from './browse.mjs';
 
+const requests = new Map();
+
+function beginRead(dialog) {
+  requests.get(dialog)?.abort();
+  const controller = new AbortController();
+  requests.set(dialog, controller);
+  dialog.onclose = () => {
+    controller.abort();
+    if (requests.get(dialog) === controller) requests.delete(dialog);
+  };
+  if (!dialog.open) dialog.showModal();
+  dialog.focus();
+  return controller;
+}
+
+export function disposeReaders() {
+  requests.forEach((controller, dialog) => {
+    controller.abort();
+    dialog.close();
+  });
+  requests.clear();
+  document.querySelector('#source-content')?.replaceChildren();
+  document.querySelector('#chunks-content')?.replaceChildren();
+}
+
 export async function openSource(app, chunkId) {
   const dialog = document.querySelector('#source-dialog');
   const content = document.querySelector('#source-content');
   content.replaceChildren(loading('正在读取当前可访问的原文…'));
-  dialog.showModal();
-  dialog.focus();
+  const controller = beginRead(dialog);
   try {
-    const chunk = await app.api.request(`/chunks/${chunkId}`);
+    const chunk = await app.api.request(`/chunks/${chunkId}`, { signal: controller.signal });
+    if (controller.signal.aborted || requests.get(dialog) !== controller) return;
     content.replaceChildren();
     content.append(el('h3', 'source-title', chunk.title));
     const meta = el('div', 'source-meta');
@@ -38,7 +63,7 @@ export async function openSource(app, chunkId) {
       content.append(line);
     });
   } catch (error) {
-    content.replaceChildren(app.errorBox(error));
+    if (!controller.signal.aborted) content.replaceChildren(app.errorBox(error));
   }
 }
 
@@ -46,10 +71,10 @@ export async function openChunks(app, doc) {
   const dialog = document.querySelector('#chunks-dialog');
   const content = document.querySelector('#chunks-content');
   content.replaceChildren(loading('正在读取当前可访问的分块…'));
-  dialog.showModal();
-  dialog.focus();
+  const controller = beginRead(dialog);
   try {
-    const view = await app.api.request(`/documents/${doc.id}/chunks`);
+    const view = await app.api.request(`/documents/${doc.id}/chunks`, { signal: controller.signal });
+    if (controller.signal.aborted || requests.get(dialog) !== controller) return;
     const metrics = chunkMetrics(view.items || []);
     content.replaceChildren(summary(view, metrics));
     if (!metrics.count) {
@@ -58,7 +83,7 @@ export async function openChunks(app, doc) {
     }
     content.append(map(metrics), list(view.items));
   } catch (error) {
-    content.replaceChildren(app.errorBox(error));
+    if (!controller.signal.aborted) content.replaceChildren(app.errorBox(error));
   }
 }
 

@@ -284,10 +284,12 @@ async function uploadFiles(app, kb, files) {
   if (app.state.busy) { toast('上一个上传还在进行，请稍候。'); return; }
   document.querySelector('#upload-feedback')?.replaceChildren();
   app.state.busy = true;
+  const revision = app.api.revision;
   const profile = document.querySelector('.parser-choice')?.value || '';
   let submitted = 0;
   try {
     for (const file of files) {
+      if (revision !== app.api.revision) return;
       if (!PATTERN.test(file.name) || file.size > MAX_BYTES) {
         feedback(`${file.name}：已跳过，格式不支持或超过 50 MB。`, 'warning');
         continue;
@@ -300,13 +302,17 @@ async function uploadFiles(app, kb, files) {
         const actual = parserLabel(ack.parser_profile) || '基础解析';
         feedback(`${file.name}：${ack.deduplicated ? '相同内容已存在，未新建任务；保留原方案，不因重传切换' : '上传已接收，等待后台处理'} · ${actual}`);
       } catch (error) {
+        if (revision !== app.api.revision) return;
         feedback(`${file.name}：${app.errorText(error)}`, 'warning');
       }
     }
     await app.loadDocuments();
     toast(submitted ? `已创建 ${submitted} 个处理任务，请等待后台处理。` : '未创建新任务，请查看上方文件反馈。');
   } finally {
-    app.state.busy = false;
+    if (revision === app.api.revision) {
+      app.state.busy = false;
+      app.flushUpdates();
+    }
   }
 }
 
@@ -357,11 +363,16 @@ export function drawDocuments(app) {
 
   const scroll = el('div', 'table-scroll');
   scroll.append(table);
-  panel.replaceChildren(scroll);
+  if (app.state.docError) {
+    const warning = el('div', 'notice-line warn', '文档列表暂时无法更新，当前显示上次结果。请手动刷新。');
+    warning.setAttribute('role', 'status');
+    panel.replaceChildren(warning, scroll);
+  } else panel.replaceChildren(scroll);
 }
 
 function documentRow(app, doc) {
   const row = el('tr');
+  row.dataset.documentId = doc.id;
 
   const nameCell = el('td');
   const cell = el('div', 'file-cell');
@@ -478,6 +489,7 @@ async function replaceVersion(app, doc, file) {
   }
   if (app.state.busy) { toast('另一个上传仍在进行，请稍候。'); return; }
   app.state.busy = true;
+  const revision = app.api.revision;
   try {
     const form = uploadForm(file, document.querySelector('.parser-choice')?.value || '');
     const ack = await app.api.request(
@@ -488,8 +500,11 @@ async function replaceVersion(app, doc, file) {
     await app.loadDocuments();
     toast(`${ack.deduplicated ? '相同内容已存在，保留原方案，未新建版本。' : '新版本已接收，发布前旧版本继续可用。'} ${parserLabel(ack.parser_profile) || '基础解析'}`);
   } catch (error) {
-    app.notify(app.errorText(error));
+    if (revision === app.api.revision) app.notify(app.errorText(error));
   } finally {
-    app.state.busy = false;
+    if (revision === app.api.revision) {
+      app.state.busy = false;
+      app.flushUpdates();
+    }
   }
 }
