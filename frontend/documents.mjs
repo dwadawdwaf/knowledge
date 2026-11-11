@@ -4,6 +4,8 @@ import { DocumentEvents } from './events.mjs';
 export function createDocumentData({ api, state, render, drawDocuments, drawFiles, notify, errorText, expired }) {
   let controller = new AbortController();
   let activeKey = '';
+  let liveWanted = false;
+  let liveRevision = -1;
   let libraryRequest = null;
   let documentRequest = null;
   let filesRequest = null;
@@ -188,13 +190,13 @@ export function createDocumentData({ api, state, render, drawDocuments, drawFile
 
   function scheduleRefresh() {
     dirty = true;
-    if (!activeKey || refreshTimer || refreshing) return;
+    if (!liveWanted || refreshTimer || refreshing) return;
     refreshTimer = setTimeout(refresh, 120);
   }
 
   async function refresh() {
     refreshTimer = null;
-    if (!activeKey || !state.connected) return;
+    if (!liveWanted || !state.connected) return;
     refreshing = true;
     dirty = false;
     const signal = controller.signal;
@@ -222,6 +224,9 @@ export function createDocumentData({ api, state, render, drawDocuments, drawFile
     clearTimeout(refreshTimer);
     refreshTimer = null;
     activeKey = '';
+    liveWanted = false;
+    liveRevision = -1;
+    // 只在身份退出、隐藏或离开页面时真正取消在读请求；切换页面由 updateSubscription 负责。
     controller.abort();
     controller = new AbortController();
     libraryRequest = documentRequest = filesRequest = null;
@@ -231,12 +236,22 @@ export function createDocumentData({ api, state, render, drawDocuments, drawFile
   function updateSubscription() {
     const relevant = state.page === 'files'
       || state.page === 'knowledge' && (!state.library || state.libraryTab !== 'search');
-    const key = state.connected && !document.hidden && relevant
-      ? `${api.revision}:${state.page}:${state.library?.id || ''}` : '';
-    if (key === activeKey) { flushView(); return; }
-    stopUpdates();
+    const key = `${api.revision}:${state.page}:${state.library?.id || ''}`;
+    const wanted = state.connected && !document.hidden && relevant;
+    const changed = key !== activeKey;
     activeKey = key;
-    if (key) { scheduleRefresh(); events.start(); }
+    // 订阅只跟随身份与可见性：切页不重建连接，否则每次切换都要取消一条流再重新 LISTEN。
+    if (wanted && (!liveWanted || liveRevision !== api.revision)) {
+      liveWanted = true;
+      liveRevision = api.revision;
+      events.stop();
+      events.start();
+    } else if (!wanted && liveWanted) {
+      liveWanted = false;
+      events.stop();
+    }
+    if (changed && wanted) scheduleRefresh();
+    flushView();
   }
 
   return { loadLibraries, loadDocuments, loadAllFiles, updateSubscription, stopUpdates, flushView };

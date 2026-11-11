@@ -281,7 +281,8 @@ function navigate(page, { historySelection = '' } = {}) {
     state.browse = emptyBrowse();
     state.browsePushed = false;
   }
-  stopUpdates();
+  // 切页只换视图：订阅由 render 后的 updateSubscription 调整，在读请求由归属校验决定是否写回，
+  // 不在这里取消，否则渲染阶段刚发出的读取会被自己中断成「已取消」。
   state.page = page;
   history.replaceState(null, '', `#${page}`);
   render();
@@ -302,7 +303,6 @@ function openBrowse(doc, focus = null) {
     returnLabel: fromLibrary ? `返回「${fromLibrary.name}」` : '全部文件',
   };
   state.page = 'browse';
-  stopUpdates();
   // 压入历史而不是替换：浏览器返回键与页面内的「全部文件」都能回到列表。
   history.pushState({ page: 'browse' }, '', '#browse');
   state.browsePushed = true;
@@ -334,7 +334,6 @@ function openLibrary(kb) {
   state.docError = null;
   state.docFilter = '';
   state.page = 'knowledge';
-  stopUpdates();
   history.replaceState(null, '', '#knowledge');
   render();
   loadDocuments();

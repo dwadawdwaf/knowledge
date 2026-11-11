@@ -119,3 +119,47 @@ test('隐藏与离开资料页关闭连接，恢复可见时只有一个新连�
   await new Promise(resolve => setImmediate(resolve));
   assert.equal(signals.length, 2);
 });
+
+test('渲染阶段发出的读取不会被随后切换的订阅取消', async () => {
+  let aborted = 0;
+  let finish;
+  const { data, state, api } = setup((path, options) => new Promise(resolve => {
+    options.signal.addEventListener('abort', () => { aborted += 1; });
+    finish = resolve;
+  }));
+  api.fetcher = async () => { throw new Error('synthetic outage'); };
+  state.library = null;
+  state.page = 'files';
+  // 全部文件页在渲染阶段就会发起汇总读取，渲染末尾才切换订阅。
+  const pending = data.loadAllFiles();
+  await new Promise(resolve => setImmediate(resolve));
+  data.updateSubscription();
+  assert.equal(aborted, 0);
+  finish({ items: [] });
+  await pending;
+  data.stopUpdates();
+});
+
+test('切换资料页只刷新数据，不重建订阅连接', async t => {
+  const { data, state, api } = setup(async () => ({ items: [] }));
+  const signals = [];
+  api.token = 'synthetic';
+  api.fetcher = async (_, options) => {
+    signals.push(options.signal);
+    return new Response(new ReadableStream({ start(controller) {
+      options.signal.addEventListener('abort', () => controller.error(new Error('aborted')), { once: true });
+    } }), { headers: { 'Content-Type': 'text/event-stream' } });
+  };
+  t.after(() => data.stopUpdates());
+  data.updateSubscription();
+  await new Promise(resolve => setImmediate(resolve));
+  assert.equal(signals.length, 1);
+  state.page = 'files';
+  data.updateSubscription();
+  await new Promise(resolve => setImmediate(resolve));
+  assert.equal(signals.length, 1);
+  assert.equal(signals[0].aborted, false);
+  state.page = 'search';
+  data.updateSubscription();
+  assert.equal(signals[0].aborted, true);
+});

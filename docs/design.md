@@ -53,6 +53,8 @@ PostgreSQL 迁移 `0008_document_events` 为知识库、文档和任务状态建
 
 资料页面保持一条 SSE，隐藏、离开资料页、退出身份时取消。重连采用 1–30 秒退避，每次重连重读快照，45 秒无流量终止旧连接。变更合并后刷新，列表没有变化不重绘。失去实时连接显示提示，手动刷新始终可用。问答仍在证据与引用校验完成后一次性返回。
 
+切换资料页面只重读快照，不重建连接：订阅只跟随身份与可见性，避免每次切页都取消一条流并重新 LISTEN。渲染阶段发出的读取同样不因切页被取消，写回由身份代次与所属视图的归属校验决定。
+
 运行单元：API、Worker、PostgreSQL、原件目录，MinerU按需启用。
 依赖方向：`entrypoints → {api, mcp, worker} → services → domain ← repositories / adapters`。
 API/MCP/Worker并列不互相依赖；services编排事务，repositories只访问数据库，adapters访问文件、模型与解析器。
