@@ -55,6 +55,10 @@ try {
   assert.equal(await js(`getComputedStyle(document.querySelector('.parser-choice')).height`), '38px');
   // 用纯文本验证显式选择的请求/冻结，不要求本机实际安装MinerU。
   await js(`document.querySelector('.parser-choice').value='mineru-api4.1-v1'`);
+  assert.equal(await js(`[...document.querySelectorAll('.shoulder button')].some(n => n.textContent.trim() === '刷新')`), true);
+  // 上传入口只保留上传区一处，工具条不再重复放「上传文档」。
+  assert.equal(await js(`[...document.querySelectorAll('.shoulder button')].some(n => n.textContent.trim() === '上传文档')`), false);
+  assert.equal(await js(`[...document.querySelectorAll('.upload-actions button')].map(n => n.textContent.trim()).join('|')`), '上传文档');
   await setFile('.upload-zone input[type=file]', path.join(root, 'backend/testdata/engineering/expense.md'));
   await wait(`!![...document.querySelectorAll('tbody tr')].find(row=>row.textContent.includes('expense.md') && row.textContent.includes('已就绪'))`, 120000);
   assert.ok(await js(`document.querySelector('#upload-feedback').textContent.includes('MinerU')`));
@@ -178,6 +182,9 @@ try {
   }
   await js(`document.querySelector('[data-page=files]').click()`);
   await wait(`document.querySelector('#file-list tbody tr') && document.querySelector('#live-status').hidden`);
+  await shot('files');
+  // 行内操作只保留浏览与分块，所属知识库在「所属知识库」列里已可点击。
+  assert.equal(await js(`[...document.querySelectorAll('#file-list tbody tr')].every(row => ![...row.querySelectorAll('button')].some(n => n.textContent === '所在知识库'))`), true);
   const pushedKb = await apiRequest('/knowledge-bases', {
     method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ name: '实时同步 · 自制样本' }),
   });

@@ -274,10 +274,7 @@ function fileRow(app, item) {
   const chunks = el('button', 'link-btn', '分块');
   chunks.type = 'button';
   chunks.addEventListener('click', () => app.openChunks(item));
-  const jump = el('button', 'link-btn', '所在知识库');
-  jump.type = 'button';
-  jump.addEventListener('click', () => app.openLibraryById(item.kb_id));
-  bar.append(browse, chunks, jump);
+  bar.append(browse, chunks);
   actionCell.append(bar);
 
   tr.append(nameCell, kbCell, statusCell, versionCell, actionCell);

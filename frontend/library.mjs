@@ -205,15 +205,13 @@ function detailShoulder(app, kb) {
   input.value = app.state.docFilter;
   field.append(icon('search'), input);
 
-  const refresh = iconButton('refresh', '刷新文档列表', () => app.loadDocuments());
-  const upload = actionButton('上传文档', 'btn primary', () => {
-    document.querySelector('.upload-zone input[type=file]')?.click();
-  }, 'upload');
+  // 与其他页面一致的大刷新按钮；上传入口只保留上传区一个，避免两个等价按钮。
+  const refresh = actionButton('刷新', 'btn ghost', () => app.loadDocuments(), 'refresh');
 
   const counter = el('span', 'count-note', `${app.state.documents.length} 个文档`);
   counter.id = 'doc-count';
 
-  shoulder.append(field, el('div', 'spacer'), counter, refresh, upload);
+  shoulder.append(field, el('div', 'spacer'), counter, refresh);
   input.addEventListener('input', () => { app.state.docFilter = input.value; drawDocuments(app); });
   return shoulder;
 }
@@ -232,7 +230,7 @@ function uploadZone(app, kb) {
   input.multiple = true;
   input.accept = ACCEPT;
   input.hidden = true;
-  input.setAttribute('aria-label', '选择知识库文档');
+  input.setAttribute('aria-label', '选择要上传的文档');
 
   const actions = el('div', 'upload-actions');
   const select = el('select', 'input parser-choice');
@@ -243,7 +241,7 @@ function uploadZone(app, kb) {
     option.value = value;
     select.append(option);
   }
-  const choose = actionButton('选择文件', 'btn ghost', () => input.click(), 'upload');
+  const choose = actionButton('上传文档', 'btn ghost', () => input.click(), 'upload');
   actions.append(select, choose, input);
 
   zone.append(copy, actions);
