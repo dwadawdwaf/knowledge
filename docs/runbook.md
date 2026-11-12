@@ -182,7 +182,7 @@ CI定义在.github/workflows/backend.yml，文件存在不等于远端已实跑�
 
 1. 停止接收上传，排空旧 Worker 的处理任务后关闭旧进程。保留数据库和配套原件卷。
 2. 按本手册升级数据库。清理部署配置中的旧检索、RRF、重排和 OpenSearch 选项，将显式的 `KS_RETRIEVAL_PROFILE` 更新为 `ragflow-v1`。
-3. 执行 `python backend/scripts/prepare_ragflow_resources.py --data-dir backend/.data/ragflow-resources`，一次准备并校验 cl100k_base、WordNet 和 huqie。工作台启动器默认读取项目内该目录，并将绝对路径传给 API、Worker；无需手动设置环境变量。直接启动 API、Worker 或回填时，仍需将 `NLTK_DATA` 设置为该目录的绝对路径，`TIKTOKEN_CACHE_DIR` 设置为其 `tiktoken` 子目录。显式的 `NLTK_DATA`、`TIKTOKEN_CACHE_DIR` 或 `DATA_GYM_CACHE_DIR` 优先，启动器不会覆盖。已有文件可用 `--wordnet-archive`、`--infinity-sdk-archive` 和 `--tiktoken-vocabulary` 离线准备；运行服务时不会下载或切换模型。
+3. 词表资源随仓库存放在 `backend/resources/ragflow`（tiktoken 词表、`corpora/wordnet.zip`、`ragflow/huqie.txt`，约 20 MB），启动器与 `check.py` 自动定位，无需准备。若需另行准备，执行 `python backend/scripts/prepare_ragflow_resources.py --data-dir <目录>` 校验 cl100k_base、WordNet 和 huqie。直接运行 API、Worker、维护脚本或 pytest 时，仍需把 `NLTK_DATA` 指向 `backend/resources/ragflow` 的绝对路径，`TIKTOKEN_CACHE_DIR` 指向其 `tiktoken` 子目录。显式的 `NLTK_DATA`、`TIKTOKEN_CACHE_DIR` 或 `DATA_GYM_CACHE_DIR` 优先，启动器不会覆盖。已有文件可用 `--wordnet-archive`、`--infinity-sdk-archive` 和 `--tiktoken-vocabulary` 离线准备；运行服务时不会下载或切换模型。
 4. 显式设置目标 `KS_DATABASE_URL`，执行 `python backend/scripts/backfill_ragflow_terms.py --apply`，再不带 `--apply` 检查缺失数为 0。回填仅更新派生词项，保留分块、向量及发布指针。
 5. 启动新 API 与 Worker。工作台启动器先检查本地词表，再在迁移后只读检查旧策略任务和词项缺口。缺失词项只输出警告，不阻止工作台启动；连接后页面显示当前用户受影响的片段数及「重新检查」，修复后提示消失。相关范围的关键词检索与问答仍明确报索引不可用，不当成无结果；文件管理及未受影响范围可继续使用。若仍有旧策略排队/运行任务，API照常启动，Worker暂不启动，须按第1步处理后重启；历史资料需要重新分块时上传新文件版本。数据库连接或迁移失败仍须修复后启动。
 
@@ -216,3 +216,16 @@ PostgreSQL 连接地址应支持会话级 LISTEN，事务池模式会破坏订�
 KS_EVENT_STREAM_LIMIT 设置每个 API 进程的 SSE 上限，默认 8，范围 1–16，超限返回 503 并退避重试。
 断线提示会保留旧列表，重连成功后自动重读快照，用户也可手动刷新。
 通知不持久化，不以心跳代表任务进度。Windows 使用线程池等待数据库 socket，取消后最多一个等待周期释放连接。
+
+### 更换向量模型
+
+全库共用一个向量索引，构建层禁止混用模型，因此换模型必须一次清空重建：旧构建与片段删除，版本、原件与发布指针的记录保留。
+
+第一步只统计数量；第二步创建新构建，`--clear-old` 先清掉其它模型的构建与片段。命令都在仓库根目录执行，先按本手册设置 `KS_DATABASE_URL`：
+
+```powershell
+.\backend\.venv\Scripts\python.exe backend/scripts/rebuild_vectors.py --embedding-model BAAI/bge-m3 --embedding-dim 1024
+.\backend\.venv\Scripts\python.exe backend/scripts/rebuild_vectors.py --apply --clear-old --embedding-model BAAI/bge-m3 --embedding-dim 1024
+```
+
+随后启动 Worker 处理队列，完成后核对每个文档的 `active_build_id` 都指向目标模型的构建。原件已丢失的历史文档不能重新解析，应先用已发布片段留存正文（`backend/.data/vector-rebuild-backup`）再合成新版本入库；扫描件重建时用 `--parser-profile pdf-auto-v1` 让 MinerU 参与，否则会以 `EMPTY_CONTENT` 失败。

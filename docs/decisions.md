@@ -154,3 +154,9 @@ v2图片版面全空时复用同版OCR并明确告警，v1不改；服务/配置
 决定：按用户授权以 PostgreSQL 事务通知和单向 SSE 代替前端文档列表定时轮询。通知只使已验证用户的资料缓存失效，实际状态仍经授权 REST 读取。使用 Fetch 流携带 Authorization，重连先同步快照，保留手动刷新与明确的连接状态。
 
 复用 psycopg 和现有线程池等待通知，兼容 Windows 默认事件循环。任务续租不通知，连接关闭释放数据库会话。问答继续一次性返回经证据和引用校验的结果。本轮没有需要双向 WebSocket 的交互。
+
+## 0035 切换向量模型的清空重建（2026-11-12）
+
+按用户要求把历史资料从 `Qwen/Qwen3-Embedding-0.6B` 换成 `BAAI/bge-m3`。全库共用一个向量索引，构建层禁止混用模型，因此先清空旧模型的构建与片段，再按 `ragflow-v1` 重建；版本、原件与发布指针的记录保留，旧片段随构建删除而不原地改写。
+
+重建由 `scripts/rebuild_vectors.py` 执行：默认只统计，`--apply` 建新构建，`--clear-old` 先清空其它模型，`--parser-profile` 供扫描件指定自动路由。原件已丢失的文档先用已发布片段留存正文（`backend/.data/vector-rebuild-backup`），再合成新版本重新入库。词表资源（tiktoken、WordNet、huqie）随仓库放在 `backend/resources/ragflow`，启动器与 `check.py` 自动定位，不再依赖 `.data` 下的准备目录。

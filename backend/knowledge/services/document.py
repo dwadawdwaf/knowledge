@@ -90,14 +90,56 @@ def reindex(
     return result
 
 
+def rebuild_current_version(
+    session: Session,
+    actor: Actor,
+    *,
+    document_id: uuid.UUID,
+    embedder_model: str,
+    embedder_dim: int,
+    max_attempts: int,
+    parser_profile: str | None = None,
+) -> ReindexResult:
+    """按现行分块策略与给定向量配置重建当前版本，供更换向量模型后的维护重使用。
+
+    旧构建与片段不原地改动：新构建发布成功后旧构建才退役（C4）。默认解析方案沿用原构建，
+    避免同一份原件被换成另一条解析路径；扫描件等例外可由调用方显式覆盖。
+    """
+    document = reindex_repo.lock_document(session, actor, document_id)
+    if reindex_repo.has_open_job(session, actor, document_id):
+        raise VersionConflict("文档仍有未完成任务")
+    version_id = document.current_version_id
+    if version_id is None:
+        raise NotFound("文档没有可重建的版本")
+    reindex_repo.get_version(session, actor, document_id, version_id)
+    build = _new_build(
+        session,
+        version_id,
+        embedder_model,
+        embedder_dim,
+        parser_profile or _existing_profile(session, document, pending_first=True),
+    )
+    generation = document.generation + 1
+    job = job_repo.create(
+        session,
+        JobKind.REINDEX,
+        document.id,
+        max_attempts,
+        build_id=build.id,
+        generation=generation,
+    )
+    document.generation = generation
+    document.pending_build_id = build.id
+    session.commit()
+    return ReindexResult(document_id, version_id, build.id, job.id, generation)
+
+
 def _new_build(
     session: Session,
     version_id: uuid.UUID,
-    settings: Settings,
     embedder_model: str,
     embedder_dim: int,
     parser_profile: str,
-    media_type: str,
 ) -> IndexBuild:
     build = IndexBuild(
         version_id=version_id,
@@ -198,7 +240,7 @@ def upload(
         media_type=media_type,
         byte_size=len(data),
     )
-    build = _new_build(session, version.id, settings, embedder_model, embedder_dim, selected, media_type)
+    build = _new_build(session, version.id, embedder_model, embedder_dim, selected)
     job = job_repo.create(
         session,
         JobKind.INGEST,
@@ -267,7 +309,7 @@ def add_version(
         media_type=media_type,
         byte_size=len(data),
     )
-    build = _new_build(session, version.id, settings, embedder_model, embedder_dim, selected, media_type)
+    build = _new_build(session, version.id, embedder_model, embedder_dim, selected)
     job = job_repo.create(
         session,
         JobKind.INGEST,

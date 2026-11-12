@@ -300,3 +300,38 @@ def test_enqueuing_rollback_leaves_no_partial_build_or_generation(
     assert session.scalar(select(func.count()).select_from(IndexBuild)) == 1
     assert session.scalar(select(func.count()).select_from(Job)) == 1
     assert session.get(Document, old.document_id).generation == 1
+
+
+def test_rebuild_current_version_uses_requested_vectors_and_keeps_published(
+    session, actor, settings, deps
+):
+    """换向量模型的维护重建：新构建用请求的模型，旧发布构建原样保留。"""
+    _, uploaded = upload(session, actor, settings, deps)
+    assert process_next(session, deps)
+    session.expire_all()
+    published = session.get(Document, uploaded.document_id).active_build_id
+    assert published
+
+    result = document.rebuild_current_version(
+        session, actor, document_id=uploaded.document_id,
+        embedder_model="BAAI/bge-m3", embedder_dim=settings.embedding_dim, max_attempts=3,
+    )
+    session.expire_all()
+    build = session.get(IndexBuild, result.build_id)
+    assert (build.embedding_model, build.embedding_dim) == ("BAAI/bge-m3", settings.embedding_dim)
+    assert build.chunk_config["strategy"] == "ragflow-v1"
+    document_row = session.get(Document, uploaded.document_id)
+    assert document_row.active_build_id == published
+    assert document_row.pending_build_id == result.build_id
+    job = session.get(Job, result.job_id)
+    assert (job.kind, job.state, job.build_id) == (JobKind.REINDEX, JobState.QUEUED, result.build_id)
+
+
+def test_rebuild_current_version_refuses_while_job_open(session, actor, settings, deps):
+    """还有排队或运行中的任务时不再叠加新构建。"""
+    _, uploaded = upload(session, actor, settings, deps)
+    with pytest.raises(VersionConflict):
+        document.rebuild_current_version(
+            session, actor, document_id=uploaded.document_id,
+            embedder_model=deps.embedder.model, embedder_dim=deps.embedder.dimension, max_attempts=3,
+        )

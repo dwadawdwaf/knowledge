@@ -56,6 +56,14 @@ def load_real_settings() -> Settings:
     return settings
 
 
+def ragflow_resources_dir() -> pathlib.Path:
+    """词表资源目录：仓库随包资源优先，未入库时退回本地准备目录。"""
+    bundled = BACKEND / "resources" / "ragflow"
+    if (bundled / "ragflow" / "huqie.txt").is_file():
+        return bundled
+    return BACKEND / ".data" / "ragflow-resources"
+
+
 def check_ragflow_resources() -> None:
     """用固定短文本检查实际分词与计数资源，适配器只读取本地文件。"""
     import nltk.data
@@ -64,7 +72,7 @@ def check_ragflow_resources() -> None:
 
     # 启动预检和 LocalRuntime 均调用此入口，后者将绝对路径传给 API/Worker。
     # NLTK 可能在入口装配时已被导入，修改环境后也须同步它已初始化的搜索路径。
-    resources = BACKEND / ".data" / "ragflow-resources"
+    resources = ragflow_resources_dir()
     os.environ.setdefault("NLTK_DATA", str(resources))
     if "TIKTOKEN_CACHE_DIR" not in os.environ and "DATA_GYM_CACHE_DIR" not in os.environ:
         os.environ["TIKTOKEN_CACHE_DIR"] = str(resources / "tiktoken")
@@ -77,16 +85,16 @@ def check_ragflow_resources() -> None:
         count_tokens("本地词表")
     except (KeywordIndexUnavailable, OSError, RuntimeError, ValueError) as exc:
         raise ValueError(
-            "cl100k_base 词表缺失或校验失败。请运行 "
-            "backend/scripts/prepare_ragflow_resources.py --data-dir backend/.data/ragflow-resources；"
+            "cl100k_base 词表缺失或校验失败。仓库资源应位于 backend/resources/ragflow，"
+            "缺失时可运行 backend/scripts/prepare_ragflow_resources.py --data-dir <目录>；"
             "若手动配置了 TIKTOKEN_CACHE_DIR 或 DATA_GYM_CACHE_DIR，请检查该目录。"
         ) from exc
     try:
         query_terms("压力 pressure")
     except (KeywordIndexUnavailable, OSError, RuntimeError, ValueError) as exc:
         raise ValueError(
-            "WordNet 或 huqie 本地词典不可用。请运行 "
-            "backend/scripts/prepare_ragflow_resources.py --data-dir backend/.data/ragflow-resources；"
+            "WordNet 或 huqie 本地词典不可用。仓库资源应位于 backend/resources/ragflow，"
+            "缺失时可运行 backend/scripts/prepare_ragflow_resources.py --data-dir <目录>；"
             "若手动配置了 NLTK_DATA，请检查该目录。"
         ) from exc
 

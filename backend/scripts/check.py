@@ -24,6 +24,7 @@ SCRIPTS = (
     "workbench",
     "browser_smoke",
     "backfill_ragflow_terms",
+    "rebuild_vectors",
     "prepare_ragflow_resources",
     "sync_native_index",
 )
@@ -50,12 +51,29 @@ def check_environment() -> bool:
     return valid
 
 
+def check_ragflow() -> bool:
+    """词表资源随仓库提供；缺资源时直接失败，避免整批用例以缺词表告终。"""
+    if str(BACKEND) not in sys.path:
+        sys.path.insert(0, str(BACKEND))
+    from scripts.real_model import check_ragflow_resources
+
+    try:
+        check_ragflow_resources()
+    except ValueError as error:
+        print(f"词表资源不可用：{error}", flush=True)
+        return False
+    print("词表资源自检通过", flush=True)
+    return True
+
+
 def main() -> int:
     for stream in (sys.stdout, sys.stderr):
         if hasattr(stream, "reconfigure"):
             stream.reconfigure(encoding="utf-8")
     print("[预检] 检查 Python 与依赖锁文件，不自动安装或联网。", flush=True)
     if not check_environment():
+        return 1
+    if not check_ragflow():
         return 1
     started = time.monotonic()
     steps = [
