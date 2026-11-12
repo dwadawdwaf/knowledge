@@ -14,6 +14,7 @@ from starlette.types import Scope
 
 from knowledge.api import errors
 from knowledge.api.v1.routers import chunks, documents, events, jobs, knowledge_bases, qa, search
+from knowledge.config import get_settings
 from knowledge.logging import get_logger, setup_logging
 
 API_PREFIX = "/api/v1"
@@ -36,6 +37,12 @@ class _RevalidatedStatic(StaticFiles):
 
 def create_app() -> FastAPI:
     setup_logging()
+    settings = get_settings()
+    if settings.token_secret == "dev-only-secret" and settings.embedding_model != "hash-1024":
+        # 身份桩（默认密钥）只允许搭配桩模型用于本地开发；真实模型下默认密钥等于公开门禁。
+        raise RuntimeError(
+            "检测到默认令牌密钥 KS_TOKEN_SECRET；配置真实模型时必须显式设置该密钥，拒绝启动。"
+        )
     app = FastAPI(
         title="Knowledge Service",
         version="0.1.0",
