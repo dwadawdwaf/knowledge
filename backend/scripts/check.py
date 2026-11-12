@@ -12,6 +12,7 @@ from pathlib import Path
 BACKEND = Path(__file__).resolve().parents[1]
 SCRIPTS = (
     "local_runtime",
+    "load_omni_chinese",
     "http_scenario",
     "model_fixture",
     "demo_local",

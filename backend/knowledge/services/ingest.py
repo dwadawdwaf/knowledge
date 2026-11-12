@@ -14,7 +14,14 @@ from sqlalchemy.orm import Session
 from knowledge.adapters.ragflow_text import count_tokens, search_fields
 from knowledge.config import Settings
 from knowledge.domain.entities import BuildState, JobState
-from knowledge.domain.errors import DomainError, ModelUnavailable, ParseFailed, StaleJob
+from knowledge.domain.errors import (
+    DomainError,
+    ModelTimeout,
+    ModelTransientUnavailable,
+    ModelUnavailable,
+    ParseFailed,
+    StaleJob,
+)
 from knowledge.domain.ports import Embedder, ObjectStorage
 from knowledge.domain.ragflow_chunking import STRATEGY, chunk_ragflow
 from knowledge.logging import get_logger
@@ -132,7 +139,24 @@ def run(
     if not job_repo.set_stage(session, job_id, lease_token, "embedding"):
         raise DomainError("租约已失效")
     _enter_stage("embedding")
-    vectors = embedder.embed([piece.text for piece in pieces])
+    texts = [piece.text for piece in pieces]
+    try:
+        vectors = embedder.embed(texts)
+    except (ModelTimeout, ModelTransientUnavailable) as exc:
+        reason = {
+            "向量服务超时": "timeout",
+            "向量服务连接被拒绝": "connection_refused",
+            "向量服务名称解析失败": "dns_failure",
+        }.get(exc.message, "upstream_unavailable")
+        log.warning("embedding_retry", extra={
+            "request_id": f"job:{job_id}", "job_id": str(job_id),
+            "build_id": str(build_id), "error_code": exc.code,
+            "reason": reason,
+        })
+        time.sleep(2)
+        if not job_repo.set_stage(session, job_id, lease_token, "embedding"):
+            raise StaleJob("任务执行资格已失效") from exc
+        vectors = embedder.embed(texts)
     if len(vectors) != len(pieces):
         raise ModelUnavailable("向量数量与分块数量不一致")
     for vector in vectors:
