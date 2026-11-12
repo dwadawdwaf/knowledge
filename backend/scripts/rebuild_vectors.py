@@ -74,6 +74,18 @@ def enqueue_rebuilds(
     return queued, skipped
 
 
+def stale_build_ids(model: str, dim: int, kb_id: uuid.UUID | None):
+    scope = select(Document.id).where(Document.status == Lifecycle.ACTIVE)
+    if kb_id is not None:
+        scope = scope.where(Document.kb_id == kb_id)
+    return select(IndexBuild.id).where(
+        or_(IndexBuild.embedding_model != model, IndexBuild.embedding_dim != dim),
+        IndexBuild.version_id.in_(
+            select(DocumentVersion.id).where(DocumentVersion.document_id.in_(scope))
+        ),
+    )
+
+
 def clear_other_models(session: Session, model: str, dim: int, kb_id: uuid.UUID | None) -> tuple[int, int]:
     """清空其它向量模型的构建与片段。
 
@@ -92,7 +104,13 @@ def clear_other_models(session: Session, model: str, dim: int, kb_id: uuid.UUID 
     build_ids = list(session.scalars(stale))
     if not build_ids:
         return 0, 0
-    # 先解除文档对旧构建的引用，再清任务引用，最后删构建（片段与词项级联删除）。
+    # 先删目标已不存在的排队/运行任务，再解除文档与已完成任务对旧构建的引用，
+    # 最后删构建（片段与词项级联删除）。
+    session.execute(
+        delete(Job).where(
+            Job.build_id.in_(build_ids), Job.state.in_([JobState.QUEUED, JobState.RUNNING])
+        )
+    )
     session.execute(
         update(Document).where(Document.active_build_id.in_(build_ids)).values(active_build_id=None)
     )
@@ -169,6 +187,8 @@ def main() -> int:
         parser.error("须显式设置 KS_DATABASE_URL")
     if not args.embedding_model or not args.embedding_dim:
         parser.error("须显式指定目标向量模型与维度")
+    if (args.clear_old or args.purge_old) and not args.apply:
+        parser.error("--clear-old 与 --purge-old 是不可逆删除，必须与 --apply 同时使用")
     kb_id = uuid.UUID(args.kb) if args.kb else None
 
     engine = create_engine(url, hide_parameters=True)
@@ -177,21 +197,27 @@ def main() -> int:
             pending = count_rebuildable(session, args.embedding_model, args.embedding_dim, kb_id)
             print(f"需要按 {args.embedding_model}（{args.embedding_dim} 维）重建的文档：{pending}")
             if args.clear_old:
+                stale = list(session.scalars(stale_build_ids(
+                    args.embedding_model, args.embedding_dim, kb_id)))
+                preview = ", ".join(str(item) for item in stale[:10])
+                print(f"将清空其它向量模型的构建 {len(stale)} 个" + (f"（示例：{preview}）" if stale else ""))
                 cleared, _ = clear_other_models(session, args.embedding_model, args.embedding_dim, kb_id)
                 print(f"已清空其它向量模型的构建：{cleared}")
                 pending = count_rebuildable(session, args.embedding_model, args.embedding_dim, kb_id)
+            submitted = 0
             if args.apply and pending:
-                queued, skipped = enqueue_rebuilds(
+                submitted, skipped = enqueue_rebuilds(
                     session, args.embedding_model, args.embedding_dim, kb_id, args.limit,
                     args.parser_profile,
                 )
-                print(f"已提交重建任务：{queued}；跳过：{skipped}")
+                print(f"已提交重建任务：{submitted}；跳过：{skipped}")
             if args.purge_old:
                 purged = purge_old_builds(session, args.embedding_model, args.embedding_dim, kb_id)
                 print(f"已清理退役构建：{purged}")
             remaining = count_rebuildable(session, args.embedding_model, args.embedding_dim, kb_id)
             print(f"仍待重建的文档：{remaining}")
-            return int(bool(remaining))
+            # 已提交重建时剩余数只说明 Worker 尚未跑完，不算失败；没有任何进展才算失败。
+            return int(bool(remaining) and not submitted)
     finally:
         engine.dispose()
 
