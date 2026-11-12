@@ -70,14 +70,10 @@ def run(
         return
 
     versions = doc_repo.versions_of(session, document_id)
-    if settings is not None and settings.search_engine == "opensearch":
-        from knowledge.adapters.ragflow_opensearch import NativeIndex
-        builds = list(session.scalars(select(IndexBuild.id).where(
-            IndexBuild.version_id.in_([version.id for version in versions]),
-        )))
-        NativeIndex(settings).delete(builds)
-    for version in versions:
-        storage.delete(version.object_key)
+    build_ids = list(session.scalars(select(IndexBuild.id).where(
+        IndexBuild.version_id.in_([version.id for version in versions]),
+    )))
+    object_keys = [version.object_key for version in versions]
 
     chunk_repo.delete_for_document(session, document_id)
     session.execute(
@@ -101,4 +97,18 @@ def run(
 
     knowledge_service.finalize_library(session, document_id)
     session.commit()
+
+    # 提交即完成授权阻断（C7）。原件与搜索索引随后删除：本地删除是幂等的，
+    # 失败遗留对象会由孤儿回收按 max_age 兜底；搜索索引失败只记告警。
+    if settings is not None and settings.search_engine == "opensearch":
+        try:
+            from knowledge.adapters.ragflow_opensearch import NativeIndex
+            NativeIndex(settings).delete(build_ids)
+        except Exception as exc:  # noqa: BLE001 - 索引数据可重建，不阻断清理收尾
+            log.warning("opensearch_cleanup_failed", extra={
+                "document_id": str(document_id), "builds": len(build_ids),
+                "error": type(exc).__name__,
+            })
+    for object_key in object_keys:
+        storage.delete(object_key)
     job_repo.finish(session, job_id, lease_token, JobState.SUCCEEDED, "cleaning")
