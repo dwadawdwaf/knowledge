@@ -7,6 +7,7 @@ import uuid
 from dataclasses import dataclass
 from typing import get_args
 
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from knowledge.adapters.preview import docx_preview, sheet_preview, to_png
@@ -48,6 +49,33 @@ class ReindexResult:
     build_id: uuid.UUID
     job_id: uuid.UUID
     generation: int
+
+
+def _duplicate_result(
+    session: Session, kb_id: uuid.UUID, sha256: str
+) -> UploadResult | None:
+    """唯一约束撞车后的兜底：重查同库同内容并返回既有文档的去重结果。
+
+    并发上传同一文件时，两个请求都可能通过无锁的 sha 去重检查，随后第二个在
+    `uq_kb_sha` 上触发 IntegrityError。回滚后重查即可拿到对方已提交的版本。
+    命中的文档必须仍为 active，否则返回 None 由调用方给出明确错误。
+    """
+    session.rollback()
+    existing = doc_repo.find_version_by_sha(session, kb_id, sha256)
+    if existing is None:
+        return None
+    document = session.get(Document, existing.document_id)
+    if document is None or document.status != Lifecycle.ACTIVE:
+        return None
+    latest = job_repo.latest_for_document(session, document.id)
+    return UploadResult(
+        document_id=document.id,
+        version_id=existing.id,
+        build_id=document.active_build_id or document.pending_build_id or uuid.uuid4(),
+        job_id=latest.id if latest else uuid.uuid4(),
+        deduplicated=True,
+        parser_profile=_existing_profile(session, document),
+    )
 
 
 def reindex(
@@ -227,32 +255,39 @@ def upload(
                 deduplicated=True,
                 parser_profile=_existing_profile(session, document),
             )
+        raise VersionConflict("同内容文档正在删除，请稍后重新上传")
 
     object_key = new_object_key(media_type)
     storage.put(object_key, data)
 
-    document = doc_repo.create(session, kb.id, title)
-    version = doc_repo.add_version(
-        session,
-        document,
-        object_key=object_key,
-        sha256=sha256,
-        media_type=media_type,
-        byte_size=len(data),
-    )
-    build = _new_build(session, version.id, embedder_model, embedder_dim, selected)
-    job = job_repo.create(
-        session,
-        JobKind.INGEST,
-        document.id,
-        settings.max_attempts,
-        build_id=build.id,
-        generation=document.generation + 1,
-    )
+    try:
+        document = doc_repo.create(session, kb.id, title)
+        version = doc_repo.add_version(
+            session,
+            document,
+            object_key=object_key,
+            sha256=sha256,
+            media_type=media_type,
+            byte_size=len(data),
+        )
+        build = _new_build(session, version.id, embedder_model, embedder_dim, selected)
+        job = job_repo.create(
+            session,
+            JobKind.INGEST,
+            document.id,
+            settings.max_attempts,
+            build_id=build.id,
+            generation=document.generation + 1,
+        )
 
-    document.generation += 1
-    document.pending_build_id = build.id
-    session.commit()
+        document.generation += 1
+        document.pending_build_id = build.id
+        session.commit()
+    except IntegrityError:
+        duplicate = _duplicate_result(session, kb.id, sha256)
+        if duplicate is not None:
+            return duplicate
+        raise
 
     return UploadResult(
         document_id=document.id,
@@ -301,27 +336,34 @@ def add_version(
     object_key = new_object_key(media_type)
     storage.put(object_key, data)
 
-    version = doc_repo.add_version(
-        session,
-        document,
-        object_key=object_key,
-        sha256=sha256,
-        media_type=media_type,
-        byte_size=len(data),
-    )
-    build = _new_build(session, version.id, embedder_model, embedder_dim, selected)
-    job = job_repo.create(
-        session,
-        JobKind.INGEST,
-        document.id,
-        settings.max_attempts,
-        build_id=build.id,
-        generation=document.generation + 1,
-    )
+    try:
+        version = doc_repo.add_version(
+            session,
+            document,
+            object_key=object_key,
+            sha256=sha256,
+            media_type=media_type,
+            byte_size=len(data),
+        )
+        build = _new_build(session, version.id, embedder_model, embedder_dim, selected)
+        job = job_repo.create(
+            session,
+            JobKind.INGEST,
+            document.id,
+            settings.max_attempts,
+            build_id=build.id,
+            generation=document.generation + 1,
+        )
 
-    document.generation += 1
-    document.pending_build_id = build.id
-    session.commit()
+        document.generation += 1
+        document.pending_build_id = build.id
+        session.commit()
+    except IntegrityError:
+        # 并发上传同一文件时可能双双通过 sha 去重检查，这里回滚后按库内既有版本返回。
+        duplicate = _duplicate_result(session, document.kb_id, sha256)
+        if duplicate is not None and duplicate.document_id == document.id:
+            return duplicate
+        raise VersionConflict("同内容文档正在处理或删除，请稍后重试")
 
     return UploadResult(
         document_id=document.id,

@@ -53,3 +53,27 @@ def test_same_name_different_bytes_creates_new_version(session, settings, deps):
     # generation 每次更新递增（发布栅栏依据）
     detail = document_service.detail(session, actor, first.document_id)
     assert detail["generation"] == 2
+
+
+def test_reupload_during_deletion_conflicts_instead_of_500(session, settings, deps):
+    """同库同内容在删除进行中重复上传：明确冲突，不再撞唯一约束返回 500。"""
+    import pytest
+
+    from knowledge.domain.errors import VersionConflict
+    from knowledge.services import document as document_service
+
+    actor = Actor(subject_id="user-a", tenant_id="default")
+    kb = knowledge_service.create(session, actor, "删除中重传")
+    uploaded = document_service.upload(
+        session, actor, settings, deps.storage, deps.registry,
+        kb_id=kb.id, filename="同名.md", data=MEETING_RULES,
+        embedder_model=deps.embedder.model, embedder_dim=deps.embedder.dimension,
+    )
+    document_service.delete(session, actor, uploaded.document_id, settings.max_attempts)
+
+    with pytest.raises(VersionConflict):
+        document_service.upload(
+            session, actor, settings, deps.storage, deps.registry,
+            kb_id=kb.id, filename="同名.md", data=MEETING_RULES,
+            embedder_model=deps.embedder.model, embedder_dim=deps.embedder.dimension,
+        )
