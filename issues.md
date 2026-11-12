@@ -49,6 +49,19 @@
 
 原件、冻结标注、分块定位、逐题排名、问答证据检查、汇总与可重跑脚本保留于忽略目录`backend/.data/multiformat-acceptance-20261111/`，阅读入口`report.md`。完整后端`check.py`再次通过321项，日志`backend-check.log`。未修改业务数据库、模型、生产检索策略或默认配置。
 
+### 2026-11-12 · 全量代码校验与高危修复
+
+对 backend 与 frontend 做了四路人工审查（安全、运行时逻辑、前端、脚本与迁移）加 bandit 扫描。语法层面 ruff/mypy/`node --check` 全部通过；bandit 的 7 条 MEDIUM 提示逐条核实为误报（拼接值为白名单常量、xlsx 用 defusedxml、回环集合中的 0.0.0.0 仅用于判断）。有效发现按严重程度汇总如下，高危 5 条本轮已修复，中低危尚未处理：
+
+- 高：默认令牌密钥可在真实模型下启动（config.py:25）→ 启动时 fail-closed，桩模型不受影响。
+- 高：清理任务先删原件与索引再提交 DB，中断后原件不可恢复（cleanup.py）→ 改为 DB 提交后再删，失败由孤儿回收兜底。
+- 高：任务终态化不清 `documents.pending_build_id`、取消任务不终态化构建（jobs.py）→ 悬挂指针会让退役构建永远无法清理。
+- 高：`rebuild_vectors.py` 的 `--clear-old/--purge-old` 不受 `--apply` 门控 → 已纳入门控并要求显式确认语义。
+- 中：`/docs`、`/openapi.json` 全环境暴露；SSE 槽位无每用户配额；`add_version` 不检查未完成任务；心跳线程吞异常；claim 无兜底可致 Worker 退出；上传去重并发撞唯一约束；0011 触发器逐行 notify 且 documents 无 WHEN 过滤；CI 锁文件无 hash；前端 401 静默失败（`app.mjs` errorBox 副作用）。
+- 低：`storage.py` 前缀比较、`X-Request-Id` 未校验、dedup 返回捏造 ID、`splitHighlight` 大小写折叠错位、令牌含裸 `%` 白屏等 21 项，详见本轮审查记录。
+
+修复后后端 `check.py` 完整隔离回归通过（含新增的重建服务测试）。中低危项尚未修复，处理时按本条目核对。
+
 ## 优先处理
 
 原生路径交付工程验证：`backend/scripts/check.py` 的lint、两组类型检查及335项完整隔离后端回归通过（1项既有Starlette/httpx弃用警告），前端28项单测、检索页面语法及两个启动脚本语法检查通过。新增覆盖完成标记的批次/刷新失败、过滤kNN、跨用户和当前版本回源，以及搜索索引故障时不替换原发布版本。实际OpenSearch联通验证与真实持久库三模式抽查另见下条；本轮未因分数名称改动重复浏览器回归。
