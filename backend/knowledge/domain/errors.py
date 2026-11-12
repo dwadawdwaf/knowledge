@@ -80,6 +80,16 @@ class ModelUnavailable(DomainError):
     retryable = True
 
 
+class ModelTransientUnavailable(ModelUnavailable):
+    """模型连接或服务端暂时不可用，可在当前处理阶段再次尝试。"""
+
+
+class EventStreamUnavailable(DomainError):
+    code = "EVENT_STREAM_UNAVAILABLE"
+    http_status = 503
+    retryable = True
+
+
 class ModelTimeout(DomainError):
     code = "MODEL_TIMEOUT"
     http_status = 504

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import io
 import json
+import urllib.error
 import urllib.request
 from unittest import mock
 
@@ -13,7 +14,12 @@ from knowledge.adapters import outbound
 from knowledge.adapters.embedding import HttpEmbedder, build_embedder
 from knowledge.adapters.generator import HttpGenerator, build_generator
 from knowledge.config import Settings
-from knowledge.domain.errors import CitationValidationFailed, ModelTimeout, ModelUnavailable
+from knowledge.domain.errors import (
+    CitationValidationFailed,
+    ModelTimeout,
+    ModelTransientUnavailable,
+    ModelUnavailable,
+)
 
 
 def _fake_urlopen(response_body: dict):
@@ -137,6 +143,22 @@ def test_embedder_sorts_response_indices_and_checks_count():
         assert embedder.embed(["first", "second"]) == [[1.0], [2.0]]
         with pytest.raises(ModelUnavailable):
             embedder.embed(["only-one"])
+
+
+@pytest.mark.parametrize(
+    ("failure", "expected"),
+    [
+        (urllib.error.URLError(TimeoutError()), ModelTimeout),
+        (urllib.error.URLError(ConnectionRefusedError()), ModelTransientUnavailable),
+        (urllib.error.HTTPError("http://fixture.invalid", 503, "", {}, None), ModelTransientUnavailable),
+        (urllib.error.HTTPError("http://fixture.invalid", 401, "", {}, None), ModelUnavailable),
+    ],
+)
+def test_embedding_transient_failures_are_classified(failure, expected):
+    embedder = HttpEmbedder(base_url="http://fixture.invalid", model="m", dimension=1)
+    with mock.patch.object(outbound, "open_request", side_effect=failure), pytest.raises(expected) as exc:
+        embedder.embed(["synthetic"])
+    assert type(exc.value) is expected
 
 
 @pytest.mark.parametrize(

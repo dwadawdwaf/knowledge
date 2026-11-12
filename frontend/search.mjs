@@ -10,7 +10,7 @@ const MODES = [
   ['keyword', '关键词检索', '根据词项匹配排序，适合查找专有名词'],
 ];
 
-const SCORE_LABEL = { bm25: 'BM25', bm25_rrf: 'BM25 + 向量融合' };
+const SCORE_LABEL = { ragflow_hybrid: '混合相关度', ragflow_lexical: '原生关键词相关度', term_overlap: '关键词相关度', cosine: '向量相似度' };
 
 const GUIDE = [
   ['quote', '命中片段', '截取命中的那段原文，可直接复制或跳到文件定位'],
@@ -24,6 +24,15 @@ const EXAMPLES = [
   '差旅住宿费按什么标准报销？',
   '新员工入职要准备哪些材料？',
 ];
+
+let activeSearch = null;
+
+export function disposeSearch(app) {
+  if (!activeSearch || activeSearch.app !== app) return;
+  activeSearch.controller.abort();
+  activeSearch = null;
+  app.state.busy = false;
+}
 
 export function renderSearch(app, { embedded = false } = {}) {
   const page = el('div', 'page search-page');
@@ -141,26 +150,36 @@ function consolePanel(app, embedded) {
     if (!app.state.connected) { app.openConnection(); return; }
     const ids = embedded ? [app.state.library.id] : scopeIds(app);
     if (!ids.length) { toast('还没有可检索的知识库。'); return; }
+    if (ids.length > 20) { toast('一次最多检索 20 个知识库，请先选择一个知识库。'); return; }
     if (app.state.busy) { toast('上一次检索还在进行，请稍候。'); return; }
 
     const results = document.querySelector('#search-results');
+    const request = { app, controller: new AbortController() };
+    activeSearch = request;
     app.state.busy = true;
     send.disabled = true;
     if (results) results.replaceChildren(loading('正在检索资料…'));
     try {
       const payload = await app.api.request('/search', {
         method: 'POST',
+        signal: request.controller.signal,
         body: { query, knowledge_base_ids: ids, mode: app.state.mode, top_k: 5 },
       });
+      if (activeSearch !== request || !results?.isConnected) return;
       app.state.searchResult = payload;
       app.state.query = query;
       if (results) paintResults(app, results, payload);
     } catch (error) {
+      if (activeSearch !== request || request.controller.signal.aborted) return;
       app.state.searchResult = null;
       if (results) results.replaceChildren(app.errorBox(error));
     } finally {
-      app.state.busy = false;
-      send.disabled = false;
+      if (activeSearch === request) {
+        activeSearch = null;
+        app.state.busy = false;
+        send.disabled = false;
+        app.flushUpdates();
+      }
     }
   });
 

@@ -9,9 +9,12 @@ from pathlib import Path
 from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse
 from fastapi.staticfiles import StaticFiles
+from starlette.responses import Response
+from starlette.types import Scope
 
 from knowledge.api import errors
-from knowledge.api.v1.routers import chunks, documents, jobs, knowledge_bases, qa, search
+from knowledge.api.v1.routers import chunks, documents, events, jobs, knowledge_bases, qa, search
+from knowledge.config import get_settings
 from knowledge.logging import get_logger, setup_logging
 
 API_PREFIX = "/api/v1"
@@ -19,8 +22,27 @@ API_PREFIX = "/api/v1"
 log = get_logger("api")
 
 
+class _RevalidatedStatic(StaticFiles):
+    """前端资源允许缓存但每次重新验证。
+
+    默认的 StaticFiles 不发 Cache-Control，浏览器会按「最后修改时间的 10%」自己算新鲜期，
+    开发时改完前端普通刷新仍拿到旧模块，表现为「改了页面没变」。ETag 仍在，命中时是 304。
+    """
+
+    async def get_response(self, path: str, scope: Scope) -> Response:
+        response = await super().get_response(path, scope)
+        response.headers["Cache-Control"] = "no-cache"
+        return response
+
+
 def create_app() -> FastAPI:
     setup_logging()
+    settings = get_settings()
+    if settings.token_secret == "dev-only-secret" and settings.embedding_model != "hash-1024":
+        # 身份桩（默认密钥）只允许搭配桩模型用于本地开发；真实模型下默认密钥等于公开门禁。
+        raise RuntimeError(
+            "检测到默认令牌密钥 KS_TOKEN_SECRET；配置真实模型时必须显式设置该密钥，拒绝启动。"
+        )
     app = FastAPI(
         title="Knowledge Service",
         version="0.1.0",
@@ -49,9 +71,9 @@ def create_app() -> FastAPI:
 
     frontend = Path(__file__).resolve().parents[3] / "frontend"
     if frontend.is_dir():
-        app.mount("/workbench", StaticFiles(directory=frontend, html=True), name="workbench")
+        app.mount("/workbench", _RevalidatedStatic(directory=frontend, html=True), name="workbench")
 
-    for module in (knowledge_bases, documents, jobs, search, chunks, qa):
+    for module in (knowledge_bases, documents, events, jobs, search, chunks, qa):
         app.include_router(module.router, prefix=API_PREFIX)
 
     @app.get("/", include_in_schema=False)

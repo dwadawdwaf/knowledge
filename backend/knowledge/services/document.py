@@ -7,12 +7,12 @@ import uuid
 from dataclasses import dataclass
 from typing import get_args
 
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from knowledge.adapters.preview import docx_preview, sheet_preview, to_png
 from knowledge.adapters.storage import new_object_key
 from knowledge.config import Settings
-from knowledge.domain.chunking import EVIDENCE_UNIT_STRATEGY, upgrade_chunk_config
 from knowledge.domain.entities import Actor, BuildState, JobKind, Lifecycle, ParserProfile
 from knowledge.domain.errors import (
     FileTooLarge,
@@ -23,12 +23,13 @@ from knowledge.domain.errors import (
     public_job_error,
 )
 from knowledge.domain.ports import ObjectStorage
+from knowledge.domain.ragflow_chunking import STRATEGY, TITLE_DEPTH, TOKEN_CAP
 from knowledge.repositories import chunks as chunk_repo
 from knowledge.repositories import documents as doc_repo
 from knowledge.repositories import jobs as job_repo
 from knowledge.repositories import knowledge_bases as kb_repo
 from knowledge.repositories import reindex as reindex_repo
-from knowledge.repositories.tables import Document, DocumentVersion, IndexBuild
+from knowledge.repositories.tables import Document, IndexBuild
 
 
 @dataclass(frozen=True)
@@ -50,6 +51,33 @@ class ReindexResult:
     generation: int
 
 
+def _duplicate_result(
+    session: Session, kb_id: uuid.UUID, sha256: str
+) -> UploadResult | None:
+    """唯一约束撞车后的兜底：重查同库同内容并返回既有文档的去重结果。
+
+    并发上传同一文件时，两个请求都可能通过无锁的 sha 去重检查，随后第二个在
+    `uq_kb_sha` 上触发 IntegrityError。回滚后重查即可拿到对方已提交的版本。
+    命中的文档必须仍为 active，否则返回 None 由调用方给出明确错误。
+    """
+    session.rollback()
+    existing = doc_repo.find_version_by_sha(session, kb_id, sha256)
+    if existing is None:
+        return None
+    document = session.get(Document, existing.document_id)
+    if document is None or document.status != Lifecycle.ACTIVE:
+        return None
+    latest = job_repo.latest_for_document(session, document.id)
+    return UploadResult(
+        document_id=document.id,
+        version_id=existing.id,
+        build_id=document.active_build_id or document.pending_build_id or uuid.uuid4(),
+        job_id=latest.id if latest else uuid.uuid4(),
+        deduplicated=True,
+        parser_profile=_existing_profile(session, document),
+    )
+
+
 def reindex(
     session: Session,
     actor: Actor,
@@ -63,7 +91,7 @@ def reindex(
 ) -> ReindexResult:
     """同模型重建最新上传版本；短事务内授权、比较代次并创建固定目标任务。"""
     document = reindex_repo.lock_document(session, actor, document_id)
-    version = reindex_repo.get_version(session, actor, document_id, version_id)
+    reindex_repo.get_version(session, actor, document_id, version_id)
     if (
         document.generation != expected_generation
         or reindex_repo.latest_version_id(session, actor, document_id) != version_id
@@ -71,55 +99,72 @@ def reindex(
     ):
         raise VersionConflict("文档或处理状态已变化，请刷新后查询任务")
     source = reindex_repo.original_build(session, actor, version_id)
-    return _enqueue_reindex(session, actor, settings, document_id, version, source, embedder_model, embedder_dim)
-
-
-def rechunk_existing(
-    session: Session, actor: Actor, settings: Settings, *, document_id: uuid.UUID,
-    embedder_model: str, embedder_dim: int, include_current: bool = False,
-) -> ReindexResult | None:
-    """维护入口优先重切当前发布，不把更新失败的版本意外发布。"""
-    document = reindex_repo.lock_document(session, actor, document_id)
-    if reindex_repo.has_open_job(session, actor, document_id):
-        raise VersionConflict("文档有未完成的任务")
-    source = session.get(IndexBuild, document.active_build_id) if document.active_build_id else None
-    if source and not include_current and source.chunk_config.get("strategy") == EVIDENCE_UNIT_STRATEGY:
-        return None
-    version_id = document.current_version_id or reindex_repo.latest_version_id(session, actor, document_id)
-    if version_id is None:
-        raise NotFound("文档版本不存在")
-    version = reindex_repo.get_version(session, actor, document_id, version_id)
-    if source is None:
-        source = reindex_repo.original_build(session, actor, version_id)
-    return _enqueue_reindex(session, actor, settings, document_id, version, source, embedder_model, embedder_dim)
-
-
-def _enqueue_reindex(
-    session: Session, actor: Actor, settings: Settings, document_id: uuid.UUID,
-    version: DocumentVersion, source: IndexBuild | None, embedder_model: str, embedder_dim: int,
-) -> ReindexResult:
-    if source is None or source.version_id != version.id or (source.embedding_model, source.embedding_dim) != (
+    if source is None or (source.embedding_model, source.embedding_dim) != (
         embedder_model,
         embedder_dim,
     ):
         raise VersionConflict("重建须使用原向量配置")
+    if source.chunk_config.get("strategy") != STRATEGY:
+        raise VersionConflict("请上传新文件版本以使用新的分块流程")
     build, job, generation = reindex_repo.enqueue(
         session,
         actor,
         document_id,
         source,
         settings.max_attempts,
-        upgrade_chunk_config(source.chunk_config, version.media_type),
     )
-    result = ReindexResult(document_id, version.id, build.id, job.id, generation)
+    result = ReindexResult(document_id, version_id, build.id, job.id, generation)
     session.commit()
     return result
+
+
+def rebuild_current_version(
+    session: Session,
+    actor: Actor,
+    *,
+    document_id: uuid.UUID,
+    embedder_model: str,
+    embedder_dim: int,
+    max_attempts: int,
+    parser_profile: str | None = None,
+) -> ReindexResult:
+    """按现行分块策略与给定向量配置重建当前版本，供更换向量模型后的维护重使用。
+
+    旧构建与片段不原地改动：新构建发布成功后旧构建才退役（C4）。默认解析方案沿用原构建，
+    避免同一份原件被换成另一条解析路径；扫描件等例外可由调用方显式覆盖。
+    """
+    document = reindex_repo.lock_document(session, actor, document_id)
+    if reindex_repo.has_open_job(session, actor, document_id):
+        raise VersionConflict("文档仍有未完成任务")
+    version_id = document.current_version_id
+    if version_id is None:
+        raise NotFound("文档没有可重建的版本")
+    reindex_repo.get_version(session, actor, document_id, version_id)
+    build = _new_build(
+        session,
+        version_id,
+        embedder_model,
+        embedder_dim,
+        parser_profile or _existing_profile(session, document, pending_first=True),
+    )
+    generation = document.generation + 1
+    job = job_repo.create(
+        session,
+        JobKind.REINDEX,
+        document.id,
+        max_attempts,
+        build_id=build.id,
+        generation=generation,
+    )
+    document.generation = generation
+    document.pending_build_id = build.id
+    session.commit()
+    return ReindexResult(document_id, version_id, build.id, job.id, generation)
 
 
 def _new_build(
     session: Session,
     version_id: uuid.UUID,
-    settings: Settings,
     embedder_model: str,
     embedder_dim: int,
     parser_profile: str,
@@ -128,9 +173,10 @@ def _new_build(
         version_id=version_id,
         state=BuildState.QUEUED,
         chunk_config={
-            "strategy": EVIDENCE_UNIT_STRATEGY,
-            "max_chars": settings.chunk_max_chars,
-            "overlap_chars": settings.chunk_overlap_chars,
+            "strategy": STRATEGY,
+            "token_cap": TOKEN_CAP,
+            "title_depth": TITLE_DEPTH,
+            "overlap_tokens": 0,
             "parser_profile": parser_profile,
         },
         embedding_model=embedder_model,
@@ -143,8 +189,7 @@ def _new_build(
 
 
 def _validate(data: bytes, settings: Settings, registry, filename: str, profile: str | None = None):
-    from knowledge.adapters.mineru import PROFILE
-    from knowledge.adapters.parser import DOC, detect_media_type
+    from knowledge.adapters.parser import detect_media_type
 
     if len(data) == 0:
         raise UnsupportedFormat("文件为空")
@@ -152,8 +197,12 @@ def _validate(data: bytes, settings: Settings, registry, filename: str, profile:
         raise FileTooLarge("文件超过大小上限")
 
     media_type = detect_media_type(data, filename)
-    defaults = {"application/pdf": settings.pdf_parser_profile, DOC: PROFILE}
-    selected = profile or defaults.get(media_type, settings.document_parser_profile)
+    if profile is None:
+        if media_type == "application/pdf":
+            registry.for_file(media_type, filename, profile="legacy-v1")
+            return media_type, "pdf-auto-v1"
+        profile = "mineru-api4.1-v1" if media_type.startswith("image/") else "legacy-v1"
+    selected = profile
     if selected not in get_args(ParserProfile):
         raise ValidationFailed("未知解析方案")
     registry.for_file(media_type, filename, profile=selected)
@@ -167,7 +216,8 @@ def _existing_profile(session: Session, document: Document, *, pending_first: bo
         else (document.active_build_id or document.pending_build_id)
     )
     build = session.get(IndexBuild, build_id) if build_id else None
-    return (build.chunk_config or {}).get("parser_profile", "legacy-v1") if build else "legacy-v1"
+    config = (build.chunk_config or {}) if build else {}
+    return config.get("resolved_parser_profile", config.get("parser_profile", "legacy-v1"))
 
 
 def upload(
@@ -205,32 +255,39 @@ def upload(
                 deduplicated=True,
                 parser_profile=_existing_profile(session, document),
             )
+        raise VersionConflict("同内容文档正在删除，请稍后重新上传")
 
     object_key = new_object_key(media_type)
     storage.put(object_key, data)
 
-    document = doc_repo.create(session, kb.id, title)
-    version = doc_repo.add_version(
-        session,
-        document,
-        object_key=object_key,
-        sha256=sha256,
-        media_type=media_type,
-        byte_size=len(data),
-    )
-    build = _new_build(session, version.id, settings, embedder_model, embedder_dim, selected)
-    job = job_repo.create(
-        session,
-        JobKind.INGEST,
-        document.id,
-        settings.max_attempts,
-        build_id=build.id,
-        generation=document.generation + 1,
-    )
+    try:
+        document = doc_repo.create(session, kb.id, title)
+        version = doc_repo.add_version(
+            session,
+            document,
+            object_key=object_key,
+            sha256=sha256,
+            media_type=media_type,
+            byte_size=len(data),
+        )
+        build = _new_build(session, version.id, embedder_model, embedder_dim, selected)
+        job = job_repo.create(
+            session,
+            JobKind.INGEST,
+            document.id,
+            settings.max_attempts,
+            build_id=build.id,
+            generation=document.generation + 1,
+        )
 
-    document.generation += 1
-    document.pending_build_id = build.id
-    session.commit()
+        document.generation += 1
+        document.pending_build_id = build.id
+        session.commit()
+    except IntegrityError:
+        duplicate = _duplicate_result(session, kb.id, sha256)
+        if duplicate is not None:
+            return duplicate
+        raise
 
     return UploadResult(
         document_id=document.id,
@@ -279,27 +336,34 @@ def add_version(
     object_key = new_object_key(media_type)
     storage.put(object_key, data)
 
-    version = doc_repo.add_version(
-        session,
-        document,
-        object_key=object_key,
-        sha256=sha256,
-        media_type=media_type,
-        byte_size=len(data),
-    )
-    build = _new_build(session, version.id, settings, embedder_model, embedder_dim, selected)
-    job = job_repo.create(
-        session,
-        JobKind.INGEST,
-        document.id,
-        settings.max_attempts,
-        build_id=build.id,
-        generation=document.generation + 1,
-    )
+    try:
+        version = doc_repo.add_version(
+            session,
+            document,
+            object_key=object_key,
+            sha256=sha256,
+            media_type=media_type,
+            byte_size=len(data),
+        )
+        build = _new_build(session, version.id, embedder_model, embedder_dim, selected)
+        job = job_repo.create(
+            session,
+            JobKind.INGEST,
+            document.id,
+            settings.max_attempts,
+            build_id=build.id,
+            generation=document.generation + 1,
+        )
 
-    document.generation += 1
-    document.pending_build_id = build.id
-    session.commit()
+        document.generation += 1
+        document.pending_build_id = build.id
+        session.commit()
+    except IntegrityError:
+        # 并发上传同一文件时可能双双通过 sha 去重检查，这里回滚后按库内既有版本返回。
+        duplicate = _duplicate_result(session, document.kb_id, sha256)
+        if duplicate is not None and duplicate.document_id == document.id:
+            return duplicate
+        raise VersionConflict("同内容文档正在处理或删除，请稍后重试")
 
     return UploadResult(
         document_id=document.id,
@@ -341,9 +405,10 @@ def detail(session: Session, actor: Actor, document_id: uuid.UUID) -> dict:
         # 已发布方案优先；首次处理尚未发布时仍显示冻结方案，避免失败文件隐藏选择。
         "media_type": version.media_type if version else None,
         "byte_size": version.byte_size if version else None,
-        "parser_profile": (visible_build.chunk_config or {}).get("parser_profile")
-        if visible_build
-        else None,
+        "parser_profile": (
+            visible_build.chunk_config.get("resolved_parser_profile")
+            or visible_build.chunk_config.get("parser_profile")
+        ) if visible_build else None,
         "job": _job_dict(latest) if latest else None,
     }
 

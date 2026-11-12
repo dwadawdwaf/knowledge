@@ -34,6 +34,12 @@ def test_empty_and_populated_migration(monkeypatch, tmp_path):
         command.upgrade(cfg, "head")
         assert "ix_chunks_tsv_english_fts" in {i["name"] for i in inspect(engine).get_indexes("chunks")}
         assert "structure" in {c["name"] for c in inspect(engine).get_columns("chunks")}
+        assert {"fields", "lexical_revision"} <= {
+            column["name"] for column in inspect(engine).get_columns("chunk_search_terms")
+        }
+        assert "ix_chunk_search_terms_gin" in {
+            index["name"] for index in inspect(engine).get_indexes("chunk_search_terms")
+        }
         assert {"build_id", "generation"} <= {
             c["name"] for c in inspect(engine).get_columns("jobs")
         }
@@ -96,6 +102,7 @@ def test_empty_and_populated_migration(monkeypatch, tmp_path):
         with engine.begin() as connection:
             assert connection.execute(text("SELECT id,text,locator,embedding::text FROM chunks")).all() == before
             assert connection.execute(text("SELECT structure FROM chunks")).scalar_one() == {}
+            assert connection.execute(text("SELECT count(*) FROM chunk_search_terms")).scalar_one() == 0
             assert connection.execute(text("SELECT to_regclass('ix_chunks_tsv_english_fts')")).scalar_one()
             assert connection.execute(
                 text("SELECT status FROM conversations WHERE id=:id"), {"id": conversation_id}

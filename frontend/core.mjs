@@ -9,9 +9,22 @@ const messages = {
   VALIDATION_ERROR: '请求参数不符合要求，请检查输入。',
   MODEL_UNAVAILABLE: '模型服务暂不可用，未返回答案。',
   MODEL_TIMEOUT: '模型服务超时，未返回答案。',
-  KEYWORD_INDEX_UNAVAILABLE: '关键词索引暂不可用，请检查本机检索服务后重试。',
+  CANCELLED: '请求等待已取消。',
+  STALE_SESSION: '连接身份已变化，请重新读取。',
+  KEYWORD_INDEX_UNAVAILABLE: '所选资料的检索索引需要更新，暂时无法完成关键词检索或问答。文件管理仍可使用，请联系维护人员修复索引。',
   CITATION_VALIDATION_FAILED: '答案未通过引用校验，未返回正文。这不是正常拒答；已知同主题无答案场景也可能触发此错误。',
 };
+
+export function retrievalStatusMessage(status) {
+  const parts = [];
+  if (status?.missing_keyword_chunks > 0) {
+    parts.push(`有 ${status.missing_keyword_chunks} 个历史片段需要更新检索索引。相关资料的关键词检索与问答暂不可用，文件管理仍可使用。请联系维护人员修复索引。`);
+  }
+  if (status?.legacy_pending_jobs > 0) {
+    parts.push(`有 ${status.legacy_pending_jobs} 个旧版处理任务需要维护，文件处理暂时暂停。`);
+  }
+  return parts.join(' ');
+}
 export class ApiError extends Error {
   constructor(code, status = 0, requestId = '') {
     super(messages[code] || '服务请求失败，请检查后端状态。');
@@ -19,45 +32,62 @@ export class ApiError extends Error {
   }
 }
 export class ApiClient {
-  constructor(fetcher = globalThis.fetch.bind(globalThis)) { this.fetcher = fetcher; this.token = ''; }
-  async request(path, { method = 'GET', body, timeout = 120000 } = {}) {
-    // 开发态服务端不校验令牌，无令牌也照常发起；需要令牌时由 401 引导用户连接。
+  constructor(fetcher = globalThis.fetch.bind(globalThis)) {
+    this.fetcher = fetcher;
+    this._token = '';
+    this.revision = 0;
+    this.pending = new Set();
+  }
+  get token() { return this._token; }
+  set token(value) {
+    this.cancelAll();
+    this._token = value;
+    this.revision += 1;
+  }
+  cancelAll() { this.pending.forEach(controller => controller.abort()); }
+  async request(path, { method = 'GET', body, timeout = 120000, signal } = {}) {
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), timeout);
-    const token = this.token;
+    const revision = this.revision;
+    this.pending.add(controller);
     try {
-      const headers = token ? { Authorization: `Bearer ${token}` } : {};
+      const headers = this.token ? { Authorization: `Bearer ${this.token}` } : {};
       const isFile = body instanceof FormData;
       if (body !== undefined && !isFile) headers['Content-Type'] = 'application/json';
       const response = await this.fetcher(`/api/v1${path}`, { method, headers,
         body: body === undefined ? undefined : isFile ? body : JSON.stringify(body),
-        signal: controller.signal, credentials: 'omit', cache: 'no-store' });
+        signal: signal ? AbortSignal.any([signal, controller.signal]) : controller.signal,
+        credentials: 'omit', cache: 'no-store' });
       let data;
       try { data = await response.json(); } catch { throw new ApiError('INVALID_RESPONSE', response.status); }
-      if (this.token !== token) throw new ApiError('STALE_SESSION');
+      if (this.revision !== revision) throw new ApiError('STALE_SESSION');
       if (!response.ok) throw new ApiError(data?.error?.code, response.status, data?.meta?.request_id || '');
       if (!data || !Object.hasOwn(data, 'data')) throw new ApiError('INVALID_RESPONSE', response.status);
       return data.data;
     } catch (error) {
+      if (this.revision !== revision) throw new ApiError('STALE_SESSION');
+      if (signal?.aborted) throw new ApiError('CANCELLED');
       if (error instanceof ApiError) throw error;
       throw new ApiError('NETWORK_ERROR');
-    } finally { clearTimeout(timer); }
+    } finally { clearTimeout(timer); this.pending.delete(controller); }
   }
 
   /**
    * 取原始响应（文件字节用）。错误仍然按统一错误信封解析，
    * 避免把 404 的 JSON 当成文件内容。
    */
-  async raw(path, { method = 'GET', timeout = 120000 } = {}) {
+  async raw(path, { method = 'GET', timeout = 120000, signal } = {}) {
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), timeout);
-    const token = this.token;
+    const revision = this.revision;
+    this.pending.add(controller);
     try {
-      const headers = token ? { Authorization: `Bearer ${token}` } : {};
+      const headers = this.token ? { Authorization: `Bearer ${this.token}` } : {};
       const response = await this.fetcher(`/api/v1${path}`, {
-        method, headers, signal: controller.signal, credentials: 'omit', cache: 'no-store',
+        method, headers, signal: signal ? AbortSignal.any([signal, controller.signal]) : controller.signal,
+        credentials: 'omit', cache: 'no-store',
       });
-      if (this.token !== token) throw new ApiError('STALE_SESSION');
+      if (this.revision !== revision) throw new ApiError('STALE_SESSION');
       if (!response.ok) {
         let payload = null;
         try { payload = await response.json(); } catch { payload = null; }
@@ -65,9 +95,11 @@ export class ApiClient {
       }
       return response;
     } catch (error) {
+      if (this.revision !== revision) throw new ApiError('STALE_SESSION');
+      if (signal?.aborted) throw new ApiError('CANCELLED');
       if (error instanceof ApiError) throw error;
       throw new ApiError('NETWORK_ERROR');
-    } finally { clearTimeout(timer); }
+    } finally { clearTimeout(timer); this.pending.delete(controller); }
   }
 }
 export function reindexTarget(document, receipts) {
@@ -78,7 +110,7 @@ export function reindexTarget(document, receipts) {
 export function jobLabel(document) {
   const job = document.job;
   if (!job) return '暂无任务';
-  const stages = { parsing: '正在解析', chunking: '正在分段', embedding: '正在向量化', publishing: '正在发布' };
+  const stages = { parsing: '正在解析', chunking: '正在分段', enhancing: '正在增强索引文本', embedding: '正在向量化', publishing: '正在发布' };
   if (job.state === 'running') return stages[job.stage] || '处理中';
   return { queued: '排队中', failed: '处理失败', cancelled: '已取消', succeeded: '已就绪' }[job.state] || '未知状态';
 }
@@ -88,6 +120,9 @@ export function locatorText(locator = {}) {
     const pages = [...new Set(locator.sources.map(source => source.locator?.page).filter(Number.isInteger))].sort((a, b) => a - b);
     return pages.length ? `第 ${pages.join('、')} 页 · ${locator.sources.length} 处原文`
       : `${locator.sources.length} 处原文 · 分段定位`;
+  }
+  if (locator.type === 'docx' && Number.isInteger(locator.block) && Number.isInteger(locator.row_start)) {
+    return `表格 ${locator.block} · 第 ${locator.row_start} 行`;
   }
   if (locator.type === 'pptx' && locator.page != null) {
     parts.push(`第 ${locator.page} 张幻灯片`);
@@ -128,6 +163,7 @@ const WARNING_LABELS = {
   parser_direct_text: '所选方案对纯文本直接读取，未使用 OCR',
   mineru_table_linearized: 'MinerU 表格/HTML已转纯文本',
   mineru_content_skipped: 'MinerU存在未提取的非文本或不支持块，内容可能不完整',
+  query_terms_empty: '没有可用的关键词，已使用语义检索',
   mineru_nul_replaced: 'MinerU 无效 NUL 字符已替换为 �，对应文字需复核',
   docx_images_require_mineru: '基础解析未识别 DOCX 内图片，请选用 MinerU',
   word_image_ocr_requires_review: '此片段来自 Word 内图片的 OCR，需核对原图',
@@ -168,27 +204,43 @@ function absoluteRanges(locator) {
 }
 
 export function chunkMetrics(items = []) {
+  const hasRange = loc => Number.isFinite(loc?.char_start) && Number.isFinite(loc?.char_end)
+    && loc.char_start >= 0 && loc.char_end > loc.char_start;
   const spans = items.map(item => {
     const locator = item.locator || {};
-    const ranges = absoluteRanges(locator);
-    return { ordinal: item.ordinal, chars: [...(item.text || '')].length,
-      start: ranges[0]?.[0] ?? null, end: ranges.at(-1)?.[1] ?? null, ranges, page: locator.page ?? null };
+    const sources = locator.sources?.map(source => source.locator) || [];
+    const documentRange = locator.precision === 'composite'
+      && ['txt', 'md'].includes(locator.type)
+      && sources.length > 1
+      && sources.every((source, index) => source?.type === locator.type && source.precision === 'char'
+        && hasRange(source) && (index === 0 || source.char_start >= sources[index - 1].char_end));
+    const absolute = documentRange || (['txt', 'md'].includes(locator.type) && locator.precision === 'char');
+    const local = !absolute && ['block', 'page', 'sheet', 'composite'].includes(locator.precision);
+    const start = documentRange ? sources[0].char_start
+      : Number.isFinite(locator.char_start) ? locator.char_start : null;
+    const end = documentRange ? sources.at(-1).char_end
+      : Number.isFinite(locator.char_end) ? locator.char_end : null;
+    const ranges = documentRange ? sources.map(source => [source.char_start, source.char_end]) : [[start, end]];
+    return { ordinal: item.ordinal, chars: (item.text || '').length, start, end, page: locator.page ?? null,
+      documentRange, ranges, absolute, local };
   });
   const chars = spans.reduce((sum, span) => sum + span.chars, 0);
-  // 块内偏移（部分解析器）每块都从 0 开始，按比例画会得出错误的覆盖关系；
-  // 只有偏移在文档内单调递增时才认为可以等比例排列。
-  const starts = spans.map(span => span.start);
-  const monotonic = spans.every((span, index) => index === 0 || starts[index] > starts[index - 1]);
-  const usable = spans.length > 0 && monotonic
-    && spans.every(span => span.start !== null && span.end !== null && span.end > span.start);
+  // 文档级偏移可重复。未标注的旧偏移仍要求起点递增，明确的块内偏移始终等宽。
+  const monotonic = spans.every((span, index) => index === 0 || span.start > spans[index - 1].start);
+  const usable = spans.length > 0 && (spans.every(span => span.absolute) || monotonic)
+    && spans.every(span => !span.local && span.start !== null && span.start >= 0 && span.end !== null && span.end > span.start);
   const maxEnd = usable ? Math.max(...spans.map(span => span.end)) : 0;
   let overlaps = 0;
-  for (let index = 1; index < spans.length; index += 1) {
-    if (!usable || spans[index].start >= spans[index - 1].end) continue;
-    for (const [start, end] of spans[index].ranges) {
-      for (const [priorStart, priorEnd] of spans[index - 1].ranges) {
-        overlaps += Math.max(0, Math.min(end, priorEnd) - Math.max(start, priorStart));
-      }
+  if (usable) for (let index = 1; index < spans.length; index += 1) {
+    const previous = spans[index - 1].ranges;
+    const current = spans[index].ranges;
+    let i = 0, j = 0;
+    while (i < previous.length && j < current.length) {
+      const [a, b] = previous[i];
+      const [c, d] = current[j];
+      overlaps += Math.max(0, Math.min(b, d) - Math.max(a, c));
+      if (b <= d) i += 1;
+      else j += 1;
     }
   }
   const pages = [...new Set(items.flatMap(item => item.locator?.pages || [item.locator?.page]).filter(page => page != null))].sort((left, right) => left - right);
@@ -196,14 +248,18 @@ export function chunkMetrics(items = []) {
   const segments = spans.map((span, index) => {
     if (!usable) return { ordinal: span.ordinal, left: index * step, width: Math.max(step - 0.5, 1), start: null, end: null, chars: span.chars, page: span.page };
     const left = (span.start / maxEnd) * 100;
-    const width = Math.max(((span.end - span.start) / maxEnd) * 100, 1.2);
-    return { ordinal: span.ordinal, left, width, start: span.start, end: span.end,
-      ranges: span.ranges, chars: span.chars, page: span.page };
+    const length = span.end - span.start;
+    const width = (length / maxEnd) * 100;
+    const pieces = span.documentRange ? span.ranges.map(([start, end]) => ({
+      left: ((start - span.start) / length) * 100, width: ((end - start) / length) * 100,
+    })) : [];
+    return { ordinal: span.ordinal, left, width: pieces.length ? width : Math.max(width, 1.2), pieces,
+      start: span.start, end: span.end, chars: span.chars, page: span.page };
   });
   const blockPrecision = items.length > 0
     && items.every(item => (item.locator || {}).precision === 'block');
   return { count: spans.length, chars, avg: spans.length ? Math.round(chars / spans.length) : 0,
-    usable, blockPrecision, maxEnd, overlaps, pages, segments };
+    usable, blockPrecision, compound: spans.some(span => span.documentRange), maxEnd, overlaps, pages, segments };
 }
 
 /* ------------------------------------------------------------ 文件浏览 */
@@ -240,6 +296,7 @@ export function mediaLabel(mediaType) {
  * 解析器标签。只有显式走 MinerU 的文档才显示；基础解析不贴质量标签。
  */
 export function parserLabel(profile) {
+  if (profile === 'pdf-auto-v1') return 'PDF 自动选择解析方式';
   if (profile === 'mineru-api4.1-v1') return 'MinerU 文档解析';
   return '';
 }

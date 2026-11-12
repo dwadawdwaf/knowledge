@@ -273,7 +273,7 @@ def test_upload_form_optional_profile_is_strict_and_returned(session, actor, set
 def test_pdf_default_is_frozen_for_upload_and_new_version(session, actor, settings, deps):
     with parser_server() as (url, state):
         settings = settings.model_copy(
-            update={"pdf_parser_profile": "mineru-api4.1-v1", "mineru_url": url}
+            update={"mineru_url": url}
         )
         registry = build_parser_registry(settings)
         deps = replace(deps, settings=settings, registry=registry)
@@ -293,7 +293,7 @@ def test_pdf_default_is_frozen_for_upload_and_new_version(session, actor, settin
             data=b"%PDF-1.7 synthetic v1",
             **common,
         )
-        assert result.parser_profile == "mineru-api4.1-v1"
+        assert result.parser_profile == "pdf-auto-v1"
         assert process_next(session, deps)
         session.expire_all()
         info = document.detail(session, actor, result.document_id)
@@ -309,12 +309,12 @@ def test_pdf_default_is_frozen_for_upload_and_new_version(session, actor, settin
             data=b"%PDF-1.7 synthetic v2",
             **common,
         )
-        assert updated.parser_profile == "mineru-api4.1-v1"
+        assert updated.parser_profile == "pdf-auto-v1"
         assert process_next(session, deps)
         session.expire_all()
         assert state["calls"] == 2
         assert (
-            session.get(IndexBuild, result.build_id).chunk_config["parser_profile"]
+            session.get(IndexBuild, result.build_id).chunk_config["resolved_parser_profile"]
             == "mineru-api4.1-v1"
         )
 
@@ -327,7 +327,7 @@ def test_article_keyword_hit_includes_subpoints(session, actor, settings, deps):
     with parser_server() as (url, state):
         state["blocks"] = [{"type": "text", "content": line} for line in lines]
         settings = settings.model_copy(update={
-            "mineru_url": url, "retrieval_profile": "optimized-v2",
+            "mineru_url": url,
         })
         registry = build_parser_registry(settings)
         deps = replace(deps, settings=settings, registry=registry)
@@ -365,7 +365,7 @@ def test_word_image_text_reaches_published_search_index(session, actor, settings
         original = header.ljust(1024, b"\x00")
         uploaded = document.upload(
             session, actor, settings, deps.storage, registry, kb_id=kb.id,
-            filename="synthetic.doc", data=original,
+            filename="synthetic.doc", data=original, parser_profile="mineru-api4.1-v1",
             embedder_model=deps.embedder.model, embedder_dim=deps.embedder.dimension,
         )
         assert uploaded.parser_profile == "mineru-api4.1-v1"
@@ -387,7 +387,7 @@ def test_word_image_text_reaches_published_search_index(session, actor, settings
         ) == []
 
 
-def test_new_import_uses_evidence_units_and_dedup_does_not_enqueue(session, actor, settings, deps):
+def test_new_import_uses_ragflow_chunks_and_dedup_does_not_enqueue(session, actor, settings, deps):
     original = b"%PDF-synthetic-workflow"
     heading, *body = ["试验准备", "在平整台面上固定装置。", "启动前确认以下事项：", "- 打开排气阀。", "- 记录环境温度。"]
     with parser_server() as (url, state):
@@ -411,9 +411,9 @@ def test_new_import_uses_evidence_units_and_dedup_does_not_enqueue(session, acto
         assert process_next(session, deps)
         session.expire_all()
         new_items = document.chunks(session, actor, new.document_id)["items"]
-        assert [item["text"] for item in new_items] == ["\n".join([heading, *body])]
-        assert new_items[0]["locator"]["precision"] == "composite"
-        assert session.get(IndexBuild, new.build_id).chunk_config["strategy"] == "evidence-unit-v1"
+        assert len(new_items) == 1
+        assert all(line in new_items[0]["text"] for line in [heading, *body])
+        assert session.get(IndexBuild, new.build_id).chunk_config["strategy"] == "ragflow-v1"
         duplicate = upload()
         assert duplicate.deduplicated and duplicate.build_id == new.build_id
         assert not process_next(session, deps)

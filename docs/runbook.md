@@ -2,6 +2,22 @@
 
 根目录命令均在项目根目录执行；接口语义见[设计](design.md)，未完成项见[issues](../issues.md)。
 
+### 原生 RAGFlow / OpenSearch 搜索
+
+业务数据库仍为 PostgreSQL。准备 Windows OpenSearch 3.9.x 后运行 `./start-opensearch.ps1 -OpenSearchHome <安装目录>`；本机已有安装默认位于 `backend/.data/windows-retrieval-v1/opensearch-3.9.0`。脚本只监听127.0.0.1:19276，不自动下载、不覆盖已运行的服务，使用持久的搜索数据目录。默认开发配置关闭搜索集群认证，仅用于本机。
+
+先在 `backend/.env` 设置 `KS_OPENSEARCH_URL=http://127.0.0.1:19276`、`KS_OPENSEARCH_INDEX=ks-ragflow-native-v2`，再用项目虚拟环境执行：
+
+```powershell
+.\backend\.venv\Scripts\python.exe backend/scripts/sync_native_index.py --owner demo-owner
+```
+
+`--owner` 必须是目标用户的真实subject；开发工作台默认是 `demo-owner`。工具按该用户当前可访问的发布构建回填本机派生索引，直接复用原分块和向量，不调用模型，重复运行跳过已有完整标记的构建。大库第一次回填可能较慢，查询不负责临时建库。
+
+回填完成后设置 `KS_SEARCH_ENGINE=opensearch` 并重启后端，资料检索和问答共用原生搜索路径。`start.ps1` 在该配置下尝试启动本机搜索服务；搜索服务故障或缺索引不阻断文件管理，检索明确返回 `KEYWORD_INDEX_UNAVAILABLE`，不自动切换策略。健康提示仍按当前用户统计。新上传在最终发布前同步索引，失败保留原发布版本。
+
+映射版本不兼容时换一个新的索引名重新回填，禁止原地覆盖旧索引。回退时将 `KS_SEARCH_ENGINE` 改为 `postgresql` 并重启，保留原生索引方便复查；不会删除业务资料或重算向量。PostgreSQL回退路径仍要求其派生词项已完成回填。原生路径缺索引应运行本节工具，`backfill_ragflow_terms.py` 只修复PostgreSQL词项。
+
 ## 1. 安装与配置
 
 解释器版本以.python-version为准，依赖用backend/requirements-dev.lock，不只装pyproject的浮动范围。
@@ -51,6 +67,7 @@ Real模式自动调用start-mineru.ps1启动或复用已安装的MinerU；-Miner
 未安装时明确提示且不自动安装；已安装但模型/接口检查失败则停止启动，不静默回退。
 
 未显式设置数据库时复用/启动本机PostgreSQL，默认55433端口。
+显式设置 `KS_DATABASE_URL` 时，启动器先执行 `SELECT 1` 验证 PostgreSQL 连接，再检查模型和运行迁移。
 数据目录优先已初始化的backend/.data/pgdata，否则本机应用数据目录；KS_LOCAL_DB_DIR可指定ASCII路径。
 API/Worker退出不等于后台数据库停止，停止用：
 
@@ -71,9 +88,15 @@ API/Worker退出不等于后台数据库停止，停止用：
 .\.venv\Scripts\python.exe -m knowledge.entrypoints.worker
 ```
 
-当前head为0007_merge_optimization；从0001升级前不能留下未处理旧任务。
+当前head为0011_document_events；从0001升级前不能留下未处理旧任务。
 该节点汇合会话归档链与结构分块、全文索引链，任一分支数据库均可用同一命令升级。
 不对未知默认库运行迁移，不改历史迁移，不原地回填已发布片段。
+
+从 0008_document_events 升级：该版本已改名为 0011_document_events 并挂在 0010 之后，
+曾按旧编号迁移过的库会因找不到 revision 而启动失败。处理顺序为：
+先删除 ks_kb_changes、ks_document_changes、ks_job_created、ks_job_changes 四个触发器和
+ks_notify_document_change() 函数，再把 alembic_version 置回 0007_merge_optimization，
+执行 alembic upgrade head，最后跑 backfill_ragflow_terms.py --apply 补齐派生词项。
 
 ### 本次数据库回退与备份
 
@@ -144,7 +167,7 @@ KS_MINERU_TIMEOUT_SECONDS为总等待预算（默认330秒），而非性能承�
 
 ```powershell
 .\backend\.venv\Scripts\python.exe -u backend/scripts/check.py
-node --test frontend/core.test.mjs
+node --test frontend/core.test.mjs frontend/events.test.mjs frontend/documents.test.mjs frontend/browse.test.mjs
 .\backend\.venv\Scripts\python.exe -u backend/scripts/browser_smoke.py
 ```
 
@@ -153,24 +176,17 @@ node --test frontend/core.test.mjs
 浏览器检查仅在相关前端改动收尾运行，需要已有Node/测试浏览器，不自动安装。
 CI定义在.github/workflows/backend.yml，文件存在不等于远端已实跑。
 
-### 本机批量重切与可选检索策略
+### 分块与检索升级
 
-先按本手册升级数据库，不清空现有库。退出运行中的工作台，保留本机 PostgreSQL、向量服务和 MinerU，再执行：
+代码统一使用 `ragflow-v1`。API 和 Worker 使用同一配置、本地资源目录及向量模型。新文档默认按文件类型选解析器，正文按标题或句界约 512 tokens 分块，默认零重叠。
 
-```powershell
-.\backend\.venv\Scripts\python.exe -u backend/scripts/rechunk_local.py
-.\backend\.venv\Scripts\python.exe -u backend/scripts/rechunk_local.py --apply --include-current
-```
+1. 停止接收上传，排空旧 Worker 的处理任务后关闭旧进程。保留数据库和配套原件卷。
+2. 按本手册升级数据库。清理部署配置中的旧检索、RRF、重排和 OpenSearch 选项，将显式的 `KS_RETRIEVAL_PROFILE` 更新为 `ragflow-v1`。
+3. 词表资源随仓库存放在 `backend/resources/ragflow`（tiktoken 词表、`corpora/wordnet.zip`、`ragflow/huqie.txt`，约 20 MB），启动器与 `check.py` 自动定位，无需准备。若需另行准备，执行 `python backend/scripts/prepare_ragflow_resources.py --data-dir <目录>` 校验 cl100k_base、WordNet 和 huqie。直接运行 API、Worker、维护脚本或 pytest 时，仍需把 `NLTK_DATA` 指向 `backend/resources/ragflow` 的绝对路径，`TIKTOKEN_CACHE_DIR` 指向其 `tiktoken` 子目录。显式的 `NLTK_DATA`、`TIKTOKEN_CACHE_DIR` 或 `DATA_GYM_CACHE_DIR` 优先，启动器不会覆盖。已有文件可用 `--wordnet-archive`、`--infinity-sdk-archive` 和 `--tiktoken-vocabulary` 离线准备；运行服务时不会下载或切换模型。
+4. 显式设置目标 `KS_DATABASE_URL`，执行 `python backend/scripts/backfill_ragflow_terms.py --apply`，再不带 `--apply` 检查缺失数为 0。回填仅更新派生词项，保留分块、向量及发布指针。
+5. 启动新 API 与 Worker。工作台启动器先检查本地词表，再在迁移后只读检查旧策略任务和词项缺口。缺失词项只输出警告，不阻止工作台启动；连接后页面显示当前用户受影响的片段数及「重新检查」，修复后提示消失。相关范围的关键词检索与问答仍明确报索引不可用，不当成无结果；文件管理及未受影响范围可继续使用。若仍有旧策略排队/运行任务，API照常启动，Worker暂不启动，须按第1步处理后重启；历史资料需要重新分块时上传新文件版本。数据库连接或迁移失败仍须修复后启动。
 
-首条仅统计，第二条逐个重切当前工作台所有可访问文档，只使用本机模型。失败保留旧发布；不带 `--include-current` 重跑可跳过已切换文档。完成后重新启动工作台。
-
-检索默认 `baseline-v1`，以下能力可独立配置，API 和 Worker 应使用相同配置：
-
-- `KS_RETRIEVAL_PROFILE=optimized-v2`：启用查询优化与加权融合；`fts-v1` 选用 PostgreSQL 英文全文检索。
-- `KS_RETRIEVAL_PROFILE=bm25-v1`：同时配置 `KS_OPENSEARCH_URL` 为本机回环地址。
-  Windows 可准备本地 OpenSearch 发行包并使用 `start-opensearch.ps1`；不下载模型或发行包。
-  不同 PostgreSQL 实例使用独立的 `KS_OPENSEARCH_INDEX`。仅在显式配置后才检查或启动此依赖。
-- 在 `optimized-v2` 下，`KS_RERANKER_URL` 和 `KS_RERANKER_MODEL` 可显式指向本机重排服务；未配置时不调用。
+本轮按用户要求跳过真实模型效果验收。旧结果仅作为对应历史快照的记录。旧策略对照应在隔离的历史代码版本运行。
 
 
 ## 6. 排障
@@ -181,7 +197,7 @@ CI定义在.github/workflows/backend.yml，文件存在不等于远端已实跑�
 | 401/404 | 本次令牌、资源归属、删除状态；UUID不是凭证 |
 | running停滞 | Worker、stage/attempt、租约、模型等待，不手改任务状态 |
 | 模型故障 | 端点、认证、余额、名称、1024维及索引模型兼容性，不把故障记成无资料 |
-| KEYWORD_INDEX_UNAVAILABLE | 检查本机 OpenSearch 是否已就绪及索引名称，启动日志在 `backend/.data/workbench-opensearch/` |
+| KEYWORD_INDEX_UNAVAILABLE | 检查本地词典及 `backfill_ragflow_terms.py` 的缺失分块数。 |
 | Ollama绑定失败/10013 | 检查Windows保留端口：`netsh interface ipv4 show excludedportrange protocol=tcp`；不要删系统规则。若11434被保留，将backend/.env的KS_EMBEDDING_BASE_URL改为经检查可用的本机端口（如http://127.0.0.1:21434/v1）。启动器为serve/pull同步设置OLLAMA_HOST，不改系统环境，不更换模型或下载资料；手动启动时也需在该终端设置同一OLLAMA_HOST。 |
 | PARSE_FAILED | 格式/加密/资源限制、MinerU网络/接口/模型，不循环重传相同内容 |
 | no_evidence | 范围、发布状态、阈值及原文是否支持，不用降低门槛制造答案 |
@@ -190,3 +206,26 @@ CI定义在.github/workflows/backend.yml，文件存在不等于远端已实跑�
 
 按request_id关联请求，任务再看job_id/build_id、阶段与耗时。日志不加正文或密钥，外发前脱敏。
 生产硬配额与身份接入另配置，不把采样资源保护当安全沙箱。
+
+### 工作台实时连接
+
+升级至 0008 后，API 为资料页提供 /api/v1/events。原有 REST 接口继续使用。
+反向代理应关闭该路径的响应缓冲，空闲超时应大于 45 秒，允许 text/event-stream 长连接。
+PostgreSQL 连接地址应支持会话级 LISTEN，事务池模式会破坏订阅。
+每个可见资料页维持一个订阅，退出身份、切换到其他功能或隐藏页面时关闭。
+KS_EVENT_STREAM_LIMIT 设置每个 API 进程的 SSE 上限，默认 8，范围 1–16，超限返回 503 并退避重试。
+断线提示会保留旧列表，重连成功后自动重读快照，用户也可手动刷新。
+通知不持久化，不以心跳代表任务进度。Windows 使用线程池等待数据库 socket，取消后最多一个等待周期释放连接。
+
+### 更换向量模型
+
+全库共用一个向量索引，构建层禁止混用模型，因此换模型必须一次清空重建：旧构建与片段删除，版本、原件与发布指针的记录保留。
+
+第一步只统计数量；第二步创建新构建，`--clear-old` 先清掉其它模型的构建与片段。命令都在仓库根目录执行，先按本手册设置 `KS_DATABASE_URL`：
+
+```powershell
+.\backend\.venv\Scripts\python.exe backend/scripts/rebuild_vectors.py --embedding-model BAAI/bge-m3 --embedding-dim 1024
+.\backend\.venv\Scripts\python.exe backend/scripts/rebuild_vectors.py --apply --clear-old --embedding-model BAAI/bge-m3 --embedding-dim 1024
+```
+
+随后启动 Worker 处理队列，完成后核对每个文档的 `active_build_id` 都指向目标模型的构建。原件已丢失的历史文档不能重新解析，应先用已发布片段留存正文（`backend/.data/vector-rebuild-backup`）再合成新版本入库；扫描件重建时用 `--parser-profile pdf-auto-v1` 让 MinerU 参与，否则会以 `EMPTY_CONTENT` 失败。

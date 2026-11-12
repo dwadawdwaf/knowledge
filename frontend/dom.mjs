@@ -126,11 +126,16 @@ export function toast(message, duration = 3600) {
 
 /* 浮层菜单：点击锚点展开，点击外部或 Esc 关闭，随窗口变化关闭。 */
 let openMenuNode = null;
+let menuTimer;
+let menuAnchor = null;
 
 export function closeMenu() {
+  clearTimeout(menuTimer);
   if (!openMenuNode) return;
   openMenuNode.remove();
   openMenuNode = null;
+  menuAnchor?.setAttribute('aria-expanded', 'false');
+  menuAnchor = null;
   document.removeEventListener('mousedown', onMenuPointer, true);
   document.removeEventListener('keydown', onMenuKey, true);
   window.removeEventListener('resize', closeMenu);
@@ -142,7 +147,18 @@ function onMenuPointer(event) {
 }
 
 function onMenuKey(event) {
-  if (event.key === 'Escape') closeMenu();
+  if (event.key === 'Escape') {
+    const anchor = menuAnchor;
+    closeMenu();
+    anchor?.focus();
+  }
+  if (event.key === 'ArrowDown' || event.key === 'ArrowUp') {
+    const items = [...openMenuNode.querySelectorAll('button')];
+    const current = items.indexOf(document.activeElement);
+    const step = event.key === 'ArrowDown' ? 1 : -1;
+    event.preventDefault();
+    items[(current + step + items.length) % items.length]?.focus();
+  }
 }
 
 export function openMenu(anchor, build, { align = 'start' } = {}) {
@@ -163,7 +179,10 @@ export function openMenu(anchor, build, { align = 'start' } = {}) {
   menu.style.top = `${Math.round(top)}px`;
 
   openMenuNode = menu;
-  setTimeout(() => {
+  menuAnchor = anchor;
+  anchor.setAttribute('aria-expanded', 'true');
+  menuTimer = setTimeout(() => {
+    if (openMenuNode !== menu) return;
     document.addEventListener('mousedown', onMenuPointer, true);
     document.addEventListener('keydown', onMenuKey, true);
     window.addEventListener('resize', closeMenu);
@@ -224,6 +243,7 @@ export function dayLabel(date = new Date()) {
 
 /* 文本域自适应高度：上限 190px，超出后内部滚动。 */
 export function autoGrow(textarea, max = 190) {
+  if (!textarea) return;
   textarea.style.height = 'auto';
   textarea.style.height = `${Math.min(textarea.scrollHeight, max)}px`;
 }

@@ -173,7 +173,7 @@ class SearchHit:
     text: str
     locator: dict[str, Any]
     score: float
-    score_type: str = "rrf"
+    score_type: str = "ragflow_hybrid"
     warnings: tuple[str, ...] = ()
     structure: dict[str, Any] = field(default_factory=dict)
     diagnostics: dict[str, Any] = field(default_factory=dict)

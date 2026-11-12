@@ -1,0 +1,6 @@
+# 冻结语料按字节保存：manifest.json 记录每个文件的 SHA-256，
+# 行尾归一化（core.autocrlf）会改变字节并让校验失败。
+backend/testdata/rag-baseline-v1/corpus/** -text
+
+# 固定哈希词表按字节保存，避免 Windows 检出时自动转换行尾。
+backend/resources/ragflow/** -text

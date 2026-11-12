@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 import pathlib
 from urllib.parse import urlsplit
 
@@ -9,6 +10,7 @@ from pydantic import ValidationError
 from pydantic_settings import SettingsConfigDict
 
 from knowledge.config import Settings
+from knowledge.domain.errors import KeywordIndexUnavailable
 from knowledge.repositories.tables import EMBEDDING_DIM
 
 BACKEND = pathlib.Path(__file__).resolve().parents[1]
@@ -54,6 +56,49 @@ def load_real_settings() -> Settings:
     return settings
 
 
+def ragflow_resources_dir() -> pathlib.Path:
+    """词表资源目录：仓库随包资源优先，未入库时退回本地准备目录。"""
+    bundled = BACKEND / "resources" / "ragflow"
+    if (bundled / "ragflow" / "huqie.txt").is_file():
+        return bundled
+    return BACKEND / ".data" / "ragflow-resources"
+
+
+def check_ragflow_resources() -> None:
+    """用固定短文本检查实际分词与计数资源，适配器只读取本地文件。"""
+    import nltk.data
+
+    from knowledge.adapters.ragflow_text import count_tokens, query_terms
+
+    # 启动预检和 LocalRuntime 均调用此入口，后者将绝对路径传给 API/Worker。
+    # NLTK 可能在入口装配时已被导入，修改环境后也须同步它已初始化的搜索路径。
+    resources = ragflow_resources_dir()
+    os.environ.setdefault("NLTK_DATA", str(resources))
+    if "TIKTOKEN_CACHE_DIR" not in os.environ and "DATA_GYM_CACHE_DIR" not in os.environ:
+        os.environ["TIKTOKEN_CACHE_DIR"] = str(resources / "tiktoken")
+    for directory in reversed(os.environ["NLTK_DATA"].split(os.pathsep)):
+        if directory:
+            resolved = str(pathlib.Path(directory).resolve())
+            if resolved not in nltk.data.path:
+                nltk.data.path.insert(0, resolved)
+    try:
+        count_tokens("本地词表")
+    except (KeywordIndexUnavailable, OSError, RuntimeError, ValueError) as exc:
+        raise ValueError(
+            "cl100k_base 词表缺失或校验失败。仓库资源应位于 backend/resources/ragflow，"
+            "缺失时可运行 backend/scripts/prepare_ragflow_resources.py --data-dir <目录>；"
+            "若手动配置了 TIKTOKEN_CACHE_DIR 或 DATA_GYM_CACHE_DIR，请检查该目录。"
+        ) from exc
+    try:
+        query_terms("压力 pressure")
+    except (KeywordIndexUnavailable, OSError, RuntimeError, ValueError) as exc:
+        raise ValueError(
+            "WordNet 或 huqie 本地词典不可用。仓库资源应位于 backend/resources/ragflow，"
+            "缺失时可运行 backend/scripts/prepare_ragflow_resources.py --data-dir <目录>；"
+            "若手动配置了 NLTK_DATA，请检查该目录。"
+        ) from exc
+
+
 def external_database_url(settings: Settings) -> str | None:
     """显式配置了 KS_DATABASE_URL 时返回该地址，否则返回 None（沿用临时库）。
 
@@ -87,35 +132,20 @@ def real_model_environment(settings: Settings) -> dict[str, str]:
         "generator_model",
         "generator_api_key",
         "generator_timeout_seconds",
-        "similarity_floor",
-        "semantic_max_distance",
         "evidence_min_score",
         "evidence_max_items",
-        "chunk_max_chars",
-        "chunk_overlap_chars",
         "retrieval_profile",
+        "search_engine",
         "opensearch_url",
         "opensearch_index",
         "opensearch_timeout_seconds",
-        "evidence_coverage",
-        "structured_context",
-        "recall_limit",
-        "rrf_k",
-        "keyword_weight",
-        "keyword_local_floor",
-        "semantic_weight",
-        "query_variants_max",
         "evidence_candidate_limit",
         "evidence_max_chars",
-        "evidence_neighbor_limit",
-        "reranker_url",
-        "reranker_model",
-        "reranker_timeout_seconds",
         "lease_seconds",
         "heartbeat_seconds",
         "max_attempts",
+        "event_stream_limit",
         "document_parser_profile",
-        "pdf_parser_profile",
         "mineru_url",
         "mineru_token",
         "mineru_timeout_seconds",

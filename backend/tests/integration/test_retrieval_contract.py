@@ -7,10 +7,12 @@ import uuid
 from pathlib import Path
 
 import pytest
+from sqlalchemy import select
 
 from knowledge.adapters.generator import StubGenerator
 from knowledge.domain.entities import Actor
 from knowledge.repositories import chunks as chunk_repo
+from knowledge.repositories.tables import Chunk
 from knowledge.services import document as document_service
 from knowledge.services import knowledge as knowledge_service
 from knowledge.services import qa as qa_service
@@ -64,37 +66,43 @@ def test_docx_chunks_locate_by_paragraph(session, indexed_document, settings, de
     assert chunk["locator"].get("paragraph") is not None
 
 
-def test_pdf_chunks_locate_by_page(session, indexed_document, settings, deps):
+def test_pdf_chunks_locate_by_page(session, indexed_document, settings, deps, query_vector):
     if not pdf_supported():
         pytest.skip("fpdf2 或中文测试字体不可用")
     actor, kb_id, upload = indexed_document
     upload("visitor.pdf", make_pdf())
 
     expectations = [
-        ("访客进入办公区需要谁陪同", 1),
-        ("访客证的有效期是多久", 2),
-        ("外来车辆应该停放在哪里", 2),
-        ("消防通道可以堆放物品吗", 3),
-        ("末班班车几点发车", 4),
-        ("监控录像保存多长时间", 5),
+        ("访客进入办公区需要谁陪同", 1, "全程陪同"),
+        ("访客证的有效期是多久", 2, "当日有效"),
+        ("外来车辆应该停放在哪里", 2, "访客专区"),
+        ("消防通道可以堆放物品吗", 3, "不得堆放"),
+        ("末班班车几点发车", 4, "晚上十点半"),
+        ("监控录像保存多长时间", 5, "保存九十天"),
     ]
-    for question, expected_page in expectations:
+    rows = session.scalars(select(Chunk)).all()
+    for question, expected_page, phrase in expectations:
+        expected = next(row for row in rows if phrase in row.text and row.locator.get("page") == expected_page)
+        query_vector(question, expected.embedding)
         hits = retrieval.search(
             session, actor, settings, deps.embedder,
             query=question, kb_ids=[kb_id],
         )
         assert hits, f"PDF 内容应可检索：{question}"
         assert hits[0].locator["type"] == "pdf"
+        assert phrase in hits[0].text
         assert hits[0].locator["page"] == expected_page, (
             f"{question} 应位于第 {expected_page} 页，实际 {hits[0].locator['page']}"
         )
 
 
-def test_md_locator_offsets_match_source(session, indexed_document, settings, deps):
+def test_md_locator_offsets_match_source(session, indexed_document, settings, deps, query_vector):
     """MD 的 char 级 locator 应能按偏移切出分块原文（引用可回溯到字符）。"""
     actor, kb_id, upload = indexed_document
     data = (FIXTURE_ROOT / MEETING_FIXTURE).read_bytes()
     upload("meeting.md", data)
+    expected = session.scalar(select(Chunk).where(Chunk.text.contains("清理现场")))
+    query_vector("会议室使用后需要完成哪些事项", expected.embedding)
     answer = qa_service.answer(
         session, actor, settings, deps.embedder, StubGenerator(),
         question="会议室使用后需要完成哪些事项", kb_ids=[kb_id],
@@ -105,9 +113,9 @@ def test_md_locator_offsets_match_source(session, indexed_document, settings, de
 
     chunk = chunk_repo.get_owned(session, actor, uuid.UUID(citation.chunk_id))
     source = data.decode("utf-8")
-    start = chunk["locator"]["char_start"]
-    end = chunk["locator"]["char_end"]
-    assert source[start:end].strip() == chunk["text"].strip(), "locator 偏移与原文不一致"
+    for item in chunk["locator"]["sources"]:
+        loc = item["locator"]
+        assert source[loc["char_start"]:loc["char_end"]] == chunk["text"][item["chunk_start"]:item["chunk_end"]]
 
 
 def test_kb_scope_isolation(session, settings, deps):
@@ -136,3 +144,18 @@ def test_kb_scope_isolation(session, settings, deps):
         query="借用会议室需要提前多久登记", kb_ids=[kb_security.id],
     )
     assert out_scope == []
+
+
+def test_keyword_finds_short_literal_in_long_chunk(session, indexed_document, settings, deps):
+    actor, kb_id, upload = indexed_document
+    body = "".join(chr(0x5200 + offset) for offset in range(320))
+    upload("literal.txt", f"{body} 氟泵在二层，设备编号 RX-830。".encode())
+    for query, expected in (("氟泵", "氟泵"), ("rx-830", "RX-830")):
+        hits = retrieval.search(
+            session, actor, settings, deps.embedder, query=query, kb_ids=[kb_id], mode="keyword",
+        )
+        assert hits and expected in hits[0].text
+    assert not retrieval.search(
+        session, actor, settings, deps.embedder, query="ZZ-674",
+        kb_ids=[kb_id], mode="keyword",
+    )

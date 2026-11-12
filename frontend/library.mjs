@@ -205,15 +205,13 @@ function detailShoulder(app, kb) {
   input.value = app.state.docFilter;
   field.append(icon('search'), input);
 
-  const refresh = iconButton('refresh', '刷新文档列表', () => app.loadDocuments());
-  const upload = actionButton('上传文档', 'btn primary', () => {
-    document.querySelector('.upload-zone input[type=file]')?.click();
-  }, 'upload');
+  // 与其他页面一致的大刷新按钮；上传入口只保留上传区一个，避免两个等价按钮。
+  const refresh = actionButton('刷新', 'btn ghost', () => app.loadDocuments(), 'refresh');
 
   const counter = el('span', 'count-note', `${app.state.documents.length} 个文档`);
   counter.id = 'doc-count';
 
-  shoulder.append(field, el('div', 'spacer'), counter, refresh, upload);
+  shoulder.append(field, el('div', 'spacer'), counter, refresh);
   input.addEventListener('input', () => { app.state.docFilter = input.value; drawDocuments(app); });
   return shoulder;
 }
@@ -232,7 +230,7 @@ function uploadZone(app, kb) {
   input.multiple = true;
   input.accept = ACCEPT;
   input.hidden = true;
-  input.setAttribute('aria-label', '选择知识库文档');
+  input.setAttribute('aria-label', '选择要上传的文档');
 
   const actions = el('div', 'upload-actions');
   const select = el('select', 'input parser-choice');
@@ -243,7 +241,7 @@ function uploadZone(app, kb) {
     option.value = value;
     select.append(option);
   }
-  const choose = actionButton('选择文件', 'btn ghost', () => input.click(), 'upload');
+  const choose = actionButton('上传文档', 'btn ghost', () => input.click(), 'upload');
   actions.append(select, choose, input);
 
   zone.append(copy, actions);
@@ -284,10 +282,12 @@ async function uploadFiles(app, kb, files) {
   if (app.state.busy) { toast('上一个上传还在进行，请稍候。'); return; }
   document.querySelector('#upload-feedback')?.replaceChildren();
   app.state.busy = true;
+  const revision = app.api.revision;
   const profile = document.querySelector('.parser-choice')?.value || '';
   let submitted = 0;
   try {
     for (const file of files) {
+      if (revision !== app.api.revision) return;
       if (!PATTERN.test(file.name) || file.size > MAX_BYTES) {
         feedback(`${file.name}：已跳过，格式不支持或超过 50 MB。`, 'warning');
         continue;
@@ -300,13 +300,17 @@ async function uploadFiles(app, kb, files) {
         const actual = parserLabel(ack.parser_profile) || '基础解析';
         feedback(`${file.name}：${ack.deduplicated ? '相同内容已存在，未新建任务；保留原方案，不因重传切换' : '上传已接收，等待后台处理'} · ${actual}`);
       } catch (error) {
+        if (revision !== app.api.revision) return;
         feedback(`${file.name}：${app.errorText(error)}`, 'warning');
       }
     }
     await app.loadDocuments();
     toast(submitted ? `已创建 ${submitted} 个处理任务，请等待后台处理。` : '未创建新任务，请查看上方文件反馈。');
   } finally {
-    app.state.busy = false;
+    if (revision === app.api.revision) {
+      app.state.busy = false;
+      app.flushUpdates();
+    }
   }
 }
 
@@ -357,11 +361,16 @@ export function drawDocuments(app) {
 
   const scroll = el('div', 'table-scroll');
   scroll.append(table);
-  panel.replaceChildren(scroll);
+  if (app.state.docError) {
+    const warning = el('div', 'notice-line warn', '文档列表暂时无法更新，当前显示上次结果。请手动刷新。');
+    warning.setAttribute('role', 'status');
+    panel.replaceChildren(warning, scroll);
+  } else panel.replaceChildren(scroll);
 }
 
 function documentRow(app, doc) {
   const row = el('tr');
+  row.dataset.documentId = doc.id;
 
   const nameCell = el('td');
   const cell = el('div', 'file-cell');
@@ -478,6 +487,7 @@ async function replaceVersion(app, doc, file) {
   }
   if (app.state.busy) { toast('另一个上传仍在进行，请稍候。'); return; }
   app.state.busy = true;
+  const revision = app.api.revision;
   try {
     const form = uploadForm(file, document.querySelector('.parser-choice')?.value || '');
     const ack = await app.api.request(
@@ -488,8 +498,11 @@ async function replaceVersion(app, doc, file) {
     await app.loadDocuments();
     toast(`${ack.deduplicated ? '相同内容已存在，保留原方案，未新建版本。' : '新版本已接收，发布前旧版本继续可用。'} ${parserLabel(ack.parser_profile) || '基础解析'}`);
   } catch (error) {
-    app.notify(app.errorText(error));
+    if (revision === app.api.revision) app.notify(app.errorText(error));
   } finally {
-    app.state.busy = false;
+    if (revision === app.api.revision) {
+      app.state.busy = false;
+      app.flushUpdates();
+    }
   }
 }

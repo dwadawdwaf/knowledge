@@ -15,7 +15,6 @@ PDF_INDEPENDENT = frozenset(
     {"table", "table_row", "figure", "caption", "footnote", "equation", "code", "aside"}
 )
 _MARGINAL = frozenset({"header", "footer"})
-_SENTENCE_END = ".!?。！？；;：:"
 
 
 @dataclass(frozen=True)
@@ -203,32 +202,3 @@ def order_pdf_blocks(blocks: list[ParsedBlock]) -> list[ParsedBlock]:
                     )
                 )
     return result
-
-
-def pdf_continuation(previous: ParsedBlock, current: ParsedBlock, in_section: bool) -> bool:
-    if previous.kind != "text" or current.kind != "text":
-        return False
-    a, b = previous.locator.page, current.locator.page
-    if a is None or b is None or b not in (a, a + 1):
-        return False
-    if (
-        current.metadata.get("pdf_continues_prev") is True
-        and current.metadata["pdf_previous_index"] == previous.metadata["pdf_original_index"]
-    ):
-        return True
-    left_to_right = (
-        a == b
-        and previous.metadata["pdf_band"] == current.metadata["pdf_band"]
-        and previous.metadata["pdf_column"] == "left"
-        and current.metadata["pdf_column"] == "right"
-    )
-    known_next_page = (
-        a != b
-        and in_section
-        and all(block.metadata["pdf_layout"] != "unknown" for block in (previous, current))
-    )
-    next_char = current.text.lstrip()[0]
-    return (left_to_right or known_next_page) and (
-        previous.text.rstrip()[-1] not in _SENTENCE_END
-        and (next_char.islower() or "\u3400" <= next_char <= "\u9fff")
-    )

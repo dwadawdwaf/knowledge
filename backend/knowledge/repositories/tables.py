@@ -12,6 +12,7 @@ from sqlalchemy import (
     ForeignKey,
     Index,
     Integer,
+    SmallInteger,
     String,
     Text,
     UniqueConstraint,
@@ -21,7 +22,7 @@ from sqlalchemy import (
     Enum as SAEnum,
 )
 from sqlalchemy import text as sql_text
-from sqlalchemy.dialects.postgresql import JSONB, UUID
+from sqlalchemy.dialects.postgresql import ARRAY, JSONB, UUID
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
 
 from knowledge.domain.entities import BuildState, JobKind, JobState, Lifecycle
@@ -169,6 +170,20 @@ class Chunk(Base):
             postgresql_ops={"embedding": "vector_cosine_ops"},
         ),
     )
+
+
+class ChunkSearchTerms(Base):
+    __tablename__ = "chunk_search_terms"
+
+    chunk_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("chunks.id", ondelete="CASCADE"), primary_key=True,
+    )
+    terms: Mapped[list[str]] = mapped_column(ARRAY(Text), nullable=False)
+    boosted: Mapped[list[str]] = mapped_column(ARRAY(Text), nullable=False)
+    fields: Mapped[dict[str, list[str]] | None] = mapped_column(JSONB(none_as_null=True), nullable=True)
+    lexical_revision: Mapped[int] = mapped_column(SmallInteger, server_default="1")
+
+    __table_args__ = (Index("ix_chunk_search_terms_gin", "terms", postgresql_using="gin"),)
 
 
 class Job(Base):

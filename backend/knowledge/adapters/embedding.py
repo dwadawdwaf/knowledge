@@ -5,6 +5,7 @@ from __future__ import annotations
 import hashlib
 import json
 import math
+import socket
 import urllib.error
 import urllib.request
 from collections.abc import Sequence
@@ -13,7 +14,7 @@ from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
 from knowledge.adapters import outbound
 from knowledge.config import Settings
-from knowledge.domain.errors import ModelTimeout, ModelUnavailable
+from knowledge.domain.errors import ModelTimeout, ModelTransientUnavailable, ModelUnavailable
 
 
 class _EmbeddingItem(BaseModel):
@@ -95,9 +96,17 @@ class HttpEmbedder:
         except TimeoutError as exc:  # pragma: no cover - 依赖外部服务
             raise ModelTimeout("向量服务超时") from exc
         except urllib.error.HTTPError as exc:  # pragma: no cover
+            if exc.code == 429 or 500 <= exc.code < 600:
+                raise ModelTransientUnavailable(f"向量服务返回 {exc.code}") from exc
             raise ModelUnavailable(f"向量服务返回 {exc.code}") from exc
         except urllib.error.URLError as exc:  # pragma: no cover
-            raise ModelUnavailable("向量服务不可用") from exc
+            if isinstance(exc.reason, TimeoutError):
+                raise ModelTimeout("向量服务超时") from exc
+            if isinstance(exc.reason, ConnectionRefusedError):
+                raise ModelTransientUnavailable("向量服务连接被拒绝") from exc
+            if isinstance(exc.reason, socket.gaierror):
+                raise ModelTransientUnavailable("向量服务名称解析失败") from exc
+            raise ModelTransientUnavailable("向量服务不可用") from exc
         except ValidationError as exc:
             raise ModelUnavailable("向量服务响应结构无效") from exc
 

@@ -28,6 +28,11 @@ jobs:
         run: sudo apt-get update && sudo apt-get install -y fonts-wqy-zenhei
       - name: Install locked dependencies
         run: python -m pip install -r backend/requirements-dev.lock
+      - name: Prepare tokenizer vocabulary
+        run: |
+          python -c "import tiktoken; tiktoken.get_encoding('cl100k_base')"
+          python backend/scripts/prepare_ragflow_resources.py --data-dir "$RUNNER_TEMP/ragflow-resources"
+          echo "NLTK_DATA=$RUNNER_TEMP/ragflow-resources" >> "$GITHUB_ENV"
       - name: Run complete checks
         run: python -u backend/scripts/check.py
       - uses: actions/setup-node@v4

@@ -20,7 +20,6 @@ def settings(tmp_path) -> Settings:
         storage_root=str(tmp_path / "objects"),
         token_secret="test-secret",
         embedding_dim=1024,
-        pdf_parser_profile="legacy-v1",
     )
 
 

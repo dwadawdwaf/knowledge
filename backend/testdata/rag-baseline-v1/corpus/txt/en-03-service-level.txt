@@ -1,0 +1,39 @@
+﻿Service Level Agreement FAQ
+Document code: CC-TXT-EN-03
+
+1. Scope
+
+This page collects common questions about Service Level Agreement so customers can quickly judge scope and operation.
+
+It applies to the Standard and Enterprise plans of Lantu Knowledge Cloud; private deployments follow the contract and delivery documents.
+
+2. Frequently Asked Questions
+
+About Service Level Agreement (CC-TXT-EN-03), Q: How is the response time for the ember-121 plan calculated?
+A: The response time is 45 hours, as shown on the billing page or console.
+
+About Service Level Agreement (CC-TXT-EN-03), Q: How is the refund window for the ember-121 plan calculated?
+A: The refund window is 230 business days, as shown on the billing page or console.
+
+Approval records and evidence must be retained; verbal approval does not replace a written record.
+
+If a case is not covered here, ask the owning team in writing before acting.
+
+3. Plans and Limits
+
+The owning team samples execution quarterly, logs findings for correction, and requires a director's approval for exceptions involving money, authority, or customer data.
+
+Code	Item	Standard	Applicable Plan	Note
+CC-TXT-EN-03-R19	ember-121 plan	45 hours	Owen Zhou	Aisle B3-07
+CC-TXT-EN-03-R40	ember-121 plan (aux 1)	214 hours	Iris Gu	Applies only to auxiliary record 1
+CC-TXT-EN-03-R41	ember-121 plan (aux 2)	215 hours	Leo Xu	Applies only to auxiliary record 2
+CC-TXT-EN-03-R42	ember-121 plan (aux 3)	216 hours	Nina Holt	Applies only to auxiliary record 3
+CC-TXT-EN-03-R43	ember-121 plan (aux 4)	217 hours	Mira Chen	Applies only to auxiliary record 4
+
+4. Billing and Invoices
+
+This page is updated with the product and is not a separate service commitment. Service levels follow the formal agreement.
+
+5. Support Channels
+
+This page is updated with the product and is not a separate service commitment. Service levels follow the formal agreement.

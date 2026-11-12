@@ -22,7 +22,7 @@
 
 基础支持TXT、MD、CSV、文本PDF、DOCX、XLSX、PPTX；旧版DOC、扫描PDF、图片及Word内嵌图片OCR使用本机MinerU。
 支持混合检索、证据约束问答、对话存档、版本发布、同模型重建和删除阻断。
-统一使用文档单元优先分块；可选加权召回、本机重排和 OpenSearch BM25。配置见[运行手册](docs/runbook.md#本机批量重切与可选检索策略)。
+分块和检索采用 RAGFlow 式流程；PostgreSQL保存业务与引用，原生搜索可由OpenSearch提供，并保留显式的PostgreSQL兼容路径。首次使用需准备本地词典及对应搜索索引。配置、原生索引回填和切换见[运行手册](docs/runbook.md#原生-ragflow--opensearch-搜索)。
 上传/新版本可显式选基础解析或MinerU；服务准备与精度边界见运行手册，纯文本不伪装OCR。
 MinerU已准备D盘独立环境时，start.cmd自动启动或复用服务；默认离线，不自动下载模型，详见运行手册。
 不支持旧版XLS/PPT、表格聚合问答、通用回答兜底、语义目录规划、共享授权、账号体系或token流式输出。
@@ -33,7 +33,7 @@ MinerU已准备D盘独立环境时，start.cmd自动启动或复用服务；默�
 
 ```powershell
 .\backend\.venv\Scripts\python.exe -u backend/scripts/check.py
-node --test frontend/core.test.mjs
+node --test frontend/core.test.mjs frontend/events.test.mjs frontend/documents.test.mjs frontend/browse.test.mjs
 ```
 
 后端完整入口包括依赖预检、lint、类型检查、隔离库、迁移和HTTP验收，不调用真实模型。
@@ -44,7 +44,7 @@ node --test frontend/core.test.mjs
 | 文档 | 用途 |
 | --- | --- |
 | [AGENTS.md](AGENTS.md) | 编码代理约束与完成标准 |
-| [设计](docs/design.md) | 唯一实现规格，接口与核心不变量 |
+| [技术架构与设计](docs/design.md) | 总体架构、入库与检索数据流、数据模型、接口与核心不变量 |
 | [运行手册](docs/runbook.md) | 安装、启动、迁移、恢复和验证 |
 | [决策摘要](docs/decisions.md) | 关键取舍与重审条件 |
 | [当前问题](issues.md) | 仍有效的未完成事项及验收边界 |

@@ -97,17 +97,18 @@ def ask_once(
     for citation in data.get("citations", []):
         locator = citation.get("locator", {})
         position = []
-        if locator.get("page") is not None:
-            position.append(f"第 {locator['page']} 页")
-        if locator.get("paragraph") is not None:
-            position.append(f"段落索引 {locator['paragraph']}")
-        if locator.get("char_start") is not None:
-            position.append(f"字符 [{locator['char_start']}, {locator.get('char_end')})")
-        elif locator.get("precision") == "composite":
-            for source in locator.get("sources", []):
-                part = source.get("locator", {})
-                if part.get("precision") == "char" and part.get("char_start") is not None:
-                    position.append(f"字符 [{part['char_start']}, {part.get('char_end')})")
+        sources = [source["locator"] for source in locator.get("sources", [])] or [locator]
+        for source in sources:
+            location = []
+            if source.get("page") is not None:
+                location.append(f"第 {source['page']} 页")
+            if source.get("paragraph") is not None:
+                location.append(f"段落索引 {source['paragraph']}")
+            if source.get("row_start") is not None:
+                location.append(f"第 {source['row_start']} 行")
+            if source.get("char_start") is not None:
+                location.append(f"字符 [{source['char_start']}, {source.get('char_end')})")
+            position.append(" / ".join(location) or source.get("type", "未知"))
         print(f"\n引用 [{citation['index']}] {_safe_text(citation['title'])}", file=stream)
         print(
             "  定位：" + _safe_text("；".join(position) or locator.get("type", "未知")), file=stream
