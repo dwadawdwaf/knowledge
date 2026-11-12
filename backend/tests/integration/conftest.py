@@ -50,14 +50,7 @@ def settings(tmp_path) -> Settings:
         "token_secret": "test-secret",
         "evidence_min_score": 0.0,
     }
-    if not os.getenv("KS_TEST_REAL_EMBEDDER"):
-        # 默认封闭运行用哈希向量，阈值钉在哈希标定值（config 默认），
-        # 避免 .env 里为真实向量模型标定的阈值把哈希命中全部滤掉
-        overrides.update(similarity_floor=0.06, semantic_max_distance=0.85)
-    # 解析策略不跟随 .env：否则开发机开了 MinerU，集成测试就要依赖本机服务。
-    # 需要 MinerU 的用例自行覆盖 profile 与端点。
     overrides["document_parser_profile"] = "legacy-v1"
-    overrides["pdf_parser_profile"] = "legacy-v1"
     return Settings(**overrides)
 
 
@@ -73,3 +66,19 @@ def deps(settings) -> WorkerDeps:
         registry=build_parser_registry(),
         embedder=embedder,
     )
+
+
+@pytest.fixture
+def query_vector(deps, monkeypatch):
+    """引用契约用固定查询向量验证流程，检索效果由真实模型实验单独测量。"""
+    original = deps.embedder.embed
+    known = {}
+
+    def encode(texts):
+        return [known[value] if value in known else original([value])[0] for value in texts]
+
+    def bind(query, embedding):
+        known[query] = list(embedding)
+
+    monkeypatch.setattr(deps.embedder, "embed", encode)
+    return bind

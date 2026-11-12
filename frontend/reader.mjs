@@ -116,7 +116,9 @@ function map(metrics) {
   const box = el('section', 'chunk-map-box');
   box.append(el('h4', '', '分块覆盖'));
   box.append(el('p', 'chunk-map-hint', metrics.usable
-    ? `按原文字符区间排列，空隙不计入覆盖（已展示范围至字符 ${metrics.maxEnd}）。`
+    ? (metrics.compound
+      ? '按文档字符位置排列。组合分块分别标出每段原文，空白处未被该分块引用。'
+      : `按字符区间等比例排列，横向重叠即分块之间的共享内容（文档共 ${metrics.maxEnd} 字符）。`)
     : metrics.blockPrecision
       ? '解析只提供块内偏移，按块序等宽展示，不代表文档字符比例；页码与块序见下方明细。'
       : '当前分块缺少字符偏移，按顺序等宽展示，不代表实际覆盖比例。'));
@@ -125,17 +127,16 @@ function map(metrics) {
     const bar = el('span', 'chunk-seg');
     bar.style.left = `${segment.left}%`;
     bar.style.width = `${segment.width}%`;
-    if (segment.ranges?.length > 1) {
-      bar.classList.add('chunk-seg-composite');
-      const extent = segment.end - segment.start;
-      segment.ranges.forEach(([start, end]) => {
-        const range = el('span', 'chunk-seg-range');
-        range.style.left = `${100 * (start - segment.start) / extent}%`;
-        range.style.width = `${100 * (end - start) / extent}%`;
-        bar.append(range);
-      });
-    }
     bar.title = `#${segment.ordinal + 1} · ${segment.chars} 字${segment.page ? ` · 第 ${segment.page} 页` : ''}`;
+    if (segment.pieces?.length) {
+      bar.classList.add('chunk-seg-compound');
+      for (const piece of segment.pieces) {
+        const mark = el('span', 'chunk-source-seg');
+        mark.style.left = `${piece.left}%`;
+        mark.style.width = `${piece.width}%`;
+        bar.append(mark);
+      }
+    }
     canvas.append(bar);
   });
   box.append(canvas);

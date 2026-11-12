@@ -2,7 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { ApiClient, ApiError, reindexTarget, jobLabel, locatorText, chunkMetrics, warningLabel,
   readableSize, mediaLabel, parserLabel, groupByPage, splitHighlight, sharedWarnings,
-  visibleWarnings,
+  visibleWarnings, retrievalStatusMessage,
   turnsFromMessages, uploadForm, PARSER_OPTIONS } from './core.mjs';
 
 test('重新连接同一令牌也会隔离旧请求', async () => {
@@ -13,6 +13,13 @@ test('重新连接同一令牌也会隔离旧请求', async () => {
   api.token = 'synthetic';
   finish(Response.json({ data: { items: [{ id: 'stale' }] } }));
   await assert.rejects(pending, error => error.code === 'STALE_SESSION');
+});
+
+test('历史索引缺失给出可恢复提示，正常状态不打扰文件管理', () => {
+  assert.equal(retrievalStatusMessage(null), '');
+  assert.equal(retrievalStatusMessage({ missing_keyword_chunks: 0, legacy_pending_jobs: 0 }), '');
+  assert.match(retrievalStatusMessage({ missing_keyword_chunks: 134 }), /134.*文件管理仍可使用/);
+  assert.match(retrievalStatusMessage({ legacy_pending_jobs: 2 }), /2.*文件处理暂时暂停/);
 });
 
 test('跨页片段展示全部来源页，不冒充单一字符区间', () => {
@@ -105,17 +112,38 @@ test('分块度量按字符区间计算重叠与覆盖', () => {
   assert.equal(metrics.segments[0].left, 0); assert.equal(metrics.segments[0].width, 50);
   assert.equal(metrics.segments[1].left, 40);
 });
-test('复合分块的原文间隙不计入覆盖或重叠', () => {
-  const char = (char_start, char_end) => ({ precision: 'char', char_start, char_end });
+test('组合 Markdown 分块沿用同一文档的源偏移', () => {
+  const source = (char_start, char_end) => ({
+    locator: { type: 'md', precision: 'char', char_start, char_end },
+  });
   const metrics = chunkMetrics([
-    { ordinal: 0, text: '甲乙', locator: { precision: 'composite', sources: [
-      { locator: char(0, 1) }, { locator: char(5, 6) },
-    ] } },
-    { ordinal: 1, text: '丙丁乙', locator: char(3, 6) },
+    { ordinal: 0, text: 'heading\nbody', locator: {
+      type: 'md', precision: 'composite', sources: [source(4, 11), source(13, 17)],
+    } },
+    { ordinal: 1, text: 'next', locator: { type: 'md', precision: 'char', char_start: 20, char_end: 24 } },
   ]);
   assert.equal(metrics.usable, true);
-  assert.deepEqual(metrics.segments[0].ranges, [[0, 1], [5, 6]]);
-  assert.equal(metrics.overlaps, 1);
+  assert.equal(metrics.compound, true);
+  assert.equal(metrics.overlaps, 0);
+  assert.equal(metrics.segments[0].start, 4);
+  assert.equal(metrics.segments[0].end, 17);
+});
+test('重复的祖先范围保留比例且间隔不计入重叠', () => {
+  const source = (char_start, char_end) => ({ locator: { type: 'md', precision: 'char', char_start, char_end } });
+  const composite = (ordinal, ranges) => ({ ordinal, text: 'heading\nbody', locator: {
+    type: 'md', precision: 'composite', sources: ranges.map(range => source(...range)),
+  } });
+  const metrics = chunkMetrics([
+    composite(0, [[0, 10], [20, 30]]),
+    composite(1, [[0, 10], [45, 55]]),
+    { ordinal: 2, text: 'gap', locator: source(38, 41).locator },
+  ]);
+  assert.equal(metrics.usable, true);
+  assert.equal(metrics.overlaps, 10);
+  assert.equal(metrics.segments[0].left, metrics.segments[1].left);
+  assert.deepEqual(metrics.segments[1].pieces, [
+    { left: 0, width: (10 / 55) * 100 }, { left: (45 / 55) * 100, width: (10 / 55) * 100 },
+  ]);
 });
 test('缺字符偏移时退化为等宽且不声明重叠', () => {
   const metrics = chunkMetrics([
@@ -231,6 +259,10 @@ test('表格按工作表与行定位，不冒充字符区间', () => {
     char_start: 0, char_end: 307, precision: 'sheet',
   });
   assert.equal(text, '工作表《资产清单》 · 第 1–9 行');
+  assert.equal(locatorText({
+    type: 'docx', block: 2, row_start: 4, row_end: 4,
+    char_start: 0, char_end: 29, precision: 'block',
+  }), '表格 2 · 第 4 行');
   assert.equal(mediaLabel('application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'), 'XLSX');
   assert.equal(warningLabel('xlsx_rows_truncated'), '表格行数超上限，仅索引前若干行');
   assert.equal(warningLabel('csv_rows_truncated'), '表格行数超上限，仅索引前若干行');

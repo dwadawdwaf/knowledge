@@ -71,10 +71,16 @@ class SearchHitOut(BaseModel):
     score_type: str
 
 
+class RetrievalStatusOut(BaseModel):
+    status: str
+    missing_keyword_chunks: int
+    legacy_pending_jobs: int
+
+
 class SearchResultOut(BaseModel):
     mode: str
     hits: list[SearchHitOut]
-    score_type: str = "rrf"
+    score_type: str = "ragflow_hybrid"
     degraded: bool = False
     warnings: list[str] = Field(default_factory=list)
 

@@ -22,8 +22,10 @@ SCRIPTS = (
     "check",
     "test_policy",
     "workbench",
-    "rechunk_local",
     "browser_smoke",
+    "backfill_ragflow_terms",
+    "prepare_ragflow_resources",
+    "sync_native_index",
 )
 
 

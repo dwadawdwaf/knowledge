@@ -37,6 +37,36 @@ try {
   async function setFile(selector, file) { const dom = await send('DOM.getDocument'); const node = await send('DOM.querySelector', { nodeId: dom.root.nodeId, selector }); assert.ok(node.nodeId, '文件输入框未找到'); await send('DOM.setFileInputFiles', { nodeId: node.nodeId, files: [file] }); }
   const rowButton = (file, label) => js(`(()=>{const row=[...document.querySelectorAll('tbody tr')].find(r=>r.textContent.includes(${JSON.stringify(file)}));const target=[...row.querySelectorAll('button')].find(n=>n.textContent.trim()===${JSON.stringify(label)});target.click();return true})()`);
   await send('Page.enable'); await send('Runtime.enable');
+  console.log('[索引提示] 注入历史索引缺口，验证工作台可连接、状态检查失败不阻断、恢复后提示消失');
+  let indexStatusMode = 'missing';
+  const indexStatusInterceptor = async event => {
+    const message = JSON.parse(event.data);
+    if (message.method !== 'Fetch.requestPaused') return;
+    const failed = indexStatusMode === 'failed';
+    const payload = failed
+      ? { error: { code: 'SERVICE_UNAVAILABLE' } }
+      : { data: { status: indexStatusMode === 'missing' ? 'attention' : 'ready', missing_keyword_chunks: indexStatusMode === 'missing' ? 134 : 0, legacy_pending_jobs: 0 } };
+    await send('Fetch.fulfillRequest', {
+      requestId: message.params.requestId, responseCode: failed ? 503 : 200,
+      responseHeaders: [{ name: 'Content-Type', value: 'application/json' }],
+      body: Buffer.from(JSON.stringify(payload)).toString('base64'),
+    });
+  };
+  socket.addEventListener('message', indexStatusInterceptor);
+  await send('Fetch.enable', { patterns: [{ urlPattern: '*/api/v1/search/status', requestStage: 'Request' }] });
+  const statusTestUrl = new URL(process.env.KS_UI_URL);
+  statusTestUrl.searchParams.set('index-warning-test', randomUUID());
+  await send('Page.navigate', { url: statusTestUrl.toString() });
+  await wait(`document.querySelector('#app').dataset.connected === 'true' && document.querySelector('#retrieval-notice')?.textContent.includes('134')`);
+  await shot('index-warning');
+  indexStatusMode = 'failed';
+  await js(`document.querySelector('#retrieval-notice button').click()`);
+  await wait(`document.querySelector('#retrieval-notice')?.textContent.includes('暂时无法检查')`);
+  assert.equal(await js(`document.querySelector('#app').dataset.connected`), 'true');
+  indexStatusMode = 'ready';
+  await js(`document.querySelector('#retrieval-notice button').click()`);
+  await wait(`!document.querySelector('#retrieval-notice')`);
+  await send('Fetch.disable'); socket.removeEventListener('message', indexStatusInterceptor);
   await wait(`document.querySelector('#content .primary')`);
   console.log('[浏览器 1/9] 打开带令牌的地址即自动连接，地址栏随即清除令牌');
   await wait(`document.querySelector('#app').dataset.connected === 'true'`);
@@ -74,6 +104,7 @@ try {
   const chunkView = await js(`({
     cards: document.querySelectorAll('#chunks-content .chunk-card').length,
     segments: document.querySelectorAll('#chunks-content .chunk-seg').length,
+    sourceSegments: document.querySelectorAll('#chunks-content .chunk-source-seg').length,
     stats: [...document.querySelectorAll('#chunks-content .chunk-stat strong')].map(node => node.textContent),
     firstTag: document.querySelector('#chunks-content .chunk-tag')?.textContent,
     overlapWarned: document.querySelector('.chunk-map-hint')?.textContent.includes('等宽') || false,
@@ -81,6 +112,7 @@ try {
   assert.equal(chunkView.cards, chunkView.segments, '覆盖条必须与明细一一对应');
   assert.ok(Number(chunkView.stats[0]) >= chunkView.cards, '总数不应小于已展示块数');
   assert.equal(chunkView.overlapWarned, false, '有字符偏移时不应退化为等宽展示');
+  if (process.env.KS_UI_RAGFLOW === '1') assert.ok(chunkView.sourceSegments > 0, '组合分块必须绘制实际来源区间');
   assert.equal(chunkView.firstTag, '#1');
   await shot('chunks');
   await js(`document.querySelector('#chunks-content .chunk-toggle').click()`);
@@ -144,6 +176,10 @@ try {
   await wait(`document.querySelector('#search-query')`);
   await js(`document.querySelector('.query-box textarea').value='会议室使用后需要做什么？'; document.querySelector('.query-box').requestSubmit()`);
   await wait(`document.querySelector('.result-card')`); await shot('retrieval');
+  if (process.env.KS_UI_RAGFLOW === '1') {
+    assert.ok(await js(`document.querySelector('.search-page').textContent.includes('混合相关度')`),
+      '新检索方案应显示混合相关度');
+  }
   assert.ok(await js(`document.querySelector('.result-card .result-kb')?.textContent.includes('行政制度')`),
     '检索结果应标注所属知识库');
   assert.equal(await js(`getComputedStyle(document.querySelector('.search-layout')).flexDirection`), 'column',

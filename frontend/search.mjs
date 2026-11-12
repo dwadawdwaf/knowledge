@@ -10,7 +10,7 @@ const MODES = [
   ['keyword', '关键词检索', '根据词项匹配排序，适合查找专有名词'],
 ];
 
-const SCORE_LABEL = { bm25: 'BM25', bm25_rrf: 'BM25 + 向量融合' };
+const SCORE_LABEL = { ragflow_hybrid: '混合相关度', ragflow_lexical: '原生关键词相关度', term_overlap: '关键词相关度', cosine: '向量相似度' };
 
 const GUIDE = [
   ['quote', '命中片段', '截取命中的那段原文，可直接复制或跳到文件定位'],

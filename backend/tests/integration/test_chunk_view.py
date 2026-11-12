@@ -36,11 +36,9 @@ def _publish(session, settings, deps, actor: Actor, *, process: bool = True, dat
 
 
 def test_chunks_are_ordered_and_carry_locators(session, settings, deps):
-    # 既验证多来源定位，也用无自然边界的长段落验证兜底窗口重叠。
-    settings = settings.model_copy(update={"chunk_max_chars": 120, "chunk_overlap_chars": 20})
     actor = Actor(subject_id="ui-owner", tenant_id="default")
-    data = SAMPLE + ("\n\n" + "甲" * 250).encode()
-    _, upload = _publish(session, settings, deps, actor, data=data)
+    source = ("# 设备规则\n\n" + "巡检完成后记录阀门压力。" * 180).encode()
+    _, upload = _publish(session, settings, deps, actor, data=source)
 
     view = document_service.chunks(session, actor, upload.document_id)
 
@@ -50,18 +48,17 @@ def test_chunks_are_ordered_and_carry_locators(session, settings, deps):
     assert view["truncated"] is False
     ordinals = [item["ordinal"] for item in view["items"]]
     assert ordinals == sorted(ordinals)
-    spans = []
-    text = data.decode()
-    assert any(item["locator"]["precision"] == "composite" for item in view["items"])
-    for item in view["items"]:
-        for source in item["locator"]["sources"]:
-            start, end = source["locator"]["char_start"], source["locator"]["char_end"]
-            spans.append((start, end))
-            assert item["text"][source["chunk_start"]:source["chunk_end"]] == text[start:end]
+    spans = [
+        (source["locator"]["char_start"], source["locator"]["char_end"])
+        for item in view["items"] for source in item["locator"]["sources"]
+    ]
     assert all(end > start for start, end in spans)
     assert all(item["text"].strip() for item in view["items"])
-    # 长段落按窗口滑动，相邻分块应共享部分字符，视图才能画出重叠。
-    assert any(spans[index + 1][0] < spans[index][1] for index in range(len(spans) - 1))
+    # 新流程不添加重叠，每段来源仍能回到当前文档原文。
+    for item in view["items"]:
+        for part in item["locator"]["sources"]:
+            loc = part["locator"]
+            assert item["text"][part["chunk_start"]:part["chunk_end"]] == source.decode()[loc["char_start"]:loc["char_end"]]
 
 
 def test_chunks_respect_limit(session, settings, deps):

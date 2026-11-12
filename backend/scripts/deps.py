@@ -420,8 +420,6 @@ def ensure_dependencies(
 ) -> None:
     """启动本机依赖并验证两个模型端点；失败抛 DependencyError。"""
     ensure_database(settings, progress=progress)
-    if settings.retrieval_profile == "bm25-v1" and settings.opensearch_url:
-        ensure_opensearch(settings.opensearch_url, progress=progress)
     # 代理开着又退出是这台机器的常态；明确说出来，不靠看日志才发现走了直连。
     from knowledge.adapters.outbound import dead_local_proxy
 
@@ -455,29 +453,6 @@ def ensure_dependencies(
         progress=progress,
     )
     progress(f"[依赖] 生成自检通过：{settings.generator_model}")
-
-
-def ensure_opensearch(url: str, *, progress: Callable[[str], None]) -> None:
-    from knowledge.adapters.outbound import open_request
-
-    if sys.platform == "win32" and url.rstrip("/") == "http://127.0.0.1:19277":
-        command = BACKEND.parent / "start-opensearch.ps1"
-        try:
-            subprocess.run(
-                ["powershell.exe", "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", str(command)],
-                check=True, timeout=90,
-            )
-        except (OSError, subprocess.SubprocessError):
-            raise DependencyError("本机 OpenSearch 未启动，请检查启动提示与本地日志。") from None
-    try:
-        endpoint = urllib.request.Request(url)
-        with open_request(endpoint, timeout=3, follow_redirects=False) as response:
-            is_opensearch = json.load(response)["version"]["distribution"] == "opensearch"
-    except (OSError, ValueError, KeyError, TypeError):
-        is_opensearch = False
-    if not is_opensearch:
-        raise DependencyError("BM25 检索需要可用的本机 OpenSearch，请检查 KS_OPENSEARCH_URL。")
-    progress("[依赖] OpenSearch BM25 已就绪")
 
 
 def main() -> int:

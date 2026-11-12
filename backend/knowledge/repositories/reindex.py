@@ -13,16 +13,6 @@ from knowledge.repositories import jobs as job_repo
 from knowledge.repositories.tables import Document, DocumentVersion, IndexBuild, Job, KnowledgeBase
 
 
-def owned_document_ids(session: Session, actor: Actor) -> list[uuid.UUID]:
-    return list(session.scalars(
-        select(Document.id).join(KnowledgeBase, KnowledgeBase.id == Document.kb_id).where(
-            KnowledgeBase.owner_id == actor.subject_id,
-            KnowledgeBase.status == Lifecycle.ACTIVE,
-            Document.status == Lifecycle.ACTIVE,
-        ).order_by(Document.id)
-    ))
-
-
 def lock_document(session: Session, actor: Actor, document_id: uuid.UUID) -> Document:
     document = session.scalar(
         select(Document)
@@ -122,14 +112,13 @@ def enqueue(
     document_id: uuid.UUID,
     source: IndexBuild,
     max_attempts: int,
-    chunk_config: dict,
 ) -> tuple[IndexBuild, Job, int]:
     document = lock_document(session, actor, document_id)
     get_version(session, actor, document_id, source.version_id)
     build = IndexBuild(
         version_id=source.version_id,
         state=BuildState.QUEUED,
-        chunk_config=chunk_config,
+        chunk_config=dict(source.chunk_config),
         embedding_model=source.embedding_model,
         embedding_dim=source.embedding_dim,
         warnings=[],

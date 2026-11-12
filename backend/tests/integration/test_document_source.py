@@ -30,6 +30,7 @@ def _upload(
         kb_id=kb.id,
         filename=filename,
         data=data,
+        parser_profile="legacy-v1",
         embedder_model=deps.embedder.model,
         embedder_dim=deps.embedder.dimension,
     )

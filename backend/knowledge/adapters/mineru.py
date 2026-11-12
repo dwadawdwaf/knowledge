@@ -54,8 +54,15 @@ class HtmlText(HTMLParser):
     def __init__(self) -> None:
         super().__init__(convert_charrefs=True)
         self.parts: list[str] = []
+        self.length = 0
         self.images: list[str] = []
         self.hidden = 0
+        self.first_row: list[str] | None = None
+        self.in_first_row = False
+
+    def _append(self, value: str) -> None:
+        self.parts.append(value)
+        self.length += len(value)
 
     def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
         if tag in {"script", "style"}:
@@ -63,19 +70,112 @@ class HtmlText(HTMLParser):
         elif tag == "img" and not self.hidden:
             self.images.append(dict(attrs).get("src") or "")
         elif tag in {"tr", "br", "p"}:
-            self.parts.append("\n")
+            if tag == "tr" and self.first_row is None:
+                self.first_row = []
+                self.in_first_row = True
+            self._append("\n")
+        elif self.in_first_row and tag in {"td", "th"} and self.first_row is not None:
+            attributes = dict(attrs)
+            simple = attributes.get("scope") not in {"row", "rowgroup"} and all(
+                attributes.get(span, "1") == "1" for span in ("rowspan", "colspan")
+            )
+            self.first_row.append("th" if tag == "th" and simple else "td")
 
     def handle_endtag(self, tag: str) -> None:
         if tag in {"script", "style"}:
             self.hidden = max(0, self.hidden - 1)
         elif tag in {"td", "th"}:
-            self.parts.append("\t")
+            self._append("\t")
         elif tag in {"tr", "p"}:
-            self.parts.append("\n")
+            if tag == "tr":
+                self.in_first_row = False
+            self._append("\n")
 
     def handle_data(self, data: str) -> None:
         if not self.hidden:
-            self.parts.append(data)
+            self._append(data)
+
+
+class _HtmlTableText(HtmlText):
+    """记录显式行、单元格与合并范围，偏移指向相同的线性文本。"""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.table = False
+        self.seen_table = False
+        self.head = False
+        self.valid = True
+        self.rows: list[tuple[int, int, bool, list[tuple[int, int, int, int]]]] = []
+        self.cells: list[tuple[int, int, int, int]] | None = None
+        self.cell: tuple[str, int, int, int] | None = None
+        self.row_start = 0
+        self.header = False
+        self.cell_count = 0
+
+    def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
+        super().handle_starttag(tag, attrs)
+        if self.hidden or not self.valid:
+            return
+        if tag == "table":
+            self.valid = not self.seen_table
+            self.table = self.seen_table = True
+        elif self.table and tag == "thead":
+            self.head = True
+        elif self.table and tag == "tr":
+            self.valid = self.cells is None and len(self.rows) < 4096
+            self.cells = []
+            self.row_start = self.length
+            self.header = True
+        elif self.table and tag in {"td", "th"}:
+            attributes = dict(attrs)
+            spans = [attributes.get(name, "1") for name in ("rowspan", "colspan")]
+            if self.cells is None or self.cell is not None or self.cell_count >= 16384 or any(
+                not isinstance(span, str) or not re.fullmatch(r"[0-9]{1,3}", span) or not 1 <= int(span) <= 256
+                for span in spans
+            ):
+                self.valid = False
+                return
+            self.cell_count += 1
+            self.header = self.header and (self.head or tag == "th") and attributes.get("scope") not in {
+                "row", "rowgroup",
+            }
+            self.cell = (tag, self.length, int(spans[0] or "1"), int(spans[1] or "1"))
+
+    def handle_endtag(self, tag: str) -> None:
+        if self.valid and self.table and not self.hidden:
+            if tag in {"td", "th"}:
+                if self.cells is None or self.cell is None or tag != self.cell[0]:
+                    self.valid = False
+                else:
+                    _, start, rowspan, colspan = self.cell
+                    self.cells.append((start, self.length, rowspan, colspan))
+                    self.cell = None
+            elif tag == "tr":
+                if not self.cells or self.cell is not None:
+                    self.valid = False
+                else:
+                    self.rows.append((self.row_start, self.length, self.header, self.cells))
+                    self.cells = None
+            elif tag == "thead":
+                self.head = False
+            elif tag == "table":
+                self.valid = self.cells is None and not self.head
+                self.table = False
+        super().handle_endtag(tag)
+
+    def row_metadata(self, left: int, length: int) -> list[tuple[int, int, bool, list[tuple[int, int, int, int]]]]:
+        if not self.valid or self.table:
+            return []
+
+        def relative(offset: int) -> int:
+            return min(length, max(0, offset - left))
+
+        return [
+            (relative(start), relative(end), header, [
+                (relative(a), relative(b), rowspan, colspan) for a, b, rowspan, colspan in cells
+            ])
+            for start, end, header, cells in self.rows
+        ]
 
 
 def _pdf_boxes(middle: object, producer: dict) -> tuple[dict[int, list[dict]], bool]:
@@ -274,10 +374,19 @@ def _normalize_content(
                 value,
                 re.IGNORECASE,
             ):
-                parser = HtmlText()
+                parser = _HtmlTableText() if kind == "table" else HtmlText()
                 parser.feed(value)
-                value = "".join(parser.parts).strip()
+                parser.close()
+                linearized = "".join(parser.parts)
+                value = linearized.strip()
                 warnings.add("mineru_table_linearized")
+                if kind == "table" and parser.first_row and all(cell == "th" for cell in parser.first_row):
+                    metadata["first_row_header"] = True
+                if isinstance(parser, _HtmlTableText) and parser.seen_table:
+                    rows = parser.row_metadata(len(linearized) - len(linearized.lstrip()), len(value))
+                    metadata["table_rows"] = rows
+                    if not rows:
+                        warnings.add("mineru_table_structure_unavailable")
             paginated = media == "application/pdf" or media.startswith("image/")
             if not paginated:
                 warnings.add("mineru_native_location_unavailable")

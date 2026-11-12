@@ -35,7 +35,7 @@ def notifications(connection, timeout: float = 0.2):
 
 
 def test_commit_owner_isolation_rollback_and_heartbeat(session, settings, deps):
-    migration = importlib.import_module("migrations.versions.0008_document_events")
+    migration = importlib.import_module("migrations.versions.0011_document_events")
     session.execute(text(migration.INSTALL_SQL))
     session.commit()
     actor = Actor("event-owner", "default")
@@ -74,7 +74,7 @@ def test_commit_owner_isolation_rollback_and_heartbeat(session, settings, deps):
 
 
 def test_detached_jobs_do_not_break_notifications(session):
-    migration = importlib.import_module("migrations.versions.0008_document_events")
+    migration = importlib.import_module("migrations.versions.0011_document_events")
     session.execute(text(migration.INSTALL_SQL))
     jobs.create(session, JobKind.CLEANUP, uuid.uuid4(), 3)
     session.commit()
