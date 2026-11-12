@@ -20,6 +20,7 @@ import sys
 import tempfile
 import time
 import zlib
+from concurrent.futures import ThreadPoolExecutor
 from datetime import UTC, datetime
 from pathlib import Path, PurePosixPath
 from typing import Any
@@ -296,6 +297,15 @@ def main() -> None:
         title = f"OmniDocBench · 中文页（{len(pages)} 页）"
         kb = library(client, title)
         say(f"[知识库] {kb}")
+
+        # 全量页并行预取到缓存，避免解析等待期间穿插串行下载拖长总时长。
+        say(f"[图片] 预取 {len(pages)} 张页面图…")
+        fetched = 0
+        with ThreadPoolExecutor(max_workers=6) as pool:
+            for _ in pool.map(lambda item: image(net, item), pages):
+                fetched += 1
+                if fetched % 60 == 0 or fetched == len(pages):
+                    say(f"[图片] {fetched}/{len(pages)}")
 
         first = 1
         for batch in batches:
