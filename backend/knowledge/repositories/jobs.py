@@ -165,6 +165,17 @@ def _terminal_build(session: Session, job: Job, state: JobState) -> None:
     build = session.get(IndexBuild, job.build_id)
     if build is not None and build.state in (BuildState.QUEUED, BuildState.RUNNING):
         build.state = BuildState.FAILED if state == JobState.FAILED else BuildState.CANCELLED
+    _release_pending(session, job)
+    session.flush()
+
+
+def _release_pending(session: Session, job: Job) -> None:
+    """任务终态后不再占用文档的待发布指针，避免悬挂引用阻塞后续清理与重建。"""
+    if job.build_id is None or job.resource_id is None:
+        return
+    document = session.get(Document, job.resource_id)
+    if document is not None and document.pending_build_id == job.build_id:
+        document.pending_build_id = None
 
 
 def _requeue(
@@ -231,6 +242,7 @@ def cancel_open_for_document(session: Session, document_id: uuid.UUID) -> None:
         job.state = JobState.CANCELLED
         job.lease_token = None
         job.lease_expires_at = None
+        _terminal_build(session, job, JobState.CANCELLED)
     session.flush()
 
 
