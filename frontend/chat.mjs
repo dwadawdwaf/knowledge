@@ -1,9 +1,10 @@
 // 对话页：800px 居中列、时间分隔、用户气泡右对齐、助手答案无气泡 + 引用芯片。
 // 提问走 SSE：先显示真实执行阶段，再边收边渲染正文，最后用校验后的答案覆盖。
-import { el, icon, toast, autoGrow, clockLabel, dayLabel, loading } from './dom.mjs';
+// 每一轮回答都保留自己的执行过程（可展开/折叠）；发送与停止共用输入框右下角这一个按钮。
+import { el, icon, toast, autoGrow, clockLabel, dayLabel, loading, noticeLine } from './dom.mjs';
 import { warningLabel, visibleWarnings } from './core.mjs';
 import { scopeControl, scopeIds, scopeLabel } from './scope.mjs';
-import { streamAnswer } from './stream.mjs';
+import { streamAnswer, sendButtonView, EXECUTION_STATE } from './stream.mjs';
 
 const MODE_LABEL = { hybrid: '混合检索', semantic: '语义检索', keyword: '关键词检索' };
 
@@ -108,6 +109,30 @@ function hero(app) {
   return box;
 }
 
+/* -------------------------------------------------------- 发送 / 停止 */
+
+// 正在流式返回本轮回答。与 app.state.busy 分开：busy 还覆盖上传和检索。
+let composerStreaming = false;
+let composerButton = null;
+
+function applySendButton(button, streaming) {
+  if (!button) return;
+  const view = sendButtonView(streaming);
+  button.className = view.className;
+  button.setAttribute('aria-label', view.label);
+  button.title = streaming ? view.label : '';
+  button.replaceChildren(icon(view.icon));
+}
+
+function setStreaming(streaming) {
+  composerStreaming = streaming;
+  // 视图可能被重建过，按钮引用失效时按 class 重新取一次。
+  if (!composerButton?.isConnected) {
+    composerButton = document.querySelector('.chat-compose .send-btn') || composerButton;
+  }
+  applySendButton(composerButton, streaming);
+}
+
 function composer(app) {
   const wrap = el('div', 'composer-wrap');
   const form = el('form', 'chat-compose');
@@ -132,8 +157,14 @@ function composer(app) {
   tools.append(scopeControl(app));
   const send = el('button', 'send-btn');
   send.type = 'submit';
-  send.setAttribute('aria-label', '发送问题');
-  send.append(icon('arrow-up'));
+  // 生成中同一个按钮就是停止按钮：拦下提交，改为中断当前流。
+  send.addEventListener('click', event => {
+    if (!composerStreaming) return;
+    event.preventDefault();
+    cancelActiveRun();
+  });
+  composerButton = send;
+  applySendButton(send, composerStreaming);
   tools.append(send);
   bar.append(tools);
 
@@ -143,6 +174,8 @@ function composer(app) {
 
   form.addEventListener('submit', event => {
     event.preventDefault();
+    // 兜底：按钮点击未拦住提交时，这里也不允许并发第二个请求。
+    if (composerStreaming) { cancelActiveRun(); return; }
     const question = input.value.trim();
     if (!question) return;
     if (!app.state.connected) { app.openConnection(); return; }
@@ -180,7 +213,8 @@ async function ask(app, question) {
 
   const controller = new AbortController();
   activeRun = { controller, turnId: turn.id };
-  const live = new LiveAnswer(app, node, controller);
+  setStreaming(true);
+  const live = new LiveAnswer(app, node);
   const sameSession = () => revision === app.api.revision && app.currentSession() === session;
 
   try {
@@ -193,14 +227,21 @@ async function ask(app, question) {
       {
         signal: controller.signal,
         // 用回调参数里的 run：此时外层的 run 还没赋值（await 尚未返回）。
+        // 同时把阶段同步到 turn：流式中途切换页面再回来仍能看到当前进度。
         onEvent: (change, _kind, _data, state) => {
+          turn.stages = state.stages;
           if (!sameSession()) return;
           live.update(state, change);
         },
       },
     );
     session.loaded = true;
-    if (run.error) {
+    // 三种收尾分开记：停止与失败都不能写成 completed，停止还要保留已到达的正文。
+    if (run.status === 'stopped') {
+      turn.status = 'stopped';
+      turn.text = run.text;
+      turn.stages = run.stages;
+    } else if (run.error) {
       turn.status = 'error';
       turn.error = run.error;
       turn.stages = run.stages;
@@ -214,6 +255,7 @@ async function ask(app, question) {
     turn.error = error;
   } finally {
     activeRun = null;
+    setStreaming(false);
     if (revision === app.api.revision) {
       app.state.busy = false;
       if (app.state.page === 'chat' && app.currentSession() === session) {
@@ -238,15 +280,72 @@ export function cancelActiveRun() {
 }
 
 /**
+ * 一轮回答的执行过程。同一份结构贯穿生成中、完成、停止与失败：
+ * 生成中默认展开，结束后由调用方决定折叠，但阶段数据（stages）永不丢弃。
+ */
+class ExecutionPanel {
+  constructor({ status = 'running', stages = [], expanded = false } = {}) {
+    this.status = status;
+    this.stages = stages;
+    this.expanded = expanded;
+
+    this.root = el('div', 'exec');
+    this.toggle = el('button', 'exec-toggle');
+    this.toggle.type = 'button';
+    this.mark = el('span', 'exec-mark');
+    this.title = el('span', 'exec-title');
+    this.hint = el('span', 'exec-hint');
+    this.chevron = el('span', 'exec-chevron');
+    this.chevron.append(icon('chevron'));
+    this.toggle.append(this.mark, this.title, this.hint, this.chevron);
+    this.list = el('div', 'stages');
+    this.root.append(this.toggle, this.list);
+    this.toggle.addEventListener('click', () => this.setExpanded(!this.expanded));
+    this.render();
+  }
+
+  setStages(stages) {
+    this.stages = stages || [];
+    this.render();
+  }
+
+  setStatus(status) {
+    this.status = status;
+    this.render();
+  }
+
+  setExpanded(expanded) {
+    this.expanded = expanded;
+    this.render();
+  }
+
+  render() {
+    const meta = EXECUTION_STATE[this.status] || EXECUTION_STATE.running;
+    this.root.dataset.status = this.status;
+    this.mark.replaceChildren(icon(meta.icon));
+    this.title.textContent = meta.label;
+    this.hint.textContent = this.expanded ? '收起' : '查看执行过程';
+    this.toggle.setAttribute('aria-expanded', String(this.expanded));
+    this.list.hidden = !this.expanded;
+    this.list.replaceChildren(...this.stages.map(stageRow));
+  }
+}
+
+/** 一轮的执行过程面板：结束后默认折叠，但保留可点击入口，且不随重绘丢失阶段。 */
+function executionBlock(stages, status, expanded = false) {
+  if (!stages?.length) return null;
+  return new ExecutionPanel({ status, stages, expanded }).root;
+}
+
+/**
  * 流式期间就地更新单个回答节点：阶段列表随事件推进，正文逐块追加，
- * 引用校验通过后挂上芯片。完成或失败时由 `turnNode` 重新渲染整轮。
+ * 引用校验通过后挂上芯片。完成、停止或失败时由 `turnNode` 重新渲染整轮。
  */
 class LiveAnswer {
-  constructor(app, turnNodeEl, controller) {
+  constructor(app, turnNodeEl) {
     this.app = app;
-    this.controller = controller;
     this.answer = turnNodeEl.querySelector('.answer-message');
-    this.stages = el('div', 'stages');
+    this.panel = new ExecutionPanel({ status: 'running', expanded: true });
     this.body = el('div', 'answer-body streaming');
     // 首块正文到达前不占位：检索阶段只显示阶段列表。
     this.body.hidden = true;
@@ -257,20 +356,15 @@ class LiveAnswer {
 
   attach() {
     if (!this.answer) return;
-    const head = el('div', 'answer-head');
-    const avatar = el('span', 'answer-avatar');
-    avatar.append(icon('sparkle'));
-    head.append(avatar, el('strong', '', '正在回答'));
-    const stop = el('button', 'stop-btn', '停止生成');
-    stop.type = 'button';
-    stop.addEventListener('click', () => this.controller.abort());
-    head.append(stop);
-    this.answer.replaceChildren(head, this.stages, this.body, this.foot);
+    this.answer.replaceChildren(headBlock('正在回答'), this.panel.root, this.body, this.foot);
   }
 
   update(run, change) {
     if (!this.answer) return;
-    if (change === 'stage' || change === 'error' || change === 'final') this.renderStages(run);
+    if (['stage', 'error', 'final', 'stopped'].includes(change)) {
+      this.panel.setStages(run.stages);
+      this.panel.setStatus(run.status);
+    }
     if (change === 'delta') {
       this.text = run.text;
       this.scheduleText();
@@ -278,10 +372,6 @@ class LiveAnswer {
     if (change === 'stage' && run.citations.length && !this.foot.childElementCount) {
       this.renderCitations(run.citations);
     }
-  }
-
-  renderStages(run) {
-    this.stages.replaceChildren(...run.stages.map(stageRow));
   }
 
   renderCitations(citations) {
@@ -315,17 +405,11 @@ function stageRow(stage) {
   const mark = el('span', 'stage-mark');
   if (stage.state === 'active') mark.append(el('span', 'spinner'));
   else if (stage.state === 'failed') mark.append(icon('alert'));
+  else if (stage.state === 'stopped') mark.append(el('span', 'stage-dot'));
   else mark.append(icon('check'));
   row.append(mark, el('span', 'stage-label', stage.label));
   if (stage.detail) row.append(el('span', 'stage-detail', stage.detail));
   return row;
-}
-
-function stageBlock(stages = []) {
-  if (!stages.length) return null;
-  const box = el('div', 'stages');
-  box.append(...stages.map(stageRow));
-  return box;
 }
 
 function scrollToEnd() {
@@ -347,29 +431,38 @@ function turnNode(app, turn, previousAt) {
 
   const answer = el('div', 'answer-message');
   if (turn.status === 'pending') {
-    const stages = stageBlock(turn.stages);
-    if (stages) {
-      answer.append(headBlock('正在回答', stopButton()), stages);
-    } else {
-      const thinking = el('div', 'thinking');
-      thinking.append(el('span', 'spinner'), el('span', '', '正在准备回答…'));
-      answer.append(headBlock('正在回答', stopButton()), thinking);
-    }
+    // 流式开始前由 LiveAnswer 就地接管；重绘时若已有阶段，直接按展开状态还原。
+    const panel = executionBlock(turn.stages, 'running', true);
+    answer.append(headBlock('正在回答'), ...(panel ? [panel] : [thinkingBlock()]));
+  } else if (turn.status === 'stopped') {
+    answer.append(...stoppedBlocks(turn));
   } else if (turn.status === 'error') {
-    const stages = stageBlock(turn.stages);
-    answer.append(headBlock('请求未完成'), ...(stages ? [stages] : []), app.errorBox(turn.error));
+    const panel = executionBlock(turn.stages, 'error');
+    answer.append(headBlock('执行失败'), app.errorBox(turn.error), ...(panel ? [panel] : []));
   } else {
-    answer.append(...answerBlocks(app, turn.answer, turn.scope));
+    answer.append(...answerBlocks(app, turn.answer, turn.scope, turn));
   }
   wrap.append(answer);
   return wrap;
 }
 
-function stopButton() {
-  const stop = el('button', 'stop-btn', '停止生成');
-  stop.type = 'button';
-  stop.addEventListener('click', () => cancelActiveRun());
-  return stop;
+function thinkingBlock(text = '正在准备回答…') {
+  const thinking = el('div', 'thinking');
+  thinking.append(el('span', 'spinner'), el('span', '', text));
+  return thinking;
+}
+
+/** 用户主动停止：保留已到达的正文，但明确标注它没有通过引用校验、也没有保存。 */
+function stoppedBlocks(turn) {
+  const blocks = [
+    headBlock('已停止'),
+    noticeLine('已停止生成。本轮回答未完成校验，不会保存到会话。'),
+  ];
+  const text = (turn.text || '').trim();
+  if (text) blocks.push(el('div', 'answer-body paused', text));
+  const panel = executionBlock(turn.stages, 'stopped');
+  if (panel) blocks.push(panel);
+  return blocks;
 }
 
 function headBlock(title, extra) {
@@ -381,7 +474,7 @@ function headBlock(title, extra) {
   return head;
 }
 
-function answerBlocks(app, answer, scope) {
+function answerBlocks(app, answer, scope, turn = null) {
   const noEvidence = answer.answer_status === 'no_evidence';
   const conflict = answer.answer_status === 'conflicting_evidence';
   const blocks = [];
@@ -433,6 +526,9 @@ function answerBlocks(app, answer, scope) {
     line.append(icon('alert'), el('span', '', '本次检索发生降级，结果可能不完整。'));
     blocks.push(line);
   }
+  // 完成后的执行过程留在正文下方：默认折叠，点开可回看本轮的真实阶段。
+  const panel = turn ? executionBlock(turn.stages, 'completed') : null;
+  if (panel) blocks.push(panel);
   return blocks;
 }
 

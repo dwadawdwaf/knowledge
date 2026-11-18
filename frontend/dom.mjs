@@ -27,6 +27,7 @@ const PATHS = {
   menu: '<path d="M3 6h18M3 12h18M3 18h18"/>',
   more: '<circle cx="5" cy="12" r="1.2"/><circle cx="12" cy="12" r="1.2"/><circle cx="19" cy="12" r="1.2"/>',
   check: '<path d="m5 13 4 4L19 7"/>',
+  stop: '<rect x="7.5" y="7.5" width="9" height="9" rx="2"/>',
   book: '<path d="M4 5.5A2.5 2.5 0 0 1 6.5 3H18v18H6.5A2.5 2.5 0 0 1 4 18.5z"/><path d="M8 3v18"/>',
   layers: '<path d="m12 3 9 5-9 5-9-5z"/><path d="m3 13 9 5 9-5"/>',
   clock: '<circle cx="12" cy="12" r="8.5"/><path d="M12 7.5V12l3 1.8"/>',

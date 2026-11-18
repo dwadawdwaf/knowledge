@@ -35,6 +35,7 @@ frontend-test:
 	node --check ../frontend/stream.mjs
 	node --test ../frontend/core.test.mjs
 	node --test ../frontend/stream.test.mjs
+	node --test ../frontend/chat.structure.test.mjs
 
 # 需要本机已有 Node.js 与独立测试浏览器，不自动安装。
 browser-test:

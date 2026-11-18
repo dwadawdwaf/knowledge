@@ -12,7 +12,6 @@ const messages = {
   CANCELLED: '请求等待已取消。',
   STALE_SESSION: '连接身份已变化，请重新读取。',
   STREAM_INTERRUPTED: '回答过程中连接中断，请重新提问。',
-  ANSWER_STOPPED: '已停止生成，本轮回答未保存。',
   KEYWORD_INDEX_UNAVAILABLE: '所选资料的检索索引需要更新，暂时无法完成关键词检索或问答。文件管理仍可使用，请联系维护人员修复索引。',
   CITATION_VALIDATION_FAILED: '答案未通过引用校验，未返回正文。这不是正常拒答；已知同主题无答案场景也可能触发此错误。',
 };

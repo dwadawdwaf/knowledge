@@ -15,13 +15,30 @@ export const STAGE_DONE_LABEL = {
   rewrite: '检索问题',
   retrieval: '知识库检索',
   generation: '生成回答',
+  citations: '引用校验',
 };
 
-export const STAGE_ORDER = ['context', 'rewrite', 'retrieval', 'generation'];
+export const STAGE_ORDER = ['context', 'rewrite', 'retrieval', 'generation', 'citations'];
+
+// 一轮执行的对外状态：停止与失败都不算完成，避免把未通过校验的回答显示成正常结果。
+export const EXECUTION_STATE = {
+  running: { label: '正在回答', icon: 'sparkle' },
+  completed: { label: '回答完成', icon: 'check' },
+  stopped: { label: '已停止', icon: 'stop' },
+  error: { label: '执行失败', icon: 'alert' },
+};
+
+/** 发送按钮的两种视图：同一个按钮承担发送与停止，不会同时出现两个按钮。 */
+export function sendButtonView(streaming) {
+  return streaming
+    ? { icon: 'stop', label: '停止生成', className: 'send-btn is-stop' }
+    : { icon: 'arrow-up', label: '发送问题', className: 'send-btn' };
+}
 
 /** 一轮流式问答的客户端状态。`text` 是临时正文，`answer` 是校验后的权威结果。 */
 export function createRun() {
   return {
+    status: 'running',
     stages: [],
     text: '',
     citations: [],
@@ -72,6 +89,7 @@ export function contextDetail(messages, limit) {
 export function applyQaEvent(run, kind, data = {}) {
   switch (kind) {
     case 'run_started':
+      run.status = 'running';
       run.stages = [];
       run.text = '';
       run.citations = [];
@@ -107,10 +125,13 @@ export function applyQaEvent(run, kind, data = {}) {
         return 'delta';
       }
       return null;
-    case 'citations':
+    case 'citations': {
       run.citations = Array.isArray(data.citations) ? data.citations : [];
-      finish(run, 'generation', '引用已校验');
+      const count = run.citations.length;
+      // 服务端确实完成了引用校验：这是独立阶段，不能并入"生成回答"。
+      finish(run, 'citations', count ? `${count} 条引用通过校验` : '未返回引用');
       return 'stage';
+    }
     case 'completed':
       run.answer = {
         answer_status: data.answer_status || '',
@@ -128,10 +149,12 @@ export function applyQaEvent(run, kind, data = {}) {
       // 以服务端校验后的正文覆盖流式期间显示的临时文本，标记与无依据段落已被处理。
       run.text = run.answer.answer;
       run.completed = true;
+      run.status = 'completed';
       run.stages.forEach(item => { if (item.state === 'active') item.state = 'done'; });
       return 'final';
     case 'error': {
       run.error = new ApiError(data.code || 'INTERNAL_ERROR');
+      run.status = 'error';
       run.stages.forEach(item => { if (item.state === 'active') item.state = 'failed'; });
       return 'error';
     }
@@ -139,6 +162,15 @@ export function applyQaEvent(run, kind, data = {}) {
       // 未知事件按扩展处理：忽略载荷但不打断本轮，避免新增事件导致旧前端崩掉。
       return null;
   }
+}
+
+/** 用户主动停止：保留已到达的正文与阶段，但状态是"已停止"，不是完成也不是失败。 */
+export function stopRun(run) {
+  run.status = 'stopped';
+  run.stages.forEach(item => {
+    if (item.state === 'active') item.state = 'stopped';
+  });
+  return run;
 }
 
 /**
@@ -155,18 +187,19 @@ export async function streamAnswer(api, body, { signal, onEvent } = {}) {
       if (change && onEvent) onEvent(change, kind, data, run);
     });
     if (!run.completed && !run.error) {
-      run.error = new ApiError('STREAM_INTERRUPTED');
+      if (signal?.aborted) stopRun(run);
+      else run.error = new ApiError('STREAM_INTERRUPTED');
     }
   } catch (error) {
     if (signal?.aborted) {
-      run.error = new ApiError('ANSWER_STOPPED');
-    } else if (error instanceof ApiError) {
-      run.error = error;
+      // 停止是用户意图，不记成失败：只把未完成的阶段标成 stopped。
+      stopRun(run);
     } else {
-      run.error = new ApiError('STREAM_INTERRUPTED');
+      run.error = error instanceof ApiError ? error : new ApiError('STREAM_INTERRUPTED');
+      run.status = 'error';
+      run.stages.forEach(item => { if (item.state === 'active') item.state = 'failed'; });
     }
-    run.stages.forEach(item => { if (item.state === 'active') item.state = 'failed'; });
-    if (onEvent) onEvent('error', 'error', { code: run.error.code }, run);
+    if (onEvent) onEvent(run.status === 'stopped' ? 'stopped' : 'error', 'abort', {}, run);
   } finally {
     if (handle) handle.release();
   }

@@ -1255,18 +1255,47 @@ html[data-theme="dark"] .user-bubble { color: var(--text); }
   animation: caret 1s steps(2, start) infinite;
 }
 @keyframes caret { 50% { opacity: 0; } }
-.stop-btn {
-  margin-left: auto;
-  height: 24px;
-  padding: 0 10px;
-  border: 1px solid var(--border);
-  border-radius: var(--r-pill);
-  background: var(--surface);
-  color: var(--text-3);
-  font-size: 12px;
-  transition: border-color 0.16s ease, color 0.16s ease;
+/* 执行过程：生成中默认展开，结束后折叠成一行入口，阶段数据不丢。 */
+.exec {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding-top: 8px;
+  border-top: 1px solid var(--border-soft);
 }
-.stop-btn:hover { border-color: var(--accent-line); color: var(--accent); }
+.exec-toggle {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  align-self: flex-start;
+  padding: 2px 0;
+  border: 0;
+  background: transparent;
+  color: var(--text-4);
+  font-size: 12px;
+  line-height: 1.6;
+  transition: color 0.16s ease;
+}
+.exec-toggle:hover { color: var(--accent); }
+.exec-mark { display: grid; place-items: center; width: 14px; height: 14px; }
+.exec-mark svg { width: 13px; height: 13px; }
+.exec[data-status="completed"] .exec-mark { color: var(--success); }
+.exec[data-status="error"] .exec-mark { color: var(--danger); }
+.exec[data-status="stopped"] .exec-mark { color: var(--text-4); }
+.exec[data-status="running"] .exec-mark { color: var(--accent); }
+.exec-title { color: var(--text-3); }
+.exec-hint { color: var(--text-4); }
+.exec-chevron { display: grid; place-items: center; width: 12px; height: 12px; transition: transform 0.16s ease; }
+.exec-chevron svg { width: 12px; height: 12px; }
+.exec-toggle[aria-expanded="true"] .exec-chevron { transform: rotate(180deg); }
+.stage-dot {
+  width: 7px;
+  height: 7px;
+  border: 1.5px solid var(--text-4);
+  border-radius: 50%;
+}
+/* 停止后保留的正文：未通过引用校验，颜色略淡以示区别。 */
+.answer-body.paused { color: var(--text-2); }
 
 .answer-foot { display: flex; flex-direction: column; gap: 10px; }
 .citations { display: flex; flex-wrap: wrap; gap: 8px; }
@@ -1357,6 +1386,9 @@ html[data-theme="dark"] .send-btn { color: #06202a; }
 .send-btn:hover:not(:disabled) { background: var(--accent-strong); }
 .send-btn:active:not(:disabled) { transform: scale(0.96); }
 .send-btn:disabled { opacity: 0.4; cursor: not-allowed; }
+/* 生成中同一个按钮变成停止按钮：位置、尺寸、圆角都与发送按钮一致。 */
+.send-btn.is-stop { background: var(--text-2); color: var(--surface); }
+.send-btn.is-stop:hover:not(:disabled) { background: var(--text); }
 
 .chat-disclaimer {
   max-width: var(--chat-max);
