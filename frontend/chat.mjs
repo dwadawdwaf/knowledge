@@ -1,7 +1,10 @@
 // 对话页：800px 居中列、时间分隔、用户气泡右对齐、助手答案无气泡 + 引用芯片。
-import { el, icon, toast, autoGrow, clockLabel, dayLabel, loading } from './dom.mjs';
+// 提问走 SSE：先显示真实执行阶段，再边收边渲染正文，最后用校验后的答案覆盖。
+// 每一轮回答都保留自己的执行过程（可展开/折叠）；发送与停止共用输入框右下角这一个按钮。
+import { el, icon, toast, autoGrow, clockLabel, dayLabel, loading, noticeLine } from './dom.mjs';
 import { warningLabel, visibleWarnings } from './core.mjs';
 import { scopeControl, scopeIds, scopeLabel } from './scope.mjs';
+import { streamAnswer, sendButtonView, EXECUTION_STATE, durationText } from './stream.mjs';
 
 const MODE_LABEL = { hybrid: '混合检索', semantic: '语义检索', keyword: '关键词检索' };
 
@@ -106,6 +109,30 @@ function hero(app) {
   return box;
 }
 
+/* -------------------------------------------------------- 发送 / 停止 */
+
+// 正在流式返回本轮回答。与 app.state.busy 分开：busy 还覆盖上传和检索。
+let composerStreaming = false;
+let composerButton = null;
+
+function applySendButton(button, streaming) {
+  if (!button) return;
+  const view = sendButtonView(streaming);
+  button.className = view.className;
+  button.setAttribute('aria-label', view.label);
+  button.title = streaming ? view.label : '';
+  button.replaceChildren(icon(view.icon));
+}
+
+function setStreaming(streaming) {
+  composerStreaming = streaming;
+  // 视图可能被重建过，按钮引用失效时按 class 重新取一次。
+  if (!composerButton?.isConnected) {
+    composerButton = document.querySelector('.chat-compose .send-btn') || composerButton;
+  }
+  applySendButton(composerButton, streaming);
+}
+
 function composer(app) {
   const wrap = el('div', 'composer-wrap');
   const form = el('form', 'chat-compose');
@@ -130,8 +157,14 @@ function composer(app) {
   tools.append(scopeControl(app));
   const send = el('button', 'send-btn');
   send.type = 'submit';
-  send.setAttribute('aria-label', '发送问题');
-  send.append(icon('arrow-up'));
+  // 生成中同一个按钮就是停止按钮：拦下提交，改为中断当前流。
+  send.addEventListener('click', event => {
+    if (!composerStreaming) return;
+    event.preventDefault();
+    cancelActiveRun();
+  });
+  composerButton = send;
+  applySendButton(send, composerStreaming);
   tools.append(send);
   bar.append(tools);
 
@@ -141,6 +174,8 @@ function composer(app) {
 
   form.addEventListener('submit', event => {
     event.preventDefault();
+    // 兜底：按钮点击未拦住提交时，这里也不允许并发第二个请求。
+    if (composerStreaming) { cancelActiveRun(); return; }
     const question = input.value.trim();
     if (!question) return;
     if (!app.state.connected) { app.openConnection(); return; }
@@ -176,26 +211,53 @@ async function ask(app, question) {
   // 提问这一刻的知识范围：之后切换范围不应该改写历史消息上的标注
   turn.scope = scopeMetaText(app);
 
+  const controller = new AbortController();
+  activeRun = { controller, turnId: turn.id };
+  setStreaming(true);
+  const live = new LiveAnswer(app, node);
+  const sameSession = () => revision === app.api.revision && app.currentSession() === session;
+
   try {
     await app.ensureConversation(session, question);
     app.renderSessions();
-    const answer = await app.api.request('/qa', {
-      method: 'POST',
-      // 本地部署的生成模型单次可能跑到 40–90 秒，留足与后端 KS_GENERATOR_TIMEOUT_SECONDS 对齐的余量。
-      timeout: 180000,
-      body: {
-        question,
-        knowledge_base_ids: ids,
-        conversation_id: session.id,
+    live.attach();
+    const run = await streamAnswer(
+      app.api,
+      { question, knowledge_base_ids: ids, conversation_id: session.id },
+      {
+        signal: controller.signal,
+        // 用回调参数里的 run：此时外层的 run 还没赋值（await 尚未返回）。
+        // 同时把阶段同步到 turn：流式中途切换页面再回来仍能看到当前进度。
+        onEvent: (change, _kind, _data, state) => {
+          turn.stages = state.stages;
+          if (!sameSession()) return;
+          live.update(state, change);
+        },
       },
-    });
-    turn.status = 'done';
-    turn.answer = answer;
+    );
     session.loaded = true;
+    // 客户端观测的整轮耗时，与状态一起存进本轮，重绘和折叠后仍然显示。
+    turn.durationMs = run.startedAt && run.endedAt ? run.endedAt - run.startedAt : 0;
+    // 三种收尾分开记：停止与失败都不能写成 completed，停止还要保留已到达的正文。
+    if (run.status === 'stopped') {
+      turn.status = 'stopped';
+      turn.text = run.text;
+      turn.stages = run.stages;
+    } else if (run.error) {
+      turn.status = 'error';
+      turn.error = run.error;
+      turn.stages = run.stages;
+    } else {
+      turn.status = 'done';
+      turn.answer = run.answer;
+      turn.stages = run.stages;
+    }
   } catch (error) {
     turn.status = 'error';
     turn.error = error;
   } finally {
+    activeRun = null;
+    setStreaming(false);
     if (revision === app.api.revision) {
       app.state.busy = false;
       if (app.state.page === 'chat' && app.currentSession() === session) {
@@ -209,6 +271,153 @@ async function ask(app, question) {
       app.flushUpdates();
     }
   }
+}
+
+/** 当前流式轮次；切换会话或新建对话时用于中断，避免把答案写进别的会话。 */
+let activeRun = null;
+
+export function cancelActiveRun() {
+  activeRun?.controller.abort();
+  activeRun = null;
+}
+
+/**
+ * 一轮回答的执行过程。同一份结构贯穿生成中、完成、停止与失败：
+ * 生成中默认展开，结束后由调用方决定折叠，但阶段数据（stages）永不丢弃。
+ */
+class ExecutionPanel {
+  constructor({ status = 'running', stages = [], expanded = false, durationMs = 0 } = {}) {
+    this.status = status;
+    this.stages = stages;
+    this.expanded = expanded;
+    this.durationMs = durationMs;
+
+    this.root = el('div', 'exec');
+    this.toggle = el('button', 'exec-toggle');
+    this.toggle.type = 'button';
+    this.mark = el('span', 'exec-mark');
+    this.title = el('span', 'exec-title');
+    this.hint = el('span', 'exec-hint');
+    this.chevron = el('span', 'exec-chevron');
+    this.chevron.append(icon('chevron'));
+    this.toggle.append(this.mark, this.title, this.hint, this.chevron);
+    this.list = el('div', 'stages');
+    this.root.append(this.toggle, this.list);
+    this.toggle.addEventListener('click', () => this.setExpanded(!this.expanded));
+    this.render();
+  }
+
+  setStages(stages) {
+    this.stages = stages || [];
+    this.render();
+  }
+
+  setStatus(status, durationMs = this.durationMs) {
+    this.status = status;
+    this.durationMs = durationMs;
+    this.render();
+  }
+
+  setExpanded(expanded) {
+    this.expanded = expanded;
+    this.render();
+  }
+
+  render() {
+    const meta = EXECUTION_STATE[this.status] || EXECUTION_STATE.running;
+    const spent = this.status === 'running' ? '' : durationText(this.durationMs);
+    this.root.dataset.status = this.status;
+    this.mark.replaceChildren(icon(meta.icon));
+    this.title.textContent = spent ? `${meta.label}（${spent}）` : meta.label;
+    this.hint.textContent = this.expanded ? '收起' : '查看执行过程';
+    this.toggle.setAttribute('aria-expanded', String(this.expanded));
+    this.list.hidden = !this.expanded;
+    this.list.replaceChildren(...this.stages.map(stageRow));
+  }
+}
+
+/** 一轮的执行过程：放在正文上方，结束后默认折叠，但保留可点击入口，阶段不随重绘丢失。 */
+function executionBlock(stages, status, { expanded = false, durationMs = 0 } = {}) {
+  if (!stages?.length) return null;
+  return new ExecutionPanel({ status, stages, expanded, durationMs }).root;
+}
+
+/**
+ * 流式期间就地更新单个回答节点：阶段列表随事件推进，正文逐块追加，
+ * 引用校验通过后挂上芯片。完成、停止或失败时由 `turnNode` 重新渲染整轮。
+ */
+class LiveAnswer {
+  constructor(app, turnNodeEl) {
+    this.app = app;
+    this.answer = turnNodeEl.querySelector('.answer-message');
+    this.panel = new ExecutionPanel({ status: 'running', expanded: true });
+    this.body = el('div', 'answer-body streaming');
+    // 首块正文到达前不占位：检索阶段只显示阶段列表。
+    this.body.hidden = true;
+    this.foot = el('div', 'answer-foot');
+    this.text = '';
+    this.frame = 0;
+  }
+
+  attach() {
+    if (!this.answer) return;
+    this.answer.replaceChildren(headBlock('正在回答'), this.panel.root, this.body, this.foot);
+  }
+
+  update(run, change) {
+    if (!this.answer) return;
+    if (['stage', 'error', 'final', 'stopped'].includes(change)) {
+      this.panel.setStages(run.stages);
+      this.panel.setStatus(
+        run.status,
+        run.startedAt && run.endedAt ? run.endedAt - run.startedAt : 0,
+      );
+    }
+    if (change === 'delta') {
+      this.text = run.text;
+      this.scheduleText();
+    }
+    if (change === 'stage' && run.citations.length && !this.foot.childElementCount) {
+      this.renderCitations(run.citations);
+    }
+  }
+
+  renderCitations(citations) {
+    this.foot.append(el('div', 'citations-label', '引用原文 · 点击查看片段'));
+    const chips = el('div', 'citations');
+    citations.forEach(cite => {
+      const chip = el('button', 'citation-chip');
+      chip.type = 'button';
+      chip.title = cite.excerpt || cite.title;
+      chip.append(el('b', '', String(cite.index)), el('span', '', cite.title || '未命名文档'));
+      chip.addEventListener('click', () => this.app.openSource(cite.chunk_id));
+      chips.append(chip);
+    });
+    this.foot.append(chips);
+  }
+
+  scheduleText() {
+    if (this.frame) return;
+    this.frame = requestAnimationFrame(() => {
+      this.frame = 0;
+      if (!this.body) return;
+      this.body.hidden = !this.text;
+      this.body.textContent = this.text;
+      scrollToEnd();
+    });
+  }
+}
+
+function stageRow(stage) {
+  const row = el('div', `stage ${stage.state}`);
+  const mark = el('span', 'stage-mark');
+  if (stage.state === 'active') mark.append(el('span', 'spinner'));
+  else if (stage.state === 'failed') mark.append(icon('alert'));
+  else if (stage.state === 'stopped') mark.append(el('span', 'stage-dot'));
+  else mark.append(icon('check'));
+  row.append(mark, el('span', 'stage-label', stage.label));
+  if (stage.detail) row.append(el('span', 'stage-detail', stage.detail));
+  return row;
 }
 
 function scrollToEnd() {
@@ -230,16 +439,36 @@ function turnNode(app, turn, previousAt) {
 
   const answer = el('div', 'answer-message');
   if (turn.status === 'pending') {
-    const thinking = el('div', 'thinking');
-    thinking.append(el('span', 'spinner'), el('span', '', '正在检索证据并生成回答…'));
-    answer.append(headBlock('正在检索'), thinking);
+    // 流式开始前由 LiveAnswer 就地接管；重绘时若已有阶段，直接按展开状态还原。
+    const panel = executionBlock(turn.stages, 'running', { expanded: true });
+    answer.append(headBlock('正在回答'), ...(panel ? [panel] : [thinkingBlock()]));
+  } else if (turn.status === 'stopped') {
+    answer.append(...stoppedBlocks(turn));
   } else if (turn.status === 'error') {
-    answer.append(headBlock('请求未完成'), app.errorBox(turn.error));
+    const panel = executionBlock(turn.stages, 'error', { durationMs: turn.durationMs });
+    answer.append(headBlock('执行失败'), ...(panel ? [panel] : []), app.errorBox(turn.error));
   } else {
-    answer.append(...answerBlocks(app, turn.answer, turn.scope));
+    answer.append(...answerBlocks(app, turn.answer, turn.scope, turn));
   }
   wrap.append(answer);
   return wrap;
+}
+
+function thinkingBlock(text = '正在准备回答…') {
+  const thinking = el('div', 'thinking');
+  thinking.append(el('span', 'spinner'), el('span', '', text));
+  return thinking;
+}
+
+/** 用户主动停止：保留已到达的正文，但明确标注它没有通过引用校验、也没有保存。 */
+function stoppedBlocks(turn) {
+  const blocks = [headBlock('已停止')];
+  const panel = executionBlock(turn.stages, 'stopped', { durationMs: turn.durationMs });
+  if (panel) blocks.push(panel);
+  blocks.push(noticeLine('已停止生成。本轮回答未完成校验，不会保存到会话。'));
+  const text = (turn.text || '').trim();
+  if (text) blocks.push(el('div', 'answer-body paused', text));
+  return blocks;
 }
 
 function headBlock(title, extra) {
@@ -251,7 +480,7 @@ function headBlock(title, extra) {
   return head;
 }
 
-function answerBlocks(app, answer, scope) {
+function answerBlocks(app, answer, scope, turn = null) {
   const noEvidence = answer.answer_status === 'no_evidence';
   const conflict = answer.answer_status === 'conflicting_evidence';
   const blocks = [];
@@ -262,12 +491,20 @@ function answerBlocks(app, answer, scope) {
   const hits = answer.retrieval?.hits;
   if (typeof hits === 'number' && hits > 0) parts.push(`命中 ${hits} 个片段`);
   if (answer.retrieval?.mode) parts.push(MODE_LABEL[answer.retrieval.mode] || answer.retrieval.mode);
+  const used = answer.retrieval?.context_messages;
+  if (typeof used === 'number' && used > 0) parts.push(`结合 ${used} 条历史`);
   if (parts.length) {
     meta.textContent = ` · ${parts.join(' · ')}`;
     blocks.push(headBlock(noEvidence ? '未找到回答依据' : conflict ? '证据存在冲突' : '知识库回答', meta));
   } else {
     blocks.push(headBlock(noEvidence ? '未找到回答依据' : conflict ? '证据存在冲突' : '知识库回答'));
   }
+
+  // 参考 DeepSeek：执行过程在正文上方，折叠成一行，点开可看完整阶段与耗时。
+  const panel = turn
+    ? executionBlock(turn.stages, 'completed', { durationMs: turn.durationMs })
+    : null;
+  if (panel) blocks.push(panel);
 
   const text = (answer.answer || '').trim();
   const fallback = noEvidence ? '所选资料中没有足够依据，未生成回答。可以扩大知识范围，或换一种问法。' : '';

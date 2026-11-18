@@ -44,19 +44,17 @@ def test_request_id_echoed():
     assert response.json()["meta"]["request_id"] == "trace-123"
 
 
-def test_stream_not_implemented():
+def test_stream_preflight_uses_json_error_envelope():
+    """stream=true 在建立事件流前完成参数校验，错误仍按统一 JSON 信封返回。"""
     token = issue_token("user-a", settings=get_settings())
     response = _client().post(
         "/api/v1/qa",
         headers={"Authorization": f"Bearer {token}"},
-        json={
-            "question": "使用后要做什么",
-            "knowledge_base_ids": [str(uuid.uuid4())],
-            "stream": True,
-        },
+        json={"question": "使用后要做什么", "knowledge_base_ids": [], "stream": True},
     )
-    assert response.status_code == 501
-    assert response.json()["error"]["code"] == "NOT_IMPLEMENTED"
+    assert response.status_code == 422
+    assert response.headers["content-type"].startswith("application/json")
+    assert response.json()["error"]["code"] == "VALIDATION_ERROR"
 
 
 def test_invalid_body_returns_validation_error():

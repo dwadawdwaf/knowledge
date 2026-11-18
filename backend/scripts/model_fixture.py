@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import threading
+import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import Self
 
@@ -50,7 +51,9 @@ class ModelFixture:
                     )
                 elif self.path == "/chat/completions":
                     mode = fixture.generator_failure
-                    if mode == "503":
+                    if payload.get("stream"):
+                        self._stream(payload, mode)
+                    elif mode == "503":
                         self._reply(503, {"error": "synthetic outage"})
                     elif mode == "invalid-envelope":
                         self._reply(200, [])
@@ -68,6 +71,40 @@ class ModelFixture:
                         )
                 else:
                     self._reply(404, {"error": "unknown fixture path"})
+
+            def _stream(self, payload: dict, mode: str | None) -> None:
+                """流式契约：纯文本 + [E#] 标记，按小块推送；可注入中途异常。"""
+                if mode == "503":
+                    self._reply(503, {"error": "synthetic outage"})
+                    return
+                prompt = payload["messages"][-1]["content"]
+                evidence = prompt.split("[E1] ", 1)[1].split("\n[E2]", 1)[0]
+                evidence = evidence.split("\n\n问题：", 1)[0].strip()
+                text = (
+                    "依据资料：" if mode == "unmarked" else f"{evidence} [E1]"
+                )
+                chunks = [text[index:index + 8] for index in range(0, len(text), 8)]
+                self.send_response(200)
+                self.send_header("Content-Type", "text/event-stream")
+                self.end_headers()
+                try:
+                    for index, piece in enumerate(chunks):
+                        if mode == "stream-error" and index == 1:
+                            # 半条 JSON：调用方必须把它当作模型故障，不能当成正常结束。
+                            self.wfile.write(b"data: {\"choices\": [\n\n")
+                            self.wfile.flush()
+                            self.close_connection = True
+                            return
+                        frame = {"choices": [{"delta": {"content": piece}}]}
+                        self.wfile.write(f"data: {json.dumps(frame)}\n\n".encode())
+                        self.wfile.flush()
+                        if mode == "stream-slow":
+                            time.sleep(0.2)
+                    self.wfile.write(b"data: [DONE]\n\n")
+                    self.wfile.flush()
+                except (BrokenPipeError, ConnectionResetError, ConnectionAbortedError):
+                    # 客户端中断：桩不需要清理，交由被测服务自行处理。
+                    pass
 
             def _reply(self, status: int, payload: object) -> None:
                 data = json.dumps(payload).encode()

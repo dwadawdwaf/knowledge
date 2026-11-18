@@ -89,3 +89,27 @@ def messages_of(session: Session, conversation_id: uuid.UUID) -> list[Message]:
         .order_by(Message.created_at, case((Message.role == "user", 0), else_=1))
     )
     return list(session.scalars(stmt))
+
+
+def recent_messages(
+    session: Session, actor: Actor, conversation_id: uuid.UUID, limit: int
+) -> list[Message]:
+    """读取最近 limit 条消息，返回时仍是原始时间顺序。
+
+    授权与列表/详情一致：先经 get_owned 校验 owner，再按会话过滤，不做全库 Top-N 后过滤。
+    从新到旧取窗口：同一轮的两条消息 created_at 相同，倒序时让 assistant 排在前面，
+    反转后才与 messages_of 的顺序一致（user 在前）。
+    """
+    get_owned(session, actor, conversation_id)
+    if limit <= 0:
+        return []
+    stmt = (
+        select(Message)
+        .where(Message.conversation_id == conversation_id)
+        .order_by(
+            Message.created_at.desc(),
+            case((Message.role == "assistant", 1), else_=0).desc(),
+        )
+        .limit(limit)
+    )
+    return list(reversed(list(session.scalars(stmt))))

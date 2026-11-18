@@ -70,6 +70,11 @@ class Settings(BaseSettings):
     evidence_max_items: int = 6
     evidence_min_score: float = 0.0
 
+    # 会话上下文：只取最近 N 条历史消息进入模型，不做摘要与 token 预算。
+    context_recent_messages: int = Field(default=12, ge=0, le=50)
+    # 上下文感知检索时，从上文带出的字符上限；0 表示关闭问题重写。
+    context_rewrite_max_chars: int = Field(default=400, ge=0, le=2000)
+
     lease_seconds: int = 120
     heartbeat_seconds: int = 30
     max_attempts: int = 3

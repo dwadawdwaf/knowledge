@@ -1,7 +1,7 @@
 // 应用装配：状态、路由、数据加载、连接与轮询。视图逻辑在各自模块中。
 import { ApiClient, ApiError, turnsFromMessages, retrievalStatusMessage } from './core.mjs';
 import { el, icon, hydrateIcons, toast, openMenu, menuItem, closeMenu } from './dom.mjs';
-import { renderChat } from './chat.mjs';
+import { renderChat, cancelActiveRun } from './chat.mjs';
 import { renderKnowledge, renderKnowledgeDetail, drawDocuments } from './library.mjs';
 import { renderFiles, updateFilesView } from './files.mjs';
 import { renderBrowse, loadBrowse, emptyBrowse, disposeBrowse } from './browse.mjs';
@@ -150,6 +150,7 @@ function draftSession() {
 }
 
 function newSession() {
+  cancelActiveRun();
   if (currentSession() && !currentSession().turns.length) {
     navigate('chat');
     return;
@@ -245,6 +246,8 @@ function deleteSession(session) {
 
 async function selectSession(session) {
   const revision = api.revision;
+  // 切换会话前中断上一轮的流式回答，避免把事件写进另一个会话的视图。
+  if (session.id !== state.sessionId) cancelActiveRun();
   state.sessionId = session.id;
   if (!session.loaded) session.loading = true;
   navigate('chat', { historySelection: session.id });
