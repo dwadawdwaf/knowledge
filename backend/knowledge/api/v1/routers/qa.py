@@ -2,9 +2,12 @@
 
 from __future__ import annotations
 
+import asyncio
 import uuid
+from collections.abc import AsyncIterator
 
 from fastapi import APIRouter, Depends, Request
+from fastapi.responses import StreamingResponse
 from sqlalchemy.orm import Session
 
 from knowledge.api.deps import (
@@ -20,12 +23,57 @@ from knowledge.api.v1.schemas.requests import AskRequest, CreateConversationRequ
 from knowledge.api.v1.schemas.responses import AnswerOut, CitationOut
 from knowledge.config import Settings
 from knowledge.domain.entities import Actor
-from knowledge.domain.errors import NotImplementedYet
+from knowledge.domain.errors import ValidationFailed
 from knowledge.domain.ports import Embedder, Generator
+from knowledge.repositories import conversations as conversation_repo
+from knowledge.repositories import knowledge_bases as kb_repo
 from knowledge.services import conversations as conversation_service
-from knowledge.services import qa
+from knowledge.services import qa, qa_stream, retrieval
 
 router = APIRouter(tags=["qa"])
+
+
+def _stream_response(
+    payload: AskRequest,
+    actor: Actor,
+    settings: Settings,
+    embedder: Embedder,
+    generator: Generator,
+    session: Session,
+) -> StreamingResponse:
+    """建立 SSE 前先做参数与权限预检，失败时仍返回普通 JSON 错误信封。"""
+    retrieval.validate_query(payload.question, settings)
+    if not payload.knowledge_base_ids:
+        raise ValidationFailed("knowledge_base_ids 不能为空")
+    if len(payload.knowledge_base_ids) > settings.kb_scope_max:
+        raise ValidationFailed(f"知识库范围最多 {settings.kb_scope_max} 个")
+    kb_repo.get_active(session, actor, payload.knowledge_base_ids)
+    if payload.conversation_id is not None:
+        conversation_repo.get_owned(session, actor, payload.conversation_id)
+    # 流内使用独立会话，预检结束即归还连接：否则一次长回答会占住池里的连接。
+    session.close()
+
+    run = qa_stream.StreamRun(
+        actor=actor,
+        settings=settings,
+        embedder=embedder,
+        generator=generator,
+        question=payload.question,
+        kb_ids=payload.knowledge_base_ids,
+        top_k=payload.top_k,
+        conversation_id=payload.conversation_id,
+        document_ids=payload.document_ids,
+    )
+
+    async def encode() -> AsyncIterator[str]:
+        run.start(asyncio.get_running_loop())
+        async for chunk in run.events():
+            yield chunk
+
+    # 请求编号由请求中间件统一写到响应头，这里不再重复设置。
+    return StreamingResponse(
+        encode(), media_type="text/event-stream", headers=dict(qa_stream.SSE_HEADERS)
+    )
 
 
 @router.post("/qa", response_model=Envelope)
@@ -37,9 +85,9 @@ def ask(
     settings: Settings = Depends(get_settings_dep),
     embedder: Embedder = Depends(get_embedder),
     generator: Generator = Depends(get_generator),
-) -> dict:
+) -> dict | StreamingResponse:
     if payload.stream:
-        raise NotImplementedYet("当前版本不支持流式输出")
+        return _stream_response(payload, actor, settings, embedder, generator, session)
 
     result = qa.answer(
         session,
@@ -58,7 +106,13 @@ def ask(
         answer_status=result.status,
         answer=result.text,
         citations=[CitationOut(**citation.to_dict()) for citation in result.citations],
-        retrieval={"mode": result.retrieval_mode, "hits": result.hits, "degraded": result.degraded},
+        retrieval={
+            "mode": result.retrieval_mode,
+            "hits": result.hits,
+            "degraded": result.degraded,
+            "context_messages": result.context_messages,
+            "query_rewritten": result.query_rewritten,
+        },
         warnings=result.warnings,
     )
     return envelope(body.model_dump(mode="json"), request_id(request))

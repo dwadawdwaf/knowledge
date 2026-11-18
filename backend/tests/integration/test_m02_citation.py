@@ -70,8 +70,11 @@ class _EmptyGenerator:
 
     revision = "empty"
 
-    def generate(self, question: str, evidence):
+    def generate(self, question: str, evidence, *, history=()):
         return GeneratedAnswer(sections=())
+
+    def stream(self, question: str, evidence, *, history=()):
+        return iter(())
 
 
 def test_empty_sections_is_no_evidence_not_an_error(session, settings, deps):

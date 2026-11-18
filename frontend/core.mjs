@@ -11,6 +11,8 @@ const messages = {
   MODEL_TIMEOUT: '模型服务超时，未返回答案。',
   CANCELLED: '请求等待已取消。',
   STALE_SESSION: '连接身份已变化，请重新读取。',
+  STREAM_INTERRUPTED: '回答过程中连接中断，请重新提问。',
+  ANSWER_STOPPED: '已停止生成，本轮回答未保存。',
   KEYWORD_INDEX_UNAVAILABLE: '所选资料的检索索引需要更新，暂时无法完成关键词检索或问答。文件管理仍可使用，请联系维护人员修复索引。',
   CITATION_VALIDATION_FAILED: '答案未通过引用校验，未返回正文。这不是正常拒答；已知同主题无答案场景也可能触发此错误。',
 };
@@ -70,6 +72,47 @@ export class ApiClient {
       if (error instanceof ApiError) throw error;
       throw new ApiError('NETWORK_ERROR');
     } finally { clearTimeout(timer); this.pending.delete(controller); }
+  }
+
+  /**
+   * 发起流式请求，返回响应体供 SSE 逐条读取。
+   * `release()` 在读完后调用，负责释放中止器与超时计时器；
+   * 超时是整轮上限，不是首字节，回答较长时由后端自己的模型超时兜底。
+   */
+  async stream(path, { method = 'POST', body, timeout = 300000, signal } = {}) {
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), timeout);
+    const revision = this.revision;
+    const release = () => {
+      clearTimeout(timer);
+      this.pending.delete(controller);
+    };
+    this.pending.add(controller);
+    try {
+      const headers = this.token ? { Authorization: `Bearer ${this.token}` } : {};
+      if (body !== undefined) headers['Content-Type'] = 'application/json';
+      const response = await this.fetcher(`/api/v1${path}`, {
+        method, headers,
+        body: body === undefined ? undefined : JSON.stringify(body),
+        signal: signal ? AbortSignal.any([signal, controller.signal]) : controller.signal,
+        credentials: 'omit', cache: 'no-store',
+      });
+      if (this.revision !== revision) throw new ApiError('STALE_SESSION');
+      if (!response.ok) {
+        let payload = null;
+        try { payload = await response.json(); } catch { payload = null; }
+        await response.body?.cancel().catch(() => {});
+        throw new ApiError(payload?.error?.code, response.status, payload?.meta?.request_id || '');
+      }
+      if (!response.body) throw new ApiError('INVALID_RESPONSE', response.status);
+      return { response, release };
+    } catch (error) {
+      release();
+      if (this.revision !== revision) throw new ApiError('STALE_SESSION');
+      if (signal?.aborted) throw new ApiError('CANCELLED');
+      if (error instanceof ApiError) throw error;
+      throw new ApiError('NETWORK_ERROR');
+    }
   }
 
   /**

@@ -1,7 +1,9 @@
 // 对话页：800px 居中列、时间分隔、用户气泡右对齐、助手答案无气泡 + 引用芯片。
+// 提问走 SSE：先显示真实执行阶段，再边收边渲染正文，最后用校验后的答案覆盖。
 import { el, icon, toast, autoGrow, clockLabel, dayLabel, loading } from './dom.mjs';
 import { warningLabel, visibleWarnings } from './core.mjs';
 import { scopeControl, scopeIds, scopeLabel } from './scope.mjs';
+import { streamAnswer } from './stream.mjs';
 
 const MODE_LABEL = { hybrid: '混合检索', semantic: '语义检索', keyword: '关键词检索' };
 
@@ -176,26 +178,42 @@ async function ask(app, question) {
   // 提问这一刻的知识范围：之后切换范围不应该改写历史消息上的标注
   turn.scope = scopeMetaText(app);
 
+  const controller = new AbortController();
+  activeRun = { controller, turnId: turn.id };
+  const live = new LiveAnswer(app, node, controller);
+  const sameSession = () => revision === app.api.revision && app.currentSession() === session;
+
   try {
     await app.ensureConversation(session, question);
     app.renderSessions();
-    const answer = await app.api.request('/qa', {
-      method: 'POST',
-      // 本地部署的生成模型单次可能跑到 40–90 秒，留足与后端 KS_GENERATOR_TIMEOUT_SECONDS 对齐的余量。
-      timeout: 180000,
-      body: {
-        question,
-        knowledge_base_ids: ids,
-        conversation_id: session.id,
+    live.attach();
+    const run = await streamAnswer(
+      app.api,
+      { question, knowledge_base_ids: ids, conversation_id: session.id },
+      {
+        signal: controller.signal,
+        // 用回调参数里的 run：此时外层的 run 还没赋值（await 尚未返回）。
+        onEvent: (change, _kind, _data, state) => {
+          if (!sameSession()) return;
+          live.update(state, change);
+        },
       },
-    });
-    turn.status = 'done';
-    turn.answer = answer;
+    );
     session.loaded = true;
+    if (run.error) {
+      turn.status = 'error';
+      turn.error = run.error;
+      turn.stages = run.stages;
+    } else {
+      turn.status = 'done';
+      turn.answer = run.answer;
+      turn.stages = run.stages;
+    }
   } catch (error) {
     turn.status = 'error';
     turn.error = error;
   } finally {
+    activeRun = null;
     if (revision === app.api.revision) {
       app.state.busy = false;
       if (app.state.page === 'chat' && app.currentSession() === session) {
@@ -209,6 +227,105 @@ async function ask(app, question) {
       app.flushUpdates();
     }
   }
+}
+
+/** 当前流式轮次；切换会话或新建对话时用于中断，避免把答案写进别的会话。 */
+let activeRun = null;
+
+export function cancelActiveRun() {
+  activeRun?.controller.abort();
+  activeRun = null;
+}
+
+/**
+ * 流式期间就地更新单个回答节点：阶段列表随事件推进，正文逐块追加，
+ * 引用校验通过后挂上芯片。完成或失败时由 `turnNode` 重新渲染整轮。
+ */
+class LiveAnswer {
+  constructor(app, turnNodeEl, controller) {
+    this.app = app;
+    this.controller = controller;
+    this.answer = turnNodeEl.querySelector('.answer-message');
+    this.stages = el('div', 'stages');
+    this.body = el('div', 'answer-body streaming');
+    // 首块正文到达前不占位：检索阶段只显示阶段列表。
+    this.body.hidden = true;
+    this.foot = el('div', 'answer-foot');
+    this.text = '';
+    this.frame = 0;
+  }
+
+  attach() {
+    if (!this.answer) return;
+    const head = el('div', 'answer-head');
+    const avatar = el('span', 'answer-avatar');
+    avatar.append(icon('sparkle'));
+    head.append(avatar, el('strong', '', '正在回答'));
+    const stop = el('button', 'stop-btn', '停止生成');
+    stop.type = 'button';
+    stop.addEventListener('click', () => this.controller.abort());
+    head.append(stop);
+    this.answer.replaceChildren(head, this.stages, this.body, this.foot);
+  }
+
+  update(run, change) {
+    if (!this.answer) return;
+    if (change === 'stage' || change === 'error' || change === 'final') this.renderStages(run);
+    if (change === 'delta') {
+      this.text = run.text;
+      this.scheduleText();
+    }
+    if (change === 'stage' && run.citations.length && !this.foot.childElementCount) {
+      this.renderCitations(run.citations);
+    }
+  }
+
+  renderStages(run) {
+    this.stages.replaceChildren(...run.stages.map(stageRow));
+  }
+
+  renderCitations(citations) {
+    this.foot.append(el('div', 'citations-label', '引用原文 · 点击查看片段'));
+    const chips = el('div', 'citations');
+    citations.forEach(cite => {
+      const chip = el('button', 'citation-chip');
+      chip.type = 'button';
+      chip.title = cite.excerpt || cite.title;
+      chip.append(el('b', '', String(cite.index)), el('span', '', cite.title || '未命名文档'));
+      chip.addEventListener('click', () => this.app.openSource(cite.chunk_id));
+      chips.append(chip);
+    });
+    this.foot.append(chips);
+  }
+
+  scheduleText() {
+    if (this.frame) return;
+    this.frame = requestAnimationFrame(() => {
+      this.frame = 0;
+      if (!this.body) return;
+      this.body.hidden = !this.text;
+      this.body.textContent = this.text;
+      scrollToEnd();
+    });
+  }
+}
+
+function stageRow(stage) {
+  const row = el('div', `stage ${stage.state}`);
+  const mark = el('span', 'stage-mark');
+  if (stage.state === 'active') mark.append(el('span', 'spinner'));
+  else if (stage.state === 'failed') mark.append(icon('alert'));
+  else mark.append(icon('check'));
+  row.append(mark, el('span', 'stage-label', stage.label));
+  if (stage.detail) row.append(el('span', 'stage-detail', stage.detail));
+  return row;
+}
+
+function stageBlock(stages = []) {
+  if (!stages.length) return null;
+  const box = el('div', 'stages');
+  box.append(...stages.map(stageRow));
+  return box;
 }
 
 function scrollToEnd() {
@@ -230,16 +347,29 @@ function turnNode(app, turn, previousAt) {
 
   const answer = el('div', 'answer-message');
   if (turn.status === 'pending') {
-    const thinking = el('div', 'thinking');
-    thinking.append(el('span', 'spinner'), el('span', '', '正在检索证据并生成回答…'));
-    answer.append(headBlock('正在检索'), thinking);
+    const stages = stageBlock(turn.stages);
+    if (stages) {
+      answer.append(headBlock('正在回答', stopButton()), stages);
+    } else {
+      const thinking = el('div', 'thinking');
+      thinking.append(el('span', 'spinner'), el('span', '', '正在准备回答…'));
+      answer.append(headBlock('正在回答', stopButton()), thinking);
+    }
   } else if (turn.status === 'error') {
-    answer.append(headBlock('请求未完成'), app.errorBox(turn.error));
+    const stages = stageBlock(turn.stages);
+    answer.append(headBlock('请求未完成'), ...(stages ? [stages] : []), app.errorBox(turn.error));
   } else {
     answer.append(...answerBlocks(app, turn.answer, turn.scope));
   }
   wrap.append(answer);
   return wrap;
+}
+
+function stopButton() {
+  const stop = el('button', 'stop-btn', '停止生成');
+  stop.type = 'button';
+  stop.addEventListener('click', () => cancelActiveRun());
+  return stop;
 }
 
 function headBlock(title, extra) {
@@ -262,6 +392,8 @@ function answerBlocks(app, answer, scope) {
   const hits = answer.retrieval?.hits;
   if (typeof hits === 'number' && hits > 0) parts.push(`命中 ${hits} 个片段`);
   if (answer.retrieval?.mode) parts.push(MODE_LABEL[answer.retrieval.mode] || answer.retrieval.mode);
+  const used = answer.retrieval?.context_messages;
+  if (typeof used === 'number' && used > 0) parts.push(`结合 ${used} 条历史`);
   if (parts.length) {
     meta.textContent = ` · ${parts.join(' · ')}`;
     blocks.push(headBlock(noEvidence ? '未找到回答依据' : conflict ? '证据存在冲突' : '知识库回答', meta));

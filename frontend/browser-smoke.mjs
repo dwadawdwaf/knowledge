@@ -133,6 +133,8 @@ try {
   await shot('chat');
   await js(`document.querySelector('.chat-compose textarea').value='会议室使用后需要做什么？'; document.querySelector('.chat-compose').requestSubmit()`);
   await wait(`[...document.querySelectorAll('.answer-body')].at(-1)?.textContent.includes('关闭照明')`);
+  // 流式回答先出正文，引用芯片在引用校验通过后（citations 事件）才出现。
+  await wait(`document.querySelectorAll('.citation-chip').length > 0`);
   await js(`document.querySelector('.citation-chip').click()`);
   await wait(`document.querySelector('.source-text')?.textContent.includes('关闭照明')`);
   await shot('answer-source');

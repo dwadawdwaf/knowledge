@@ -126,6 +126,14 @@ class Evidence:
 
 
 @dataclass(frozen=True)
+class ContextMessage:
+    """进入模型上下文的一条历史消息。role 只能是 user / assistant。"""
+
+    role: str
+    text: str
+
+
+@dataclass(frozen=True)
 class GeneratedSection:
     text: str
     evidence_keys: tuple[str, ...] = ()
@@ -192,3 +200,7 @@ class Answer:
     retrieval_mode: str = "hybrid"
     hits: int = 0
     degraded: bool = False
+    # 本轮实际进入模型的历史消息条数（Recent Window），0 表示单轮问答。
+    context_messages: int = 0
+    # 检索问题是否由上文补全（代词、省略、继续类问题）。
+    query_rewritten: bool = False

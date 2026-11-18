@@ -160,3 +160,17 @@ v2图片版面全空时复用同版OCR并明确告警，v1不改；服务/配置
 按用户要求把历史资料从 `Qwen/Qwen3-Embedding-0.6B` 换成 `BAAI/bge-m3`。全库共用一个向量索引，构建层禁止混用模型，因此先清空旧模型的构建与片段，再按 `ragflow-v1` 重建；版本、原件与发布指针的记录保留，旧片段随构建删除而不原地改写。
 
 重建由 `scripts/rebuild_vectors.py` 执行：默认只统计，`--apply` 建新构建，`--clear-old` 先清空其它模型，`--parser-profile` 供扫描件指定自动路由。原件已丢失的文档先用已发布片段留存正文（`backend/.data/vector-rebuild-backup`），再合成新版本重新入库。词表资源（tiktoken、WordNet、huqie）随仓库放在 `backend/resources/ragflow`，启动器与 `check.py` 自动定位，不再依赖 `.data` 下的准备目录。
+
+## 0036 会话上下文、上下文感知检索与流式问答（2026-11-17）
+
+按用户要求，把单轮、非流式的证据问答升级为会话式问答。参考 QwenPaw v1.1.12.post3 的会话状态与流式任务实现（`app/runner/session.py`、`app/runner/task_tracker.py`、`app/channels/console/channel.py`），只借鉴职责划分与事件下发方式，不引入其 Agent、Skills、Tool Loop、上下文压缩与长期记忆，也不作为依赖。
+
+上下文：复用现有 `conversations`/`messages`，读取当前会话最近 KS_CONTEXT_RECENT_MESSAGES 条（默认 12）作为 Recent Window 进入模型。只保留 user/assistant，按时间正序，剔除窗口尾部与当前问题重复的 user 消息；不做摘要、token 预算、聊天记忆向量化与跨会话记忆。授权沿用 `get_owned`，他人会话与不存在同为 404。
+
+检索：历史进入生成上下文并不能解决检索的主题丢失，因此对含指代/省略线索的问题，把上一轮用户问题拼在原问题前形成独立检索问题；原问题原样保留，不调用模型改写。补全后无候选时只用上文再召回一次。两者都可配置，配置为 0 时退回原问题。
+
+流式：`POST /qa` 的 `stream=true` 返回 text/event-stream，事件为 run_started、context_*、query_rewrite_*、retrieval_*、generation_started、answer_delta、citations、completed、error。生产者线程推进同步栈，事件经 call_soon_threadsafe 投递，客户端断开置停止标记并在检查点退出。
+
+引用：结构化 JSON 无法逐 token 呈现，故流式改用「纯文本 + 段末 `[E#]` 标记」契约，非流式 `/qa` 与 MCP 仍用 JSON sections。两条路径共用同一套引用校验：未知键丢弃并告警，全部段落无有效引用则失败且不写会话。校验发生在流结束之后，`citations`/`completed` 携带校验结果，前端以 `completed.answer` 覆盖临时文本；未通过校验的一轮只发 `error`，临时文本作废。
+
+边界：不实现 Token Budget、Summary Compaction、长期记忆、Agent/ReAct、多 Agent 与 Goal Mode。真实模型下的多轮效果与首字延迟尚未测量，不计入承诺。

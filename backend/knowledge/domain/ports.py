@@ -2,10 +2,10 @@
 
 from __future__ import annotations
 
-from collections.abc import Sequence
+from collections.abc import Iterator, Sequence
 from typing import Protocol
 
-from knowledge.domain.entities import Evidence, GeneratedAnswer, ParsedBlock
+from knowledge.domain.entities import ContextMessage, Evidence, GeneratedAnswer, ParsedBlock
 
 
 class Parser(Protocol):
@@ -28,7 +28,21 @@ class Embedder(Protocol):
 class Generator(Protocol):
     revision: str
 
-    def generate(self, question: str, evidence: Sequence[Evidence]) -> GeneratedAnswer: ...
+    def generate(
+        self,
+        question: str,
+        evidence: Sequence[Evidence],
+        *,
+        history: Sequence[ContextMessage] = (),
+    ) -> GeneratedAnswer: ...
+
+    def stream(
+        self,
+        question: str,
+        evidence: Sequence[Evidence],
+        *,
+        history: Sequence[ContextMessage] = (),
+    ) -> Iterator[str]: ...
 
 
 class ObjectStorage(Protocol):
