@@ -4,7 +4,7 @@
 import { el, icon, toast, autoGrow, clockLabel, dayLabel, loading, noticeLine } from './dom.mjs';
 import { warningLabel, visibleWarnings } from './core.mjs';
 import { scopeControl, scopeIds, scopeLabel } from './scope.mjs';
-import { streamAnswer, sendButtonView, EXECUTION_STATE } from './stream.mjs';
+import { streamAnswer, sendButtonView, EXECUTION_STATE, durationText } from './stream.mjs';
 
 const MODE_LABEL = { hybrid: '混合检索', semantic: '语义检索', keyword: '关键词检索' };
 
@@ -236,6 +236,8 @@ async function ask(app, question) {
       },
     );
     session.loaded = true;
+    // 客户端观测的整轮耗时，与状态一起存进本轮，重绘和折叠后仍然显示。
+    turn.durationMs = run.startedAt && run.endedAt ? run.endedAt - run.startedAt : 0;
     // 三种收尾分开记：停止与失败都不能写成 completed，停止还要保留已到达的正文。
     if (run.status === 'stopped') {
       turn.status = 'stopped';
@@ -284,10 +286,11 @@ export function cancelActiveRun() {
  * 生成中默认展开，结束后由调用方决定折叠，但阶段数据（stages）永不丢弃。
  */
 class ExecutionPanel {
-  constructor({ status = 'running', stages = [], expanded = false } = {}) {
+  constructor({ status = 'running', stages = [], expanded = false, durationMs = 0 } = {}) {
     this.status = status;
     this.stages = stages;
     this.expanded = expanded;
+    this.durationMs = durationMs;
 
     this.root = el('div', 'exec');
     this.toggle = el('button', 'exec-toggle');
@@ -309,8 +312,9 @@ class ExecutionPanel {
     this.render();
   }
 
-  setStatus(status) {
+  setStatus(status, durationMs = this.durationMs) {
     this.status = status;
+    this.durationMs = durationMs;
     this.render();
   }
 
@@ -321,9 +325,10 @@ class ExecutionPanel {
 
   render() {
     const meta = EXECUTION_STATE[this.status] || EXECUTION_STATE.running;
+    const spent = this.status === 'running' ? '' : durationText(this.durationMs);
     this.root.dataset.status = this.status;
     this.mark.replaceChildren(icon(meta.icon));
-    this.title.textContent = meta.label;
+    this.title.textContent = spent ? `${meta.label}（${spent}）` : meta.label;
     this.hint.textContent = this.expanded ? '收起' : '查看执行过程';
     this.toggle.setAttribute('aria-expanded', String(this.expanded));
     this.list.hidden = !this.expanded;
@@ -331,10 +336,10 @@ class ExecutionPanel {
   }
 }
 
-/** 一轮的执行过程面板：结束后默认折叠，但保留可点击入口，且不随重绘丢失阶段。 */
-function executionBlock(stages, status, expanded = false) {
+/** 一轮的执行过程：放在正文上方，结束后默认折叠，但保留可点击入口，阶段不随重绘丢失。 */
+function executionBlock(stages, status, { expanded = false, durationMs = 0 } = {}) {
   if (!stages?.length) return null;
-  return new ExecutionPanel({ status, stages, expanded }).root;
+  return new ExecutionPanel({ status, stages, expanded, durationMs }).root;
 }
 
 /**
@@ -363,7 +368,10 @@ class LiveAnswer {
     if (!this.answer) return;
     if (['stage', 'error', 'final', 'stopped'].includes(change)) {
       this.panel.setStages(run.stages);
-      this.panel.setStatus(run.status);
+      this.panel.setStatus(
+        run.status,
+        run.startedAt && run.endedAt ? run.endedAt - run.startedAt : 0,
+      );
     }
     if (change === 'delta') {
       this.text = run.text;
@@ -432,13 +440,13 @@ function turnNode(app, turn, previousAt) {
   const answer = el('div', 'answer-message');
   if (turn.status === 'pending') {
     // 流式开始前由 LiveAnswer 就地接管；重绘时若已有阶段，直接按展开状态还原。
-    const panel = executionBlock(turn.stages, 'running', true);
+    const panel = executionBlock(turn.stages, 'running', { expanded: true });
     answer.append(headBlock('正在回答'), ...(panel ? [panel] : [thinkingBlock()]));
   } else if (turn.status === 'stopped') {
     answer.append(...stoppedBlocks(turn));
   } else if (turn.status === 'error') {
-    const panel = executionBlock(turn.stages, 'error');
-    answer.append(headBlock('执行失败'), app.errorBox(turn.error), ...(panel ? [panel] : []));
+    const panel = executionBlock(turn.stages, 'error', { durationMs: turn.durationMs });
+    answer.append(headBlock('执行失败'), ...(panel ? [panel] : []), app.errorBox(turn.error));
   } else {
     answer.append(...answerBlocks(app, turn.answer, turn.scope, turn));
   }
@@ -454,14 +462,12 @@ function thinkingBlock(text = '正在准备回答…') {
 
 /** 用户主动停止：保留已到达的正文，但明确标注它没有通过引用校验、也没有保存。 */
 function stoppedBlocks(turn) {
-  const blocks = [
-    headBlock('已停止'),
-    noticeLine('已停止生成。本轮回答未完成校验，不会保存到会话。'),
-  ];
+  const blocks = [headBlock('已停止')];
+  const panel = executionBlock(turn.stages, 'stopped', { durationMs: turn.durationMs });
+  if (panel) blocks.push(panel);
+  blocks.push(noticeLine('已停止生成。本轮回答未完成校验，不会保存到会话。'));
   const text = (turn.text || '').trim();
   if (text) blocks.push(el('div', 'answer-body paused', text));
-  const panel = executionBlock(turn.stages, 'stopped');
-  if (panel) blocks.push(panel);
   return blocks;
 }
 
@@ -493,6 +499,12 @@ function answerBlocks(app, answer, scope, turn = null) {
   } else {
     blocks.push(headBlock(noEvidence ? '未找到回答依据' : conflict ? '证据存在冲突' : '知识库回答'));
   }
+
+  // 参考 DeepSeek：执行过程在正文上方，折叠成一行，点开可看完整阶段与耗时。
+  const panel = turn
+    ? executionBlock(turn.stages, 'completed', { durationMs: turn.durationMs })
+    : null;
+  if (panel) blocks.push(panel);
 
   const text = (answer.answer || '').trim();
   const fallback = noEvidence ? '所选资料中没有足够依据，未生成回答。可以扩大知识范围，或换一种问法。' : '';
@@ -526,9 +538,6 @@ function answerBlocks(app, answer, scope, turn = null) {
     line.append(icon('alert'), el('span', '', '本次检索发生降级，结果可能不完整。'));
     blocks.push(line);
   }
-  // 完成后的执行过程留在正文下方：默认折叠，点开可回看本轮的真实阶段。
-  const panel = turn ? executionBlock(turn.stages, 'completed') : null;
-  if (panel) blocks.push(panel);
   return blocks;
 }
 

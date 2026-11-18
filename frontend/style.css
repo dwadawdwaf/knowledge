@@ -1210,10 +1210,9 @@ html[data-theme="dark"] .user-bubble { color: var(--text); }
   display: flex;
   flex-direction: column;
   gap: 6px;
-  padding: 10px 12px;
-  border: 1px solid var(--border-soft);
-  border-radius: var(--r-md);
-  background: var(--surface-subtle);
+  margin-left: 7px;
+  padding: 2px 0 2px 14px;
+  border-left: 2px solid var(--border);
 }
 .stage {
   display: flex;
@@ -1259,9 +1258,7 @@ html[data-theme="dark"] .user-bubble { color: var(--text); }
 .exec {
   display: flex;
   flex-direction: column;
-  gap: 8px;
-  padding-top: 8px;
-  border-top: 1px solid var(--border-soft);
+  gap: 6px;
 }
 .exec-toggle {
   display: flex;
@@ -1283,11 +1280,11 @@ html[data-theme="dark"] .user-bubble { color: var(--text); }
 .exec[data-status="error"] .exec-mark { color: var(--danger); }
 .exec[data-status="stopped"] .exec-mark { color: var(--text-4); }
 .exec[data-status="running"] .exec-mark { color: var(--accent); }
-.exec-title { color: var(--text-3); }
+.exec-title { color: var(--text-2); }
 .exec-hint { color: var(--text-4); }
 .exec-chevron { display: grid; place-items: center; width: 12px; height: 12px; transition: transform 0.16s ease; }
 .exec-chevron svg { width: 12px; height: 12px; }
-.exec-toggle[aria-expanded="true"] .exec-chevron { transform: rotate(180deg); }
+.exec-toggle[aria-expanded="false"] .exec-chevron { transform: rotate(-90deg); }
 .stage-dot {
   width: 7px;
   height: 7px;

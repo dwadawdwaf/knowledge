@@ -1,6 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { applyQaEvent, createRun, contextDetail, streamAnswer, stopRun, sendButtonView, EXECUTION_STATE } from './stream.mjs';
+import { applyQaEvent, createRun, contextDetail, streamAnswer, stopRun, sendButtonView,
+  EXECUTION_STATE, durationText } from './stream.mjs';
 
 function sse(frames) {
   const bytes = new TextEncoder().encode(frames);
@@ -234,6 +235,31 @@ test('发送按钮只有一个：空闲是发送，生成中是停止', () => {
   });
   // 两种状态复用同一个 class 基础名，说明是同一个按钮换图标而不是新增按钮
   assert.ok(sendButtonView(true).className.startsWith(sendButtonView(false).className));
+});
+
+test('耗时按真实起止时间计算，不足一秒不显示为 0', () => {
+  assert.equal(durationText(0), '');
+  assert.equal(durationText(-1), '');
+  assert.equal(durationText(600), '用时 1 秒内');
+  assert.equal(durationText(1900), '用时 2 秒');
+  assert.equal(durationText(12500), '用时 13 秒');
+});
+
+test('完成与停止都会记录结束时间，运行中不显示耗时', () => {
+  const run = createRun();
+  applyQaEvent(run, 'run_started', {});
+  assert.ok(run.startedAt > 0);
+  assert.equal(run.endedAt, 0);
+
+  run.startedAt -= 2500;
+  applyQaEvent(run, 'completed', { answer_status: 'answered', answer: '答' });
+  assert.ok(run.endedAt > 0);
+  assert.ok(durationText(run.endedAt - run.startedAt).includes('秒'));
+
+  const stopped = createRun();
+  applyQaEvent(stopped, 'run_started', {});
+  stopRun(stopped);
+  assert.ok(stopped.endedAt > 0);
 });
 
 test('执行状态文案覆盖运行、完成、停止与失败四种', () => {

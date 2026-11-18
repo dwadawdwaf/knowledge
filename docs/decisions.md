@@ -179,7 +179,7 @@ v2图片版面全空时复用同版OCR并明确告警，v1不改；服务/配置
 
 按用户要求修两处交互，不改后端：①生成时输入框右下角的发送按钮原位变为停止按钮，用户消息下方不再出现独立"停止生成"；②每轮回答的执行过程在完成、停止、失败后都保留，可展开/折叠回看。
 
-决定：发送与停止共用 `.send-btn` 一个元素，只切换 class、图标与 `aria-label`，因此不可能同时出现两个按钮；停止复用既有 `AbortController`（`cancelActiveRun()`），不新增停止接口。执行过程按轮次挂在 `turn.stages`，前端按 `run.status`（running/completed/stopped/error）渲染同一套 `ExecutionPanel`，生成中默认展开、结束后默认折叠。
+决定：发送与停止共用 `.send-btn` 一个元素，只切换 class、图标与 `aria-label`，因此不可能同时出现两个按钮；停止复用既有 `AbortController`（`cancelActiveRun()`），不新增停止接口。执行过程按轮次挂在 `turn.stages`，前端按 `run.status`（running/completed/stopped/error）渲染同一套 `ExecutionPanel`，位置参考 DeepSeek 放在回答正文上方：生成中展开，结束后折叠成一行「回答完成（用时 N 秒）」，点开回看；耗时取 `run.startedAt/endedAt` 的客户端实测差值。
 
 停止与失败都不写成 completed：后端在客户端断开后不保存该轮助手消息，前端因此只保留已到达的正文并标注"未完成校验、不会保存"，同时保留阶段记录供回看；`completed.answer` 仍是唯一权威正文。
 

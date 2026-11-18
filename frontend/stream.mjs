@@ -39,6 +39,8 @@ export function sendButtonView(streaming) {
 export function createRun() {
   return {
     status: 'running',
+    startedAt: 0,
+    endedAt: 0,
     stages: [],
     text: '',
     citations: [],
@@ -46,6 +48,13 @@ export function createRun() {
     error: null,
     completed: false,
   };
+}
+
+/** 本轮实际耗时（客户端观测，含检索与生成），用于「用时 N 秒」。 */
+export function durationText(ms) {
+  if (!Number.isFinite(ms) || ms <= 0) return '';
+  if (ms < 1000) return '用时 1 秒内';
+  return `用时 ${Math.round(ms / 1000)} 秒`;
 }
 
 function closeEarlier(run, key) {
@@ -90,6 +99,8 @@ export function applyQaEvent(run, kind, data = {}) {
   switch (kind) {
     case 'run_started':
       run.status = 'running';
+      run.startedAt = run.startedAt || Date.now();
+      run.endedAt = 0;
       run.stages = [];
       run.text = '';
       run.citations = [];
@@ -150,11 +161,13 @@ export function applyQaEvent(run, kind, data = {}) {
       run.text = run.answer.answer;
       run.completed = true;
       run.status = 'completed';
+      run.endedAt = Date.now();
       run.stages.forEach(item => { if (item.state === 'active') item.state = 'done'; });
       return 'final';
     case 'error': {
       run.error = new ApiError(data.code || 'INTERNAL_ERROR');
       run.status = 'error';
+      run.endedAt = Date.now();
       run.stages.forEach(item => { if (item.state === 'active') item.state = 'failed'; });
       return 'error';
     }
@@ -167,6 +180,7 @@ export function applyQaEvent(run, kind, data = {}) {
 /** 用户主动停止：保留已到达的正文与阶段，但状态是"已停止"，不是完成也不是失败。 */
 export function stopRun(run) {
   run.status = 'stopped';
+  run.endedAt = Date.now();
   run.stages.forEach(item => {
     if (item.state === 'active') item.state = 'stopped';
   });
