@@ -5,7 +5,12 @@ from __future__ import annotations
 import json
 import time
 
+import httpx
+
 from scripts.http_scenario import expect, upload_sample, wait_job
+
+# 问答是长连接：首帧要等上下文与检索开始，慢机器上按默认请求超时会误判为失败。
+SSE_TIMEOUT = httpx.Timeout(90.0)
 
 STAGE_PREFIX = [
     "run_started",
@@ -57,7 +62,7 @@ def test_stream_emits_stage_order_and_validated_citations(runtime):
     with runtime.client() as client:
         kb_id = _ready(runtime, client, "问答流式")
         conversation_id = _conversation(client, "流式")
-        with client.stream("POST", "/api/v1/qa", json=_ask(client, kb_id, "会议室使用后需要做什么？", conversation_id)) as response:
+        with client.stream("POST", "/api/v1/qa", timeout=SSE_TIMEOUT, json=_ask(client, kb_id, "会议室使用后需要做什么？", conversation_id)) as response:
             assert response.status_code == 200
             assert response.headers["content-type"].startswith("text/event-stream")
             assert response.headers["x-accel-buffering"] == "no"
@@ -93,11 +98,11 @@ def test_second_turn_uses_conversation_context(runtime):
         kb_id = _ready(runtime, client, "问答上下文")
         conversation_id = _conversation(client, "多轮")
         first = _ask(client, kb_id, "会议室使用后需要做什么？", conversation_id)
-        with client.stream("POST", "/api/v1/qa", json=first) as response:
+        with client.stream("POST", "/api/v1/qa", timeout=SSE_TIMEOUT, json=first) as response:
             assert [kind for kind, _ in read_events(response.iter_lines())][-1] == "completed"
 
         second = _ask(client, kb_id, "它还需要提前登记吗？", conversation_id)
-        with client.stream("POST", "/api/v1/qa", json=second) as response:
+        with client.stream("POST", "/api/v1/qa", timeout=SSE_TIMEOUT, json=second) as response:
             collected = list(read_events(response.iter_lines()))
 
         payload = {kind: data for kind, data in collected}
@@ -113,7 +118,7 @@ def test_midstream_upstream_failure_reports_error_event(runtime):
         kb_id = _ready(runtime, client, "问答中途故障")
         conversation_id = _conversation(client, "中途故障")
         runtime.model_fixture.generator_failure = "stream-error"
-        with client.stream("POST", "/api/v1/qa", json=_ask(client, kb_id, "会议室使用后需要做什么？", conversation_id)) as response:
+        with client.stream("POST", "/api/v1/qa", timeout=SSE_TIMEOUT, json=_ask(client, kb_id, "会议室使用后需要做什么？", conversation_id)) as response:
             assert response.status_code == 200
             collected = list(read_events(response.iter_lines()))
 
@@ -132,7 +137,7 @@ def test_client_disconnect_stops_run_and_keeps_conversation_clean(runtime):
         kb_id = _ready(runtime, client, "问答断开")
         conversation_id = _conversation(client, "断开")
         runtime.model_fixture.generator_failure = "stream-slow"
-        with client.stream("POST", "/api/v1/qa", json=_ask(client, kb_id, "会议室使用后需要做什么？", conversation_id)) as response:
+        with client.stream("POST", "/api/v1/qa", timeout=SSE_TIMEOUT, json=_ask(client, kb_id, "会议室使用后需要做什么？", conversation_id)) as response:
             assert response.status_code == 200
             seen = []
             for kind, _data in read_events(response.iter_lines()):
